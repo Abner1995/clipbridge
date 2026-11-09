@@ -1,0 +1,16 @@
+<Solution>
+  <!-- 单机版解决方案：只含客户端 + 本地库 + 可复用业务层。
+       不含 CreatFlow.Server（Blazor 后台 / MySQL / JWT）与 CreatFlow.Infrastructure
+       （MySQL 仓储、BCrypt、邮件、JWT 实现）—— 打开这个 sln 即可构建，
+       不会被服务端工程干扰。 -->
+  <Folder Name="/src/">
+    <Project Path="src/CreatFlow.NewApp/CreatFlow.NewApp.csproj" />
+    <Project Path="src/CreatFlow.LocalStore/CreatFlow.LocalStore.csproj" />
+    <Project Path="src/CreatFlow.Application/CreatFlow.Application.csproj" />
+    <Project Path="src/CreatFlow.Domain/CreatFlow.Domain.csproj" />
+    <Project Path="src/CreatFlow.Platforms/CreatFlow.Platforms.csproj" />
+    <Project Path="src/CreatFlow.Media/CreatFlow.Media.csproj" />
+    <Project Path="src/CreatFlow.Shared/CreatFlow.Shared.csproj" />
+    <Project Path="src/CreatFlow.DingTalk/CreatFlow.DingTalk.csproj" />
+  </Folder>
+</Solution>

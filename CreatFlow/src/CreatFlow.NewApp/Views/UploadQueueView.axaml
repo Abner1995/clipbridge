@@ -1,0 +1,599 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.UploadQueueView"
+             x:DataType="vm:UploadQueueViewModel">
+
+    <!-- 上传队列页（真实数据，设计文档 §2.4 / P3-4）。
+         数据源 = POST /api/publish/platforms（任务 × 平台联合行），服务端状态是权威；
+         本页同时**是执行者** —— 上传+发布在这里按 (平台, 账号) 分组串行跑，
+         同账号 60–90 秒间隔规避平台风控。
+
+         与老版 DataGrid（一行 = 视频×平台×账号，20 条 × 4 平台 = 80 行噪音）的差别：
+         默认按「视频」聚合成一张卡，展开才看平台×账号明细。用户真正关心的是
+         「这 20 条出去了没」，不是某一条的分片进度。 -->
+
+    <UserControl.Resources>
+        <!-- 纯图标 ToggleButton 外壳（展开箭头）：不套模板的话 Semi 的 ToggleButton
+             :checked 会画出一个蓝色勾选框，把箭头顶掉（实测踩坑）。
+             发布页有一份同名模板，但那处是单选行专用（含更宽的内边距）—— 两份用途不同，
+             不强行合并。 -->
+        <ControlTemplate x:Key="QueueIconToggleTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                <ContentPresenter Name="QueueIconContent"
+                                  Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+
+        <!-- 自绘勾选盒的壳（第三处落点：发布页 RowTemplate / 视频管理页 CheckToggleTemplate 同款） -->
+        <ControlTemplate x:Key="QueueCheckTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="8">
+                <ContentPresenter Name="QueueCheckContent"
+                                  Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="Button.cta">
+            <Setter Property="Theme" Value="{StaticResource CtaButtonTheme}" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+        <Style Selector="Button.sec">
+            <Setter Property="Theme" Value="{StaticResource SecondaryButtonTheme}" />
+        </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Theme" Value="{StaticResource DangerButtonTheme}" />
+        </Style>
+
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="Border.pill">
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="TextBlock.pill-text">
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+
+        <Style Selector="Border.q-card">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#EDEFF3" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="BoxShadow" Value="0 1 2 0 #0D000000, 0 4 12 0 #08000000" />
+        </Style>
+        <Style Selector="Border.thumb">
+            <Setter Property="Width" Value="72" />
+            <Setter Property="Height" Value="48" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.pf-badge">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- 自绘勾选盒（与发布页 / 视频管理页同款） -->
+        <Style Selector="ToggleButton.check-row">
+            <Setter Property="Template" Value="{StaticResource QueueCheckTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <!-- ⚠️ Foreground 必须显式钉住：Semi 的 ToggleButton 在 :checked 下把前景刷成白色
+                 （为「填色胶囊」设计），本模板是透明底的勾选盒 —— 不钉住的话勾选行的文字会变白 -->
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:checked">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:pointerover">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="Border.tick">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:not(:checked) Border.tick">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#C9CDD4" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:checked Border.tick">
+            <Setter Property="Background" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:not(:checked) Path.tick-check">
+            <Setter Property="IsVisible" Value="False" />
+        </Style>
+
+        <!-- 展开箭头（自绘） -->
+        <Style Selector="ToggleButton.chev">
+            <Setter Property="Template" Value="{StaticResource QueueIconToggleTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.chev:pointerover">
+            <Setter Property="Background" Value="#F2F3F5" />
+        </Style>
+        <Style Selector="ToggleButton.chev Path.chev-icon">
+            <Setter Property="RenderTransformOrigin" Value="50%,50%" />
+        </Style>
+        <Style Selector="ToggleButton.chev:checked Path.chev-icon">
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <RotateTransform Angle="180" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="36,26,36,18">
+
+        <!-- ═══ 页头 ═══ -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14"
+              Margin="0,0,0,16">
+            <Border Width="42" Height="42" CornerRadius="21"
+                    Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                <Viewbox Width="20" Height="20" Stretch="Uniform"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path Data="M9.5,4C7.57,4 6,5.57 6,7.5C6,9.43 7.57,11 9.5,11H11V4H9.5M13,4V11H14.5C16.43,11 18,9.43 18,7.5C18,5.57 16.43,4 14.5,4H13M6,12.5C6,14.43 7.57,16 9.5,16H11V12.5H6M13,12.5V16H14.5C16.43,16 18,14.43 18,12.5H13M4,6.5C4,3.46 6.46,1 9.5,1H18V6H20V18H18V23H15V18H9.5C6.46,18 4,15.54 4,12.5V6.5Z"
+                          Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="上传队列" FontSize="20" FontWeight="Bold" />
+                <TextBlock Text="按视频聚合，展开才看平台明细；发布期间请保持软件运行"
+                           FontSize="12" Foreground="{StaticResource TextMuted}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center">
+                <!-- 手动启动（2026-10-22）：开壳不自动上传，用户确认登录已刷新后自己开跑 -->
+                <Button Classes="cta" Content="开始上传" Height="30" FontSize="12"
+                        IsVisible="{Binding !UploadStarted}"
+                        IsEnabled="{Binding HasUnfinished}"
+                        ToolTip.Tip="软件重开后不会自动上传：先到「平台账号」确认登录状态已刷新，再点这里"
+                        Command="{Binding StartUploadCommand}" />
+                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                           Foreground="{StaticResource TextMuted}"
+                           VerticalAlignment="Center"
+                           IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                <Button Classes="sec" Content="暂停全部" Height="30" FontSize="12"
+                        ToolTip.Tip="暂停只在本次运行内有效 —— 关软件后未完成的任务会继续；要彻底不传请用「撤回」或行上的 ✕ 放弃"
+                        Command="{Binding PauseAllCommand}" />
+                <Button Classes="sec" Content="继续全部" Height="30" FontSize="12"
+                        Command="{Binding ResumeAllCommand}" />
+                <Button Classes="sec" Content="清空已完成" Height="30" FontSize="12"
+                        Command="{Binding ClearCompletedCommand}" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,0,6,0">
+
+                <!-- ═══ 账号异常横幅（最高优先级交互：登录后自动重试该账号下所有失败/暂停任务）═══ -->
+                <Border Background="#FDECEA" BorderBrush="#F7C6C2" BorderThickness="1"
+                        CornerRadius="12" Padding="16,12"
+                        IsVisible="{Binding HasLoginBanner}">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <Border Width="8" Height="8" CornerRadius="4" Background="#F53F3F"
+                                VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding LoginBannerText}"
+                                   FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource ColorError}"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="2" Classes="sec" Content="去登录"
+                                Height="30" Padding="16,0"
+                                Command="{Binding GoLoginCommand}"
+                                ToolTip.Tip="登录成功后自动重试该账号下的失败/暂停任务" />
+                    </Grid>
+                </Border>
+
+                <!-- ═══ 账号窗口未打开横幅（纯建议：任务照跑不拦；打开过即消失；不代开：平台有扫码/风控）═══ -->
+                <Border Background="{StaticResource BrandSoft}"
+                        BorderBrush="{StaticResource BrandSoftBorder}" BorderThickness="1"
+                        CornerRadius="12" Padding="16,12"
+                        IsVisible="{Binding HasVerifyBanner}">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <Border Width="8" Height="8" CornerRadius="4"
+                                Background="{StaticResource BrandPrimary}"
+                                VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding VerifyBannerText}"
+                                   FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{StaticResource BrandActive}"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                        <Button Grid.Column="2" Classes="sec" Content="去平台账号"
+                                Height="30" Padding="16,0"
+                                Command="{Binding GoOpenAccountsCommand}"
+                                ToolTip.Tip="到「平台账号」页点开这些账号的窗口（会刷新登录凭证），打开过本提示即消失" />
+                    </Grid>
+                </Border>
+
+                <!-- ═══ 手动启动横幅（2026-10-22：重开软件不自动上传，先刷新登录再手动开始）═══ -->
+                <Border Background="{StaticResource BrandSoft}"
+                        BorderBrush="{StaticResource BrandSoftBorder}" BorderThickness="1"
+                        CornerRadius="12" Padding="16,12"
+                        IsVisible="{Binding ShowStartBanner}">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <Border Width="8" Height="8" CornerRadius="4"
+                                Background="{StaticResource BrandPrimary}"
+                                VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding StartBannerText}"
+                                   FontSize="12.5" FontWeight="SemiBold"
+                                   Foreground="{StaticResource BrandActive}"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                            <Button Classes="sec" Content="去平台账号" Height="30" Padding="16,0"
+                                    Command="{Binding GoOpenAccountsCommand}" />
+                            <Button Classes="cta" Content="开始上传" Height="30" Padding="16,0"
+                                    Command="{Binding StartUploadCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ═══ 汇总条（右侧 = 勾选批量操作：全选 / 暂停选中 / 继续选中 / 删除选中） ═══ -->
+                <Border Background="{StaticResource BgSubtle}" CornerRadius="10"
+                        Padding="14,10">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                        <StackPanel Orientation="Horizontal" Spacing="18">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Border Width="6" Height="6" CornerRadius="3" Background="#6C5CE7"
+                                        VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding RunningText}" FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Border Width="6" Height="6" CornerRadius="3" Background="#C9CDD4"
+                                        VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding WaitingText}" FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Border Width="6" Height="6" CornerRadius="3" Background="#00B42A"
+                                        VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding DoneText}" FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <Border Width="6" Height="6" CornerRadius="3" Background="#F53F3F"
+                                        VerticalAlignment="Center" />
+                                <TextBlock Text="{Binding FailedText}" FontSize="12"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" />
+                            </StackPanel>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="10"
+                                    VerticalAlignment="Center">
+                            <ToggleButton Classes="check-row" Width="20" Height="20" Padding="0"
+                                          IsChecked="{Binding AllSelected}" VerticalAlignment="Center"
+                                          ToolTip.Tip="全选所有平台行（含未展开卡片里的）">
+                                <Border Classes="tick">
+                                    <Viewbox Width="11" Height="11" Stretch="Uniform"
+                                             HorizontalAlignment="Center"
+                                             VerticalAlignment="Center">
+                                        <Path Classes="tick-check"
+                                              Data="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z"
+                                              Fill="White" Stretch="Uniform" />
+                                    </Viewbox>
+                                </Border>
+                            </ToggleButton>
+                            <TextBlock Text="全选" FontSize="12"
+                                       Foreground="{StaticResource TextMuted}"
+                                       VerticalAlignment="Center" />
+                            <Button Classes="sec" Content="暂停选中" Height="28" Padding="10,0"
+                                    FontSize="12"
+                                    Command="{Binding PauseSelectedCommand}" />
+                            <Button Classes="sec" Content="继续选中" Height="28" Padding="10,0"
+                                    FontSize="12"
+                                    Command="{Binding ResumeSelectedCommand}" />
+                            <!-- 批量删除：已发布的走软删（隐藏），未发布的走「放弃」语义（正在跑的先停再定落点） -->
+                            <Button Classes="danger" Content="删除选中" Height="28" Padding="10,0"
+                                    FontSize="12"
+                                    ToolTip.Tip="已发布的行会隐藏（记录保留）；未发布的行会直接删除，正在上传的会先停止"
+                                    Command="{Binding DeleteSelectedCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ═══ 空态 ═══ -->
+                <Border Background="White" CornerRadius="14" Padding="40,54"
+                        IsVisible="{Binding IsEmpty}">
+                    <StackPanel Spacing="10" HorizontalAlignment="Center">
+                        <TextBlock Text="队列是空的" FontSize="15" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock Text="在「发布视频」页勾选条目后点「提交到队列」，任务会出现在这里并自动开始上传"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}"
+                                   HorizontalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ═══ 队列卡（按视频聚合）═══ -->
+                <ItemsControl ItemsSource="{Binding Tasks}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:QueueTaskViewModel">
+                            <Border Classes="q-card" Padding="16,14" Margin="0,0,0,12">
+                                <StackPanel Spacing="12">
+
+                                    <!-- 折叠头：缩略图 + 标题 + 元信息 + 状态胶囊 + 操作 -->
+                                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                                        <Border Classes="thumb" Background="{Binding ThumbTint}">
+                                            <Viewbox Width="16" Height="16" Stretch="Uniform"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center">
+                                                <Path Data="M8,5L19,12L8,19Z" Fill="#FFFFFF"
+                                                      Stretch="Uniform" />
+                                            </Viewbox>
+                                        </Border>
+
+                                        <StackPanel Grid.Column="1" Spacing="4"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="15"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding MetaText}" Classes="hint" />
+                                            <StackPanel Orientation="Horizontal" Spacing="6"
+                                                        IsVisible="{Binding CountText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                                                <Border Width="6" Height="6" CornerRadius="3"
+                                                        Background="{Binding CountDotHex}"
+                                                        VerticalAlignment="Center" />
+                                                <TextBlock Text="{Binding CountText}" Classes="hint"
+                                                           VerticalAlignment="Center" />
+                                            </StackPanel>
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                    Spacing="8" VerticalAlignment="Center">
+                                            <Border Classes="pill" Background="{Binding StatusBgHex}">
+                                                <TextBlock Classes="pill-text"
+                                                           Text="{Binding StatusText}"
+                                                           Foreground="{Binding StatusColorHex}" />
+                                            </Border>
+                                            <Button Classes="sec" Content="全部重试" Height="28"
+                                                    FontSize="12"
+                                                    IsVisible="{Binding HasFailure}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:UploadQueueViewModel)DataContext).RetryTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Classes="sec" Content="隐藏" Height="28"
+                                                    FontSize="12" IsVisible="{Binding HasPublished}"
+                                                    ToolTip.Tip="把已发布的记录从队列收走（视频管理页仍能查到）"
+                                                    Command="{Binding $parent[ItemsControl].((vm:UploadQueueViewModel)DataContext).HideTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <!-- 样式用 sec 而不是 ghost：ghost 是发布页本地的
+                                                 （依赖它自己的 PlainButtonTemplate），本页取不到 -->
+                                            <Button Classes="sec" Content="撤回" Height="28"
+                                                    FontSize="12"
+                                                    IsVisible="{Binding ShowWithdrawAsk}"
+                                                    ToolTip.Tip="删除本卡所有未发布成功的记录（含失败的）；正在上传的会先停止"
+                                                    Command="{Binding $parent[ItemsControl].((vm:UploadQueueViewModel)DataContext).AskWithdrawTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <!-- 撤回确认条：原地替换「撤回」按钮，破坏性操作过一步（合集卡同款惯例） -->
+                                            <StackPanel Orientation="Horizontal" Spacing="6"
+                                                        VerticalAlignment="Center"
+                                                        IsVisible="{Binding ShowWithdrawConfirm}">
+                                                <TextBlock Text="{Binding WithdrawConfirmText}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource ColorError}"
+                                                           VerticalAlignment="Center" />
+                                                <Button Classes="sec" Content="撤回" Height="28"
+                                                        FontSize="12" Padding="12,0"
+                                                        Command="{Binding $parent[ItemsControl].((vm:UploadQueueViewModel)DataContext).ConfirmWithdrawTaskCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Classes="sec" Content="取消" Height="28"
+                                                        FontSize="12" Padding="12,0"
+                                                        Command="{Binding $parent[ItemsControl].((vm:UploadQueueViewModel)DataContext).CancelWithdrawTaskCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                            <ToggleButton Classes="chev" Width="24" Height="24"
+                                                          Padding="0"
+                                                          IsChecked="{Binding IsExpanded}"
+                                                          ToolTip.Tip="展开平台明细">
+                                                <Viewbox Width="14" Height="14" Stretch="Uniform"
+                                                         HorizontalAlignment="Center"
+                                                         VerticalAlignment="Center">
+                                                    <Path Classes="chev-icon"
+                                                          Data="M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z"
+                                                          Fill="{StaticResource TextPlaceholder}"
+                                                          Stretch="Uniform" />
+                                                </Viewbox>
+                                            </ToggleButton>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- 展开：平台 × 账号明细 -->
+                                    <StackPanel Spacing="9" IsVisible="{Binding IsExpanded}">
+                                        <ItemsControl ItemsSource="{Binding Rows}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:QueuePlatformRow">
+                                                    <!-- 外层 StackPanel：行 Grid + 可展开的失败详情面板（详情见下） -->
+                                                    <StackPanel Margin="0,0,0,2">
+                                                        <Grid ColumnDefinitions="24,16,Auto,120,*,Auto"
+                                                              ColumnSpacing="10">
+                                                            <!-- 勾选盒（批量暂停/继续；与发布页同款自绘样式） -->
+                                                            <ToggleButton Classes="check-row" Width="20" Height="20"
+                                                                          Padding="0" VerticalAlignment="Center"
+                                                                          IsChecked="{Binding IsSelected}"
+                                                                          Grid.Column="0">
+                                                                <Border Classes="tick">
+                                                                    <Viewbox Width="11" Height="11" Stretch="Uniform"
+                                                                             HorizontalAlignment="Center"
+                                                                             VerticalAlignment="Center">
+                                                                        <Path Classes="tick-check"
+                                                                              Data="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z"
+                                                                              Fill="White" Stretch="Uniform" />
+                                                                    </Viewbox>
+                                                                </Border>
+                                                            </ToggleButton>
+
+                                                            <Border Classes="pf-badge"
+                                                                    Background="{Binding BrandHex}"
+                                                                    Grid.Column="1">
+                                                                <TextBlock Text="{Binding Initial}"
+                                                                           FontSize="9" FontWeight="Bold"
+                                                                           Foreground="White"
+                                                                           HorizontalAlignment="Center"
+                                                                           VerticalAlignment="Center" />
+                                                            </Border>
+
+                                                            <StackPanel Grid.Column="2"
+                                                                        Orientation="Horizontal"
+                                                                        Spacing="6"
+                                                                        VerticalAlignment="Center">
+                                                                <TextBlock Text="{Binding PlatformName}"
+                                                                           FontSize="12"
+                                                                           Foreground="{StaticResource TextPrimary}" />
+                                                                <TextBlock Text="{Binding AccountLabel}"
+                                                                           FontSize="11"
+                                                                           Foreground="{StaticResource TextMuted}" />
+                                                            </StackPanel>
+
+                                                            <!-- 进度条（等待/暂停不画） -->
+                                                            <Grid Grid.Column="3" VerticalAlignment="Center"
+                                                                  IsVisible="{Binding HasBar}">
+                                                                <ProgressBar Theme="{StaticResource ThinProgressTheme}"
+                                                                             Minimum="0" Maximum="100"
+                                                                             Value="{Binding ProgressPct}"
+                                                                             Foreground="{Binding BarColorHex}" />
+                                                            </Grid>
+
+                                                            <!-- 失败原因 / 间隔说明 / 进度文案 -->
+                                                            <TextBlock Grid.Column="4"
+                                                                       Text="{Binding DetailText}"
+                                                                       FontSize="11"
+                                                                       Foreground="{StaticResource TextMuted}"
+                                                                       VerticalAlignment="Center"
+                                                                       TextTrimming="CharacterEllipsis" />
+
+                                                            <StackPanel Grid.Column="5"
+                                                                        Orientation="Horizontal"
+                                                                        Spacing="8"
+                                                                        VerticalAlignment="Center">
+                                                                <StackPanel Orientation="Horizontal"
+                                                                            Spacing="6"
+                                                                            VerticalAlignment="Center">
+                                                                    <Border Width="6" Height="6"
+                                                                            CornerRadius="3"
+                                                                            Background="{Binding DotHex}"
+                                                                            VerticalAlignment="Center" />
+                                                                    <TextBlock Text="{Binding StateText}"
+                                                                               FontSize="11"
+                                                                               Foreground="{Binding StateColorHex}"
+                                                                               VerticalAlignment="Center" />
+                                                                </StackPanel>
+                                                                <!-- 行级暂停/继续（老版单行 ⏸/▶ 的对应物）：
+                                                                     暂停不删记录，继续只用户手动暂停的行才有按钮
+                                                                     （账号掉线挂起的走横幅/自动重排，见 ShowResumeButton） -->
+                                                                <Button Classes="sec" Content="暂停"
+                                                                        Height="24" Padding="8,0"
+                                                                        IsVisible="{Binding ShowPauseButton}"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).PauseRowCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                                <Button Classes="sec" Content="继续"
+                                                                        Height="24" Padding="8,0"
+                                                                        IsVisible="{Binding ShowResumeButton}"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).ResumeRowCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                                <!-- 失败详情开关：全文 + 建议 + 复制（老版是独立弹窗） -->
+                                                                <Button Classes="sec" Content="详情"
+                                                                        Height="24" Padding="8,0"
+                                                                        IsVisible="{Binding IsFailed}"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).ToggleErrorDetailCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                                <!-- ⚠️ 这里是**嵌套** ItemsControl（平台明细在卡片模板里）：
+                                                                     $parent[ItemsControl] 会解析到**内层**那个（DataContext = QueueTaskViewModel），
+                                                                     强转失败 → 命令绑不上、按钮点了没反应。发布页踩过同一个坑，
+                                                                     那边一律用 $parent[UserControl]（见 PublishView 候选列表一区的注释）。 -->
+                                                                <Button Classes="sec" Content="重试"
+                                                                        Height="24" Padding="8,0"
+                                                                        IsVisible="{Binding IsFailed}"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).RetryRowCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                                <!-- ✕ 放弃：等待/暂停/失败直接删；正在跑的会先停再删。
+                                                                     已发布不显示（记录是平台侧视频的唯一凭据，收走用卡片「隐藏」） -->
+                                                                <Button Classes="sec" Width="24" Height="24"
+                                                                        Padding="0"
+                                                                        IsVisible="{Binding !IsPublished}"
+                                                                        ToolTip.Tip="放弃这条：停止并删除记录，不会发布"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).DiscardRowCommand}"
+                                                                        CommandParameter="{Binding}">
+                                                                    <Viewbox Width="10" Height="10" Stretch="Uniform"
+                                                                             HorizontalAlignment="Center"
+                                                                             VerticalAlignment="Center">
+                                                                        <Path Data="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z"
+                                                                              Fill="{StaticResource TextMuted}"
+                                                                              Stretch="Uniform" />
+                                                                    </Viewbox>
+                                                                </Button>
+                                                            </StackPanel>
+                                                        </Grid>
+
+                                                        <!-- 失败详情（原地展开）：全文 + 建议 + 复制到剪贴板（老版是独立弹窗，语义等价） -->
+                                                        <Border IsVisible="{Binding IsErrorExpanded}" Margin="26,6,0,4"
+                                                                Background="#FFF8F8" BorderBrush="#FFE3E3"
+                                                                BorderThickness="1" CornerRadius="8"
+                                                                Padding="12,10">
+                                                            <StackPanel Spacing="8">
+                                                                <SelectableTextBlock Text="{Binding ErrorDetailText}"
+                                                                                     FontSize="12"
+                                                                                     Foreground="{StaticResource TextPrimary}"
+                                                                                     TextWrapping="Wrap" />
+                                                                <TextBlock Text="{Binding ErrorSuggestion}" FontSize="11"
+                                                                           Foreground="{StaticResource TextMuted}"
+                                                                           TextWrapping="Wrap" />
+                                                                <Button Classes="sec" Content="复制错误"
+                                                                        Height="26" Padding="10,0" FontSize="12"
+                                                                        HorizontalAlignment="Left"
+                                                                        Command="{Binding $parent[UserControl].((vm:UploadQueueViewModel)DataContext).CopyErrorCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </StackPanel>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ═══ 底部限速说明 + ETA（把「为什么这么慢」讲清楚，避免用户以为卡死）═══ -->
+        <Border Grid.Row="2" Margin="0,14,0,0" Padding="16,11"
+                Background="{StaticResource BgSubtle}" CornerRadius="12">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+                <Border Width="6" Height="6" CornerRadius="3"
+                        Background="{StaticResource TextPlaceholder}"
+                        VerticalAlignment="Center" />
+                <TextBlock Text="{Binding EtaText}" FontSize="12"
+                           Foreground="{StaticResource TextSecondary}"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

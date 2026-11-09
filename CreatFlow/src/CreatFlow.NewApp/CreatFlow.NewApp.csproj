@@ -1,0 +1,102 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<!-- Debug=控制台子系统（开发时终端可见 Serilog 输出）；Release=WinExe（打包版双击不弹黑色命令窗口，
+		     老版同观感）。验证门禁/自检不受影响：selftest 退出码与 %TEMP% 报告文件都与子系统无关
+		     （打包脚本用 Start-Process -Wait 读退出码，恰好也是 WinExe 下唯一稳的起法）。
+		     ⚠️ XML 注释里不能出现连续两个短横线（selftest 前面本来写作双短横线参数名 → MSB4025）。 -->
+		<OutputType Condition="'$(Configuration)' == 'Debug'">Exe</OutputType>
+		<OutputType Condition="'$(Configuration)' != 'Debug'">WinExe</OutputType>
+		<TargetFramework>net10.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<TieredCompilation>false</TieredCompilation>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+		<AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+		<ApplicationIcon>Assets\app-icon.ico</ApplicationIcon>
+		<!-- Windows 清单：supportedOS 必须声明，否则 NativeWebView 子窗口创建失败（老 App 同款，勿删） -->
+		<ApplicationManifest>app.manifest</ApplicationManifest>
+		<!-- 单机版分支（edition/standalone）：编译期开关。AppConfig.Edition 默认 Standalone，
+		     启动直接进壳、/api/* 走本地 SQLite 路由。联网版主线不定义此常量，行为完全不变。 -->
+		<DefineConstants>$(DefineConstants);CREATFLOW_STANDALONE</DefineConstants>
+		<!-- 终态 UI（Semi.Avalonia 主题），老 App 退役后顶替 CreatFlow.App；程序集名默认 CreatFlow.NewApp（双存期避免与老 App 输出混淆，P5 再定名） -->
+	</PropertyGroup>
+
+	<ItemGroup>
+		<!-- Avalonia 锁 11.3 线：Media/Platforms/Shared 共享层全部构建在此线，禁止单独升 12 -->
+		<PackageReference Include="Avalonia" Version="11.3.19" />
+		<PackageReference Include="Avalonia.Desktop" Version="11.3.19" />
+		<PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.19" />
+		<!-- HTML 富文本渲染（联系我们页）：MIT，官方 AvaloniaUI 维护，11.3.0 对应 Avalonia 11.3 线；
+		     纯托管渲染、不执行 JS，图片/链接由控件自己处理（链接点击在 View 里拦出去） -->
+		<PackageReference Include="Avalonia.HtmlRenderer" Version="11.3.0" />
+		<!-- Semi 主题（字节 Semi Design 风格，Locale zh-CN）；11.3.14 需 Avalonia >= 11.3.14 -->
+		<PackageReference Include="Semi.Avalonia" Version="11.3.14" />
+		<!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
+		<PackageReference Include="Avalonia.Diagnostics" Version="11.3.19">
+			<IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
+			<PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
+		</PackageReference>
+		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.1" />
+		<!-- 提示音播放（PublishSoundNotifier）：Mp3FileReader + WaveOutEvent，
+		     线程安全、不需要窗口句柄，后台线程可直接调。与老 App 同版本。 -->
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<PackageReference Include="Serilog.Sinks.Console" Version="6.1.1" />
+		<PackageReference Include="Serilog.Sinks.File" Version="7.0.0" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="9.0.0" />
+		<!-- 依赖注入：VM 注册 + 导航切换解析（realworld-avalonia 同款，9.0.0 与 net10 兼容） -->
+		<!-- 9.0.10：与 LocalStore 的 EF Core 9.0.10 传递依赖对齐（9.0.0 会触发 NU1605 包降级） -->
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.10" />
+		<!-- 矢量图标（Material Design Icons 7000+，替代 emoji）：2.1.10 需 Avalonia >= 11.0（3.x 需 Avalonia 12，锁 11.3 线不可用） -->
+		<PackageReference Include="Material.Icons.Avalonia" Version="2.1.10" />
+		<!-- WebView2 承载（平台登录）：11.4.0 主包 + Windows 平台包（老 App 同款版本）；
+		     多账号档案隔离经 NativeWebView.EnvironmentRequested → WindowsWebView2EnvironmentRequestedEventArgs
+		     (Avalonia.Platform) 设 UserDataFolder/ProfileName 实现（探针验证 11.4 有此事件） -->
+		<PackageReference Include="Avalonia.Controls.WebView" Version="11.4.0" />
+		<PackageReference Include="webview.avalonia.windows" Version="11.0.0.1" />
+		<PackageReference Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="9.0.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\CreatFlow.Shared\CreatFlow.Shared.csproj" />
+		<ProjectReference Include="..\CreatFlow.Platforms\CreatFlow.Platforms.csproj" />
+		<ProjectReference Include="..\CreatFlow.Media\CreatFlow.Media.csproj" />
+		<!-- 单机版本地 SQLite 账本（含 Application 业务服务）。联网版构建也会编译它，
+		     但 LocalHandler 不设置 → 所有 /api/* 仍走 HTTP，行为不变。 -->
+		<ProjectReference Include="..\CreatFlow.LocalStore\CreatFlow.LocalStore.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- 窗口/任务栏图标（从老 App Assets 拷贝，双存期共享） -->
+		<Content Include="Assets\app-icon.ico" CopyToOutputDirectory="PreserveNewest" />
+		<!-- 发布结果提示音（老 App 同一对 mp3）—— 走 Avalonia 嵌入资源，
+		     无路径依赖，混淆/打包都不受影响（PublishSoundNotifier 用 avares:// 取） -->
+		<AvaloniaResource Include="Assets\Sounds\*.mp3" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- ffmpeg/ffprobe — 发布页视频元数据探测 + 抽首帧（LGPL build）。
+		     本地缺文件时先跑 scripts/download_ffmpeg.ps1。老 App csproj 同款两条。 -->
+		<Content Include="..\..\runtime\ffmpeg\ffmpeg.exe" CopyToOutputDirectory="PreserveNewest" Link="runtime\ffmpeg\ffmpeg.exe" Condition="$([MSBuild]::IsOSPlatform('Windows')) And Exists('..\..\runtime\ffmpeg\ffmpeg.exe')" />
+		<Content Include="..\..\runtime\ffmpeg\ffprobe.exe" CopyToOutputDirectory="PreserveNewest" Link="runtime\ffmpeg\ffprobe.exe" Condition="$([MSBuild]::IsOSPlatform('Windows')) And Exists('..\..\runtime\ffmpeg\ffprobe.exe')" />
+		<!-- 本地 LLM（零安装 AI 文案）：llama-server 引擎 + 默认模型 Qwen3-4B（~2.5GB）。
+		     仓库源目录 runtime/llm（scripts/download_llama.ps1 获取；通配为空时不报错、不拷贝）。
+		     PreserveNewest：首次构建拷一次，之后按时间戳跳过。8B 大档走应用内下载（用户目录），不进包。
+
+		     ⚠️ 输出目录是 runtimes\llm（多了个 s），**勿改回 runtime\llm**：
+		     VS 的 Avalonia 预览器会把输出目录里所有它不认识的 .dll 当作托管程序集写进清单并
+		     逐个 LoadFromAssemblyPath 预加载 —— 唯独 runtimes\ 子树被跳过（原生资产约定目录）。
+		     llama.cpp 的 25 个原生 dll 一旦被预加载 → GGML_ASSERT abort → 预览器进程整个崩掉
+		     （2026-10-10 实录：0xc0000409 "Previewer Stopped"）。
+		     联动点：LlamaServerHost.EngineDir、LlmModelStore.BundledDir、LlmSelfTest 守卫，改一处必须全改。 -->
+		<Content Include="..\..\runtime\llm\*.exe" CopyToOutputDirectory="PreserveNewest" Link="runtimes\llm\%(Filename)%(Extension)" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+		<Content Include="..\..\runtime\llm\*.dll" CopyToOutputDirectory="PreserveNewest" Link="runtimes\llm\%(Filename)%(Extension)" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+		<Content Include="..\..\runtime\llm\LICENSE-*" CopyToOutputDirectory="PreserveNewest" Link="runtimes\llm\%(Filename)%(Extension)" />
+		<Content Include="..\..\runtime\llm\models\*.gguf" CopyToOutputDirectory="PreserveNewest" Link="runtimes\llm\models\%(Filename)%(Extension)" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- appsettings：单机版自带（不含任何服务端密钥 / 个人信息，见仓库根 DISCLAIMER） -->
+		<Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+		<Content Include="appsettings.Development.json" CopyToOutputDirectory="PreserveNewest" Condition="'$(Configuration)' == 'Debug' And Exists('appsettings.Development.json')" />
+	</ItemGroup>
+</Project>

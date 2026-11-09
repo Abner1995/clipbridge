@@ -1,0 +1,589 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:semi="https://irihi.tech/semi"
+             xmlns:mi="using:Material.Icons"
+             xmlns:local="using:CreatFlow.NewApp"
+             xmlns:converters="using:CreatFlow.NewApp.Converters"
+             x:Class="CreatFlow.NewApp.App"
+             RequestedThemeVariant="Light">
+
+    <Application.DataTemplates>
+        <!-- VM → View 命名约定路由（ContentControl 绑定 CurrentPage 时自动解析页面） -->
+        <local:ViewLocator/>
+    </Application.DataTemplates>
+
+    <!-- ══════════════════════════════════════════════════════════════
+         设计系统 ① 基础令牌（品牌紫取自 app-icon 像素取样）+ ③ 业务通用控件主题
+         全局单一来源，页面禁止散写这些语义色（页面私有样式允许留在页面）。
+         ⚠️ Avalonia 11 跨文件合并 RD 无 Source 属性 / 编译型 RD 需 x:Class 配对
+         代码文件（AVLN2000 实测踩坑）—— 单文件内聚于 App，按分区注释管理。
+         触发规则：第二次使用即提取 —— P1b 激活页与登录页共享后集中于此。
+         ══════════════════════════════════════════════════════════════ -->
+    <Application.Resources>
+
+        <!-- ─── 共享转换器（MaterialIconKind → 几何）。必须放 App 级：
+             页面(UserControl)解析发生在挂到窗口树之前，StaticResource 只能看到
+             App 资源，取不到 Window.Resources（KeyNotFoundException 实测踩坑）
+
+             ⚠️ 图标一律用 <Viewbox Width=H Height=H Stretch="Uniform"> 包住同尺寸的
+             <Path Stretch="Uniform"/> —— Avalonia 的 Shape 在 Stretch != None 时把几何
+             缩放到布局框后按【左上】对齐（WPF 会居中，Avalonia 不会），方正的
+             AccountCircle 看着没事，扁宽字形就整体偏上：AccountGroup 24×14.5 在
+             21 框里偏上 4.6px、PlaylistMusic 偏上 3.25px、Bell 18×21 偏左 2px。
+             Viewbox 只改位置不改尺寸（缩放比例与原来完全一致），套上即四边等距。
+             禁止用 Margin 硬顶：Margin 是跟着字形宽高比变的，换个 kind 就错。 ─── -->
+        <converters:MaterialIconPathConverter x:Key="IconPath" />
+
+        <!-- 日期 / 时间字段的显示串（DateTimeOffset?/DateTime?/TimeSpan? → 单串文本） -->
+        <converters:PickerFieldTextConverter x:Key="PickerText" />
+
+        <!-- ─── ① 令牌：品牌紫 / 文字灰阶 / 线面背景 / 功能色（先于控件主题声明，同字典内顺序消费） ─── -->
+        <SolidColorBrush x:Key="BrandPrimary"    Color="#6C5CE7" />  <!-- 常态：登录/激活 CTA、焦点描边 -->
+        <SolidColorBrush x:Key="BrandHover"      Color="#5B4BD6" />  <!-- 悬浮 -->
+        <SolidColorBrush x:Key="BrandActive"     Color="#4B3BC3" />  <!-- 按下 / 强文本 -->
+        <SolidColorBrush x:Key="BrandDisabled"   Color="#C4BEF2" />  <!-- 禁用 -->
+        <SolidColorBrush x:Key="BrandSoft"       Color="#F4F1FE" />  <!-- 淡紫卡面 -->
+        <SolidColorBrush x:Key="BrandSoftBorder" Color="#D8D2F8" />  <!-- 淡紫描边 -->
+        <SolidColorBrush x:Key="BrandOnLight"    Color="#E8E6FB" />  <!-- 渐变上的浅紫文字 -->
+
+        <SolidColorBrush x:Key="TextPrimary"     Color="#1F2329" />
+        <SolidColorBrush x:Key="TextSecondary"   Color="#4E5969" />
+        <SolidColorBrush x:Key="TextMuted"       Color="#86909C" />
+        <SolidColorBrush x:Key="TextPlaceholder" Color="#A9AEB8" />
+
+        <SolidColorBrush x:Key="LineInput"   Color="#D9D9D9" />  <!-- 输入框描边常态 -->
+        <SolidColorBrush x:Key="LineBorder"  Color="#E4E6E8" />  <!-- 通用分隔/描边 -->
+        <SolidColorBrush x:Key="BgSubtle"    Color="#F7F8FA" />  <!-- 浅灰卡面/悬浮 -->
+        <SolidColorBrush x:Key="BgDivider"   Color="#E5E6EB" />  <!-- 细分隔线 -->
+
+        <SolidColorBrush x:Key="ColorError"     Color="#C62828" />
+        <SolidColorBrush x:Key="BgError"        Color="#FDECEA" />
+        <SolidColorBrush x:Key="ColorSuccess"   Color="#0A5C28" />
+        <SolidColorBrush x:Key="BgSuccess"      Color="#EBF7EE" />
+        <SolidColorBrush x:Key="BgSuccessBorder" Color="#BFE8CC" />
+        <SolidColorBrush x:Key="DangerHover"    Color="#FBE3E4" />  <!-- 危险软按钮悬浮 -->
+        <SolidColorBrush x:Key="DangerPressed"  Color="#F7D5D7" />  <!-- 危险软按钮按下 -->
+
+        <!-- ─── 细进度条（只留轨 + 指示条，无文字/动画残留）。
+             合集页/上传队列页第二次用到 → 上提到 App 级单源（原来两份各自复制）。 ─── -->
+        <ControlTheme x:Key="ThinProgressTheme" TargetType="ProgressBar">
+            <Setter Property="Height" Value="6" />
+            <Setter Property="MinHeight" Value="6" />
+            <Setter Property="Background" Value="#EDEFF2" />
+            <Setter Property="Foreground" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="ProgressBar">
+                    <Grid>
+                        <Border Name="PART_Track" CornerRadius="3"
+                                Background="{TemplateBinding Background}" />
+                        <Border Name="PART_Indicator" CornerRadius="3"
+                                HorizontalAlignment="Left"
+                                Background="{TemplateBinding Foreground}" />
+                    </Grid>
+                </ControlTemplate>
+            </Setter>
+        </ControlTheme>
+
+        <!-- ─── 品牌滑块（合成页 / 配音页第二次用到 → 上提到 App 级单源）：
+             灰轨 + 品牌紫已滑段（左 RepeatButton 铺条）+ 白圆钮（品牌紫描边）。
+             两条实测坑（Semi 主题下必踩）：
+             ① Track 要逐项 TemplateBinding（Orientation/IsDirectionReversed/Minimum/Maximum/Value）——
+                不绑时 Track 全是默认值（Value=0 / Vertical），定位全乱；
+             ② 两侧 RepeatButton 要显式 Stretch —— Track 只把部件摆进槽位，不拉伸则宽 0、填充段看不见。 ─── -->
+        <ControlTheme x:Key="AppSliderTheme" TargetType="Slider">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="MinWidth" Value="140" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="Slider">
+                    <Grid VerticalAlignment="Center">
+                        <Border Height="4" CornerRadius="2" Background="#EDEFF2"
+                                VerticalAlignment="Center" />
+                        <Track Name="PART_Track" VerticalAlignment="Center"
+                               Orientation="{TemplateBinding Orientation}"
+                               IsDirectionReversed="{TemplateBinding IsDirectionReversed}"
+                               Minimum="{TemplateBinding Minimum}"
+                               Maximum="{TemplateBinding Maximum}"
+                               Value="{TemplateBinding Value}">
+                            <Track.DecreaseButton>
+                                <RepeatButton Name="PART_DecreaseButton" Focusable="False" Cursor="Hand"
+                                              HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                              Background="{StaticResource BrandPrimary}" BorderThickness="0">
+                                    <RepeatButton.Template>
+                                        <ControlTemplate TargetType="RepeatButton">
+                                            <Grid Background="Transparent" Height="28">
+                                                <Border Height="4" CornerRadius="2" VerticalAlignment="Center"
+                                                        Background="{TemplateBinding Background}" />
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </RepeatButton.Template>
+                                </RepeatButton>
+                            </Track.DecreaseButton>
+                            <Track.Thumb>
+                                <Thumb Name="PART_Thumb" Width="16" Height="16" Cursor="Hand">
+                                    <Thumb.Template>
+                                        <ControlTemplate TargetType="Thumb">
+                                            <Border CornerRadius="8" Background="White"
+                                                    BorderBrush="{StaticResource BrandPrimary}" BorderThickness="2"
+                                                    BoxShadow="0 1 3 0 #33000000" />
+                                        </ControlTemplate>
+                                    </Thumb.Template>
+                                </Thumb>
+                            </Track.Thumb>
+                            <Track.IncreaseButton>
+                                <RepeatButton Name="PART_IncreaseButton" Focusable="False" Cursor="Hand"
+                                              HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                                              Background="Transparent" BorderThickness="0">
+                                    <RepeatButton.Template>
+                                        <ControlTemplate TargetType="RepeatButton">
+                                            <Grid Background="Transparent" Height="28" />
+                                        </ControlTemplate>
+                                    </RepeatButton.Template>
+                                </RepeatButton>
+                            </Track.IncreaseButton>
+                        </Track>
+                    </Grid>
+                </ControlTemplate>
+            </Setter>
+        </ControlTheme>
+
+        <!-- ─── ③ CTA 主按钮（登录/激活共用；Theme 属性 Opt-in，不动 Semi 全局默认）
+             Semi 模板会覆盖本地 Background（hover 盖灰、白字看不清）→ 自绘模板四态。
+             ContentPresenter 不叫 PART_ContentPresenter：避免被主题 /template/
+             视觉状态选择器按部件名命中涂色（Shell 图标踩坑同款）。 ─── -->
+        <ControlTheme x:Key="CtaButtonTheme" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="17" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Height" Value="44" />
+            <Setter Property="Padding" Value="24,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="7">
+                        <ContentPresenter Name="CtaContent"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Padding="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="Center"
+                                          VerticalContentAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="Background" Value="{StaticResource BrandHover}" />
+            </Style>
+            <Style Selector="^.pressed">
+                <Setter Property="Background" Value="{StaticResource BrandActive}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Background" Value="{StaticResource BrandDisabled}" />
+            </Style>
+        </ControlTheme>
+
+        <!-- ─── ③ 白底输入框（Theme 属性 Opt-in 套用）
+             静态白底 + 上下零内边距文字居中，仅描边随状态（常态 → 悬浮加深 → 聚焦品牌紫） ─── -->
+        <ControlTheme x:Key="AppInputTheme" TargetType="TextBox">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineInput}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="CaretBrush" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <!-- 选中高亮：Semi 主题自带 SelectionBrush/SelectionForegroundBrush，Theme 属性接管后
+                 两个 Setter 一并丢失 → Ctrl+A / 鼠标拖选全无视觉反馈（用户以为"选不中、无法全选"，
+                 自然也就"复制不了"）。自绘模板必须显式补齐（品牌紫 30% 叠底 + 文字保持深色保证对比度）。 -->
+            <Setter Property="SelectionBrush" Value="#4D6C5CE7" />
+            <Setter Property="SelectionForegroundBrush" Value="{StaticResource TextPrimary}" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="TextBox">
+                    <Border Name="PART_BorderElement"
+                            PointerPressed="OnInputPointerPressed"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <!-- 右键菜单：Semi 主题自带（剪切/复制/粘贴），Theme 属性接管后丢失 → 右键点输入框
+                             毫无反应。键盘 Ctrl+C 其实一直是好的，但用户习惯右键复制，缺菜单等于"无法复制"。
+                             菜单挂模板内的 Border（每个 TextBox 各自实例化），不能放 ControlTheme 的 Setter
+                             ——那是共享实例，第二个输入框打开会因已有逻辑父级而失败。 -->
+                        <Border.ContextMenu>
+                            <ContextMenu Opened="OnInputMenuOpened">
+                                <MenuItem Header="剪切"
+                                          Command="{Binding $parent[TextBox].Cut}"
+                                          InputGesture="{Binding $parent[TextBox].CutGesture}" />
+                                <MenuItem Header="复制"
+                                          Command="{Binding $parent[TextBox].Copy}"
+                                          InputGesture="{Binding $parent[TextBox].CopyGesture}" />
+                                <MenuItem Header="粘贴"
+                                          Command="{Binding $parent[TextBox].Paste}"
+                                          InputGesture="{Binding $parent[TextBox].PasteGesture}" />
+                                <Separator />
+                                <MenuItem Header="全选"
+                                          Command="{Binding $parent[TextBox].SelectAll}"
+                                          InputGesture="Ctrl+A" />
+                            </ContextMenu>
+                        </Border.ContextMenu>
+                        <Grid Margin="{TemplateBinding Padding}">
+                            <!-- 水印对齐跟随内容对齐：多行框（VerticalContentAlignment=Top）里
+                                 写死 Center 会让占位文字浮在框中间、上方留一大片空白，输入时又跳到顶部 -->
+                            <TextBlock Name="PART_Watermark"
+                                       Text="{TemplateBinding Watermark}"
+                                       Foreground="{StaticResource TextPlaceholder}"
+                                       FontSize="{TemplateBinding FontSize}"
+                                       TextWrapping="{TemplateBinding TextWrapping}"
+                                       VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                       IsHitTestVisible="False"
+                                       IsVisible="{Binding Text, RelativeSource={RelativeSource TemplatedParent},
+                                       Converter={x:Static StringConverters.IsNullOrEmpty}}" />
+                            <!-- ⚠️ 横向必须 TemplateBinding，不能写死：TextBox 自己按 TextWrapping 决定该值
+                                 （NoWrap→Hidden、Wrap→Disabled），写死 Hidden 会让 ScrollViewer 以无限宽
+                                 测量 TextPresenter → TextWrapping="Wrap" 彻底失效，多行简介永远挤在一行
+                                 （2026-09-14 实测修复；Fluent/Semi 官方模板同样是 TemplateBinding）。
+                                 纵向保持写死 Hidden：超长内容仍可滚轮/光标滚动，只是不出滚动条。 -->
+                            <ScrollViewer Name="PART_ScrollViewer"
+                                          HorizontalScrollBarVisibility="{TemplateBinding (ScrollViewer.HorizontalScrollBarVisibility)}"
+                                          VerticalScrollBarVisibility="Hidden">
+                                <TextPresenter Name="PART_TextPresenter"
+                                               Text="{TemplateBinding Text, Mode=TwoWay}"
+                                               CaretBlinkInterval="{TemplateBinding CaretBlinkInterval}"
+                                               CaretIndex="{TemplateBinding CaretIndex}"
+                                               SelectionStart="{TemplateBinding SelectionStart}"
+                                               SelectionEnd="{TemplateBinding SelectionEnd}"
+                                               TextAlignment="{TemplateBinding TextAlignment}"
+                                               TextWrapping="{TemplateBinding TextWrapping}"
+                                               LineHeight="{TemplateBinding LineHeight}"
+                                               LetterSpacing="{TemplateBinding LetterSpacing}"
+                                               PasswordChar="{TemplateBinding PasswordChar}"
+                                               SelectionBrush="{TemplateBinding SelectionBrush}"
+                                               SelectionForegroundBrush="{TemplateBinding SelectionForegroundBrush}"
+                                               CaretBrush="{TemplateBinding CaretBrush}"
+                                               HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                               VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="BorderBrush" Value="#B0B0B0" />
+            </Style>
+            <Style Selector="^.focus">
+                <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <!-- 禁用灰底沿用老值 #F2F3F5（区别于 BgDivider 分隔灰） -->
+                <Setter Property="Background" Value="#F2F3F5" />
+                <Setter Property="Foreground" Value="{StaticResource TextPlaceholder}" />
+            </Style>
+        </ControlTheme>
+
+        <!-- ─── ③ 危险软按钮（红字浅红底：踢出设备 / 删除配置等破坏性轻操作） ─── -->
+        <ControlTheme x:Key="DangerButtonTheme" TargetType="Button">
+            <Setter Property="Background" Value="{StaticResource BgError}" />
+            <Setter Property="Foreground" Value="{StaticResource ColorError}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="6"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch">
+                        <ContentPresenter Name="DangerContent"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Padding="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="Center"
+                                          VerticalContentAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="Background" Value="{StaticResource DangerHover}" />
+            </Style>
+            <Style Selector="^.pressed">
+                <Setter Property="Background" Value="{StaticResource DangerPressed}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Background" Value="#F2F3F5" />
+                <Setter Property="Foreground" Value="{StaticResource TextPlaceholder}" />
+            </Style>
+        </ControlTheme>
+
+        <!-- ─── ③ 次要按钮（灰底灰字：测试发送 / 刷新等非主操作） ─── -->
+        <ControlTheme x:Key="SecondaryButtonTheme" TargetType="Button">
+            <Setter Property="Background" Value="#F2F3F5" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="16,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="Button">
+                    <Border Background="{TemplateBinding Background}"
+                            CornerRadius="6"
+                            HorizontalAlignment="Stretch"
+                            VerticalAlignment="Stretch">
+                        <ContentPresenter Name="SecondaryContent"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          Padding="{TemplateBinding Padding}"
+                                          HorizontalContentAlignment="Center"
+                                          VerticalContentAlignment="Center"
+                                          RecognizesAccessKey="True" />
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="Background" Value="#E5E6EB" />
+            </Style>
+            <Style Selector="^.pressed">
+                <Setter Property="Background" Value="#D9DEE4" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Background" Value="#F2F3F5" />
+                <Setter Property="Foreground" Value="{StaticResource TextPlaceholder}" />
+            </Style>
+        </ControlTheme>
+
+        <!-- ══════════════════════════════════════════════════════════════
+             ④ 日期 / 时间控件（Theme 属性 Opt-in；发布页定时发布 + 各平台「转载时间 / 拍摄时间」）
+
+             换掉了 Semi 原样的字段模板 —— 原样是「2026 │ 十月 │ 9」三段分栏排开、灰底、
+             段间还夹两条分隔线，读起来像三个不相干的控件，也和应用里的输入框不是一路货。
+             现在：白底 + 1px 描边 + 圆角 6 + 高 32（和 AppInputTheme 一套），
+             日期显示 2026-10-09、时间显示 18:30，右侧各一枚日历 / 时钟图标。
+
+             ⚠️ 三条不能碰的线（Avalonia 的 DatePicker/TimePicker 是原控件，Semi 只给了主题）：
+
+             1. **部件名一个都不能少**，尤其是 PART_YearTextBlock / PART_MonthTextBlock /
+                PART_DayTextBlock / PART_FirstSpacer / PART_SecondSpacer / PART_ButtonContentGrid /
+                PART_HourTextBlock 这些**看不见的**：代码后置 OnApplyTemplate 里逐个
+                `e.NameScope.Find<T>(...)`，缺一个 `_areControlsAvailable` 就是 false
+                （文本不再刷新）；DatePicker.SetGrid() 还会把三段 TextBlock 重新塞回容器、
+                按可见性开关、给容器补列定义。所以它们一律留着、包在 `IsVisible="False"` 的
+                Panel 里（SetGrid 改的是它们自己的 IsVisible，祖先折叠着就不可能露出来）。
+                类型也要对：spacer 必须是 Rectangle、host 必须是 Border，泛型 Find<T> 认类型。
+
+             2. **PART_PickerPresenter 必须是 Popup 的直接 Child**，不能拿 Border 包一层去加
+                圆角投影 —— 确认按钮走的是 DatePickerPresenter.Confirmed → 父控件直接读
+                `_presenter.Date`（反编译确认），包一层后「确认」就悄悄不回填了（实测：
+                包着时点确认 SelectedDate 不动）。弹层外观改由下面 Application.Styles 里
+                打在 presenter 自己身上的样式负责。
+
+             3. **不要设 YearFormat / MonthFormat / DayFormat**：它们会同步给弹出层的年 / 月 / 日
+                三列（同上反编译），弹出层里会出现「2023-」「07-」。字段串走 PickerText 转换器。
+                副作用是字段不再理会 YearVisible / MonthVisible / DayVisible（显示层是自绘的单串，
+                原生三段已折叠）—— 全 App 没有一处用到那三个开关，真要只显示年月得另给转换器。
+
+             字段点击热区是铺满全场的 PART_FlyoutButton（自绘空模板，免得 Semi 的按钮主题
+             在悬浮 / 获焦时给整块涂色），点哪儿都能开弹层。 ══════════════════════════════ -->
+        <ControlTheme x:Key="AppDatePickerTheme" TargetType="DatePicker">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineInput}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinWidth" Value="140" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="DatePicker">
+                    <Border Name="PART_Field"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <Panel>
+                            <Grid Margin="{TemplateBinding Padding}" ColumnDefinitions="*,Auto">
+                                <Panel VerticalAlignment="Center" HorizontalAlignment="Left">
+                                    <TextBlock
+                                        Text="{Binding SelectedDate,
+                                               RelativeSource={RelativeSource TemplatedParent},
+                                               Converter={StaticResource PickerText}}" />
+                                    <TextBlock Text="选择日期"
+                                               Foreground="{StaticResource TextPlaceholder}"
+                                               IsVisible="{Binding SelectedDate,
+                                                           RelativeSource={RelativeSource TemplatedParent},
+                                                           Converter={x:Static ObjectConverters.IsNull}}" />
+                                    <!-- 代码后置要取的原生部件，一律折叠（详见上方 ⚠️ 1） -->
+                                    <Panel IsVisible="False">
+                                        <Grid Name="PART_ButtonContentGrid"
+                                              ColumnDefinitions="Auto,Auto,Auto,Auto,Auto">
+                                            <TextBlock Name="PART_YearTextBlock" />
+                                            <Rectangle Name="PART_FirstSpacer" Grid.Column="1" />
+                                            <TextBlock Name="PART_MonthTextBlock" Grid.Column="2" />
+                                            <Rectangle Name="PART_SecondSpacer" Grid.Column="3" />
+                                            <TextBlock Name="PART_DayTextBlock" Grid.Column="4" />
+                                        </Grid>
+                                    </Panel>
+                                </Panel>
+                                <Viewbox Grid.Column="1" Width="16" Height="16" Stretch="Uniform"
+                                         VerticalAlignment="Center">
+                                    <Path Fill="{StaticResource TextMuted}"
+                                          Data="{Binding Source={x:Static mi:MaterialIconKind.CalendarMonth},
+                                                  Converter={StaticResource IconPath}}" />
+                                </Viewbox>
+                            </Grid>
+                            <Button Name="PART_FlyoutButton" Cursor="Hand"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="Transparent" />
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                            <Button Name="ClearButton" IsVisible="False" />
+                            <Popup Name="PART_Popup" IsLightDismissEnabled="True">
+                                <DatePickerPresenter Name="PART_PickerPresenter" />
+                            </Popup>
+                        </Panel>
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="BorderBrush" Value="#B0B0B0" />
+            </Style>
+            <Style Selector="^:focus-within">
+                <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Background" Value="#F2F3F5" />
+                <Setter Property="Foreground" Value="{StaticResource TextPlaceholder}" />
+            </Style>
+        </ControlTheme>
+
+        <ControlTheme x:Key="AppTimePickerTheme" TargetType="TimePicker">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineInput}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="MinWidth" Value="92" />
+            <!-- 24 小时制 + 不带秒：只有作者 18:30 一种写法（Semi 原主题也是这么给的，
+                 换主题后得自己钉住，不然会退回「下午 6:30」） -->
+            <Setter Property="ClockIdentifier" Value="24HourClock" />
+            <Setter Property="UseSeconds" Value="False" />
+            <Setter Property="Template">
+                <ControlTemplate TargetType="TimePicker">
+                    <Border Name="PART_Field"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <Panel>
+                            <Grid Margin="{TemplateBinding Padding}" ColumnDefinitions="*,Auto">
+                                <Panel VerticalAlignment="Center" HorizontalAlignment="Left">
+                                    <TextBlock
+                                        Text="{Binding SelectedTime,
+                                               RelativeSource={RelativeSource TemplatedParent},
+                                               Converter={StaticResource PickerText}}" />
+                                    <TextBlock Text="选择时间"
+                                               Foreground="{StaticResource TextPlaceholder}"
+                                               IsVisible="{Binding SelectedTime,
+                                                           RelativeSource={RelativeSource TemplatedParent},
+                                                           Converter={x:Static ObjectConverters.IsNull}}" />
+                                    <!-- 代码后置要取的原生部件，一律折叠（详见上方 ⚠️ 1） -->
+                                    <Panel IsVisible="False">
+                                        <Grid Name="PART_FlyoutButtonContentGrid"
+                                              ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto">
+                                            <Border Name="PART_FirstPickerHost" Padding="0">
+                                                <TextBlock Name="PART_HourTextBlock" />
+                                            </Border>
+                                            <Rectangle Name="PART_FirstColumnDivider" Grid.Column="1" />
+                                            <Border Name="PART_SecondPickerHost" Grid.Column="2" Padding="0">
+                                                <TextBlock Name="PART_MinuteTextBlock" />
+                                            </Border>
+                                            <Rectangle Name="PART_SecondColumnDivider" Grid.Column="3" />
+                                            <Border Name="PART_ThirdPickerHost" Grid.Column="4" Padding="0">
+                                                <TextBlock Name="PART_SecondTextBlock" />
+                                            </Border>
+                                            <Rectangle Name="PART_ThirdColumnDivider" Grid.Column="5" />
+                                            <Border Name="PART_FourthPickerHost" Grid.Column="6" Padding="0">
+                                                <TextBlock Name="PART_PeriodTextBlock" />
+                                            </Border>
+                                        </Grid>
+                                    </Panel>
+                                </Panel>
+                                <Viewbox Grid.Column="1" Width="16" Height="16" Stretch="Uniform"
+                                         VerticalAlignment="Center">
+                                    <Path Fill="{StaticResource TextMuted}"
+                                          Data="{Binding Source={x:Static mi:MaterialIconKind.ClockOutline},
+                                                  Converter={StaticResource IconPath}}" />
+                                </Viewbox>
+                            </Grid>
+                            <Button Name="PART_FlyoutButton" Cursor="Hand"
+                                    HorizontalAlignment="Stretch" VerticalAlignment="Stretch">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Border Background="Transparent" />
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                            <Button Name="ClearButton" IsVisible="False" />
+                            <Popup Name="PART_Popup" IsLightDismissEnabled="True">
+                                <TimePickerPresenter Name="PART_PickerPresenter" />
+                            </Popup>
+                        </Panel>
+                    </Border>
+                </ControlTemplate>
+            </Setter>
+            <Style Selector="^.pointerover">
+                <Setter Property="BorderBrush" Value="#B0B0B0" />
+            </Style>
+            <Style Selector="^:focus-within">
+                <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+            </Style>
+            <Style Selector="^:disabled">
+                <Setter Property="Background" Value="#F2F3F5" />
+                <Setter Property="Foreground" Value="{StaticResource TextPlaceholder}" />
+            </Style>
+        </ControlTheme>
+    </Application.Resources>
+
+    <Application.Styles>
+        <!-- Semi 主题（Semi Design，zh-CN）— 替换老 App 的 FluentTheme + 自制样式双层 -->
+        <semi:SemiTheme Locale="zh-CN" />
+
+        <!-- ─── ④ 日期 / 时间弹层（AppDatePickerTheme / AppTimePickerTheme 的配套）───
+             弹层内容是独立 TopLevel，页面（UserControl）的样式作用域够不到它 → 只能挂 App 级。
+             选择器按 presenter 收窄，别波及其它 ListBox。
+             presenter 的圆角 / 描边 / 投影打在它自己身上（不能拿 Border 包，见 AppDatePickerTheme ⚠️ 2）。 -->
+        <Style Selector="DatePickerPresenter /template/ Border#Background">
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BoxShadow" Value="0 8 24 0 #1A000000" />
+        </Style>
+        <Style Selector="TimePickerPresenter /template/ Border#Background">
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BoxShadow" Value="0 8 24 0 #1A000000" />
+        </Style>
+        <Style Selector="DatePickerPresenter ListBoxItem:selected">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+        </Style>
+        <Style Selector="TimePickerPresenter ListBoxItem:selected">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+        </Style>
+        <Style Selector="DatePickerPresenter ListBoxItem:selected TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource BrandActive}" />
+        </Style>
+        <Style Selector="TimePickerPresenter ListBoxItem:selected TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource BrandActive}" />
+        </Style>
+    </Application.Styles>
+
+</Application>

@@ -1,0 +1,304 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+        xmlns:views="using:CreatFlow.NewApp.Views"
+        xmlns:models="using:CreatFlow.NewApp.Models"
+        mc:Ignorable="d" d:DesignWidth="1200" d:DesignHeight="760"
+        x:Class="CreatFlow.NewApp.Views.ShellWindow"
+        x:DataType="vm:ShellViewModel"
+        Title="CreatFlow"
+        Width="1200" Height="760"
+        MinWidth="960" MinHeight="600"
+        WindowStartupLocation="CenterScreen">
+
+    <!-- 无 Design.DataContext：ShellViewModel 为 DI 注入构造，设计器无法实例化 → 预览仅骨架
+    （x:DataType 保留编译绑定/设计时补全） -->
+
+    <Window.Resources>
+        <!-- 图标转换器 IconPath 已上移 App 级单源（页面解析取不到窗口资源）；
+        窗口级仅保留本窗私有模板 -->
+        <!-- 纯图标按钮模板：无 Border → hover/按下永无背景色。
+        ⚠️ ContentPresenter 不能叫 PART_ContentPresenter —— 主题视觉状态样式
+        （Button:pointerover /template/ ContentPresenter#PART_ContentPresenter）
+        会按部件名给它涂 hover 背景，从 Path 镂空处透出 = 「图标内部混色」（实测踩坑） -->
+        <ControlTemplate x:Key="FlatIconTemplate" TargetType="Button">
+            <!-- 固定 32×32 命中区（鼠标最小目标尺寸规范），图标 20 居中于内；
+            不用 Padding 撑尺寸（会随内容漂移造成"大片空白可点"的观感）
+            Cursor TemplateBinding：确保命中区内任何元素都显示外层指定的光标
+            （Semi 主题默认给 Button 手形 Hand，此处显式钉为 Arrow） -->
+            <Grid Width="32" Height="20"
+                  Cursor="{TemplateBinding Cursor}">
+                <ContentPresenter Name="IconContent"
+                                  Content="{TemplateBinding Content}"
+                                  Background="Transparent"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Grid>
+        </ControlTemplate>
+    </Window.Resources>
+
+    <Window.Styles>
+        <!-- 导航项容器：固定行高 34 + 内容垂直居中（图标/文字在 hover 背景条内严格上下居中） -->
+        <Style Selector="ListBoxItem">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Margin" Value="0,0,0,2" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <!-- 纯图标按钮（折叠/退出图标）：自绘模板固定 32×32、hover 无背景、指针普通箭头
+        （手形光标 + 无背景 = 用户误以为整片空白可点） -->
+        <Style Selector="Button.flat-icon">
+            <Setter Property="Template" Value="{StaticResource FlatIconTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="MinWidth" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <!-- 本窗 Path 全部为导航图标：默认深灰，禁用项置浅灰 -->
+        <Style Selector="Path">
+            <Setter Property="Fill" Value="#1F2329" />
+        </Style>
+        <Style Selector="ListBoxItem:disabled Path">
+            <Setter Property="Fill" Value="#A9AEB8" />
+        </Style>
+
+        <!-- ═══ 导航项选中/悬浮（realworld 式：整行软色块 + 背景过渡）
+        选中 → 淡紫 #F4F1FE + 图标/文字转品牌紫；悬浮 → 浅灰（选中悬浮加深）。
+        禁用态优先级最后 → 置透明 + 浅灰，杜绝禁用项出现悬浮色块。 -->
+        <Style Selector="ListBox.nav ListBoxItem">
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.12" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="ListBox.nav ListBoxItem:pointerover">
+            <Setter Property="Background" Value="#ECEEF2" />
+        </Style>
+        <Style Selector="ListBox.nav ListBoxItem:selected">
+            <Setter Property="Background" Value="#F4F1FE" />
+            <Setter Property="Foreground" Value="#4B3BC3" />
+        </Style>
+        <Style Selector="ListBox.nav ListBoxItem:selected:pointerover">
+            <Setter Property="Background" Value="#EAE6FB" />
+        </Style>
+        <Style Selector="ListBox.nav ListBoxItem:selected Path">
+            <Setter Property="Fill" Value="#6C5CE7" />
+        </Style>
+        <Style Selector="ListBox.nav ListBoxItem:disabled, ListBox.nav ListBoxItem:disabled:pointerover">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#A9AEB8" />
+        </Style>
+    </Window.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- ═══ 会员过期横幅 ═══ -->
+        <Border Grid.Row="0"
+                Background="#FDECEA" Padding="12,6"
+                IsVisible="{Binding IsExpired}">
+            <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                <TextBlock Text="会员已过期 · "
+                           FontSize="13" Foreground="#C62828" FontWeight="Bold" />
+                <TextBlock Text="{Binding ExpireText}"
+                           FontSize="13" Foreground="#C62828" />
+                <TextBlock Text="· 请在下方激活会员后恢复全部功能"
+                           FontSize="12" Foreground="#C62828" Opacity="0.8" />
+            </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="1" ColumnDefinitions="Auto,*">
+
+            <!-- ═══ 左侧导航（可折叠：展开=图标+文字 208px / 收起=仅图标 64px） ═══ -->
+            <Border Grid.Column="0" Width="{Binding NavWidth}"
+                    Background="#F7F8FA"
+                    BorderBrush="#E4E6E8" BorderThickness="0,0,1,0">
+                <Grid RowDefinitions="Auto,*,Auto">
+
+                    <!-- 品牌行（收起时隐藏文字，仅折叠按钮） -->
+                    <Border Grid.Row="0" BorderBrush="#E4E6E8" BorderThickness="0,0,0,1">
+                        <Grid ColumnDefinitions="Auto,*,Auto" Margin="14,12">
+                            <TextBlock Text="CreatFlow" FontSize="19" FontWeight="Bold"
+                                       IsVisible="{Binding IsExpanded}"
+                                       VerticalAlignment="Center"
+                                       Cursor="Hand" />
+                            <TextBlock Grid.Column="1" Text="{Binding AppVersion, StringFormat='  v{0}'}"
+                                       FontSize="10" Foreground="#86909C"
+                                       IsVisible="{Binding IsExpanded}"
+                                       VerticalAlignment="Center"
+                                       Cursor="Hand" />
+                            <!-- 折叠/展开 -->
+                            <Button Grid.Column="2"
+                                    Classes="flat-icon"
+                                    Command="{Binding ToggleNavCommand}"
+                                    Background="Transparent"
+                                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    ToolTip.Tip="折叠 / 展开侧栏">
+                                <StackPanel>
+                                    <!-- 展开态显示 MenuOpen（点击收窄）；收起态显示 Menu（Viewbox 居中） -->
+                                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                                             VerticalAlignment="Center"
+                                             HorizontalAlignment="Center"
+                                             IsVisible="{Binding IsExpanded}">
+                                        <Path Data="M21,15.61L19.59,17L14.58,12L19.59,7L21,8.39L17.44,12L21,15.61M3,6H16V8H3V6M3,13V11H13V13H3M3,18V16H16V18H3Z"
+                                              Stretch="Uniform" />
+                                    </Viewbox>
+                                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                                             VerticalAlignment="Center"
+                                             HorizontalAlignment="Center"
+                                             IsVisible="{Binding !IsExpanded}">
+                                        <Path Data="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z"
+                                              Stretch="Uniform" />
+                                    </Viewbox>
+                                </StackPanel>
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <!-- 导航分组 -->
+                    <ScrollViewer Grid.Row="1" Margin="8,4,8,0">
+                        <ItemsControl ItemsSource="{Binding Sections}" Cursor="Hand">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:NavSection">
+                                    <StackPanel Margin="0,2,0,6">
+                                        <TextBlock Text="{Binding Title}"
+                                                   FontSize="11" Foreground="#86909C"
+                                                   Margin="10,8,0,4"
+                                                   IsVisible="{Binding $parent[Window].((vm:ShellViewModel)DataContext).IsExpanded}" />
+                                        <ListBox Classes="nav"
+                                                 ItemsSource="{Binding Items}"
+                                                 SelectedItem="{Binding $parent[Window].((vm:ShellViewModel)DataContext).SelectedNav, Mode=OneWay}"
+                                                 ContainerPrepared="NavList_ContainerPrepared"
+                                                 SelectionChanged="NavList_SelectionChanged"
+                                                 Background="Transparent">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:NavItem">
+                                                    <Grid ToolTip.Tip="{Binding Title}">
+                                                        <!-- 展开态：图标 + 标题 + 阶段标注（图标随选中转品牌紫，文字随容器 Foreground） -->
+                                                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10"
+                                                              IsVisible="{Binding $parent[Window].((vm:ShellViewModel)DataContext).IsExpanded}">
+                                                            <Viewbox Width="20" Height="20" Stretch="Uniform"
+                                                                     VerticalAlignment="Center">
+                                                                <Path Data="{Binding Icon, Converter={StaticResource IconPath}}"
+                                                                      Stretch="Uniform" />
+                                                            </Viewbox>
+                                                            <TextBlock Grid.Column="1"
+                                                                       Text="{Binding Title}"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       VerticalAlignment="Center" />
+                                                            <TextBlock Grid.Column="2"
+                                                                       Text="{Binding Note}"
+                                                                       FontSize="10"
+                                                                       Foreground="#A9AEB8"
+                                                                       VerticalAlignment="Center"
+                                                                       IsVisible="{Binding !HasBadge}" />
+                                                            <!-- 活徽章（上传队列未完成计数）：在任何页面都能看见 -->
+                                                            <Border Grid.Column="2" CornerRadius="8"
+                                                                    Background="{StaticResource BrandPrimary}"
+                                                                    Padding="6,1" MinWidth="16"
+                                                                    VerticalAlignment="Center"
+                                                                    IsVisible="{Binding HasBadge}">
+                                                                <TextBlock Text="{Binding BadgeText}"
+                                                                           FontSize="10" FontWeight="Bold"
+                                                                           Foreground="White"
+                                                                           HorizontalAlignment="Center" />
+                                                            </Border>
+                                                        </Grid>
+                                                        <!-- 收起态：仅图标、水平居中 —— 行内左右留白等距，
+                                                        悬浮/选中色块以图标为中心对称（不再左窄右宽）。
+                                                        活徽章在这里退化成一个小圆点（收起时没有文字位），
+                                                        否则把侧栏一收，未完成计数就再也看不见了。 -->
+                                                        <Grid IsVisible="{Binding $parent[Window].((vm:ShellViewModel)DataContext).IsCollapsed}">
+                                                            <Viewbox Width="20" Height="20" Stretch="Uniform"
+                                                                     HorizontalAlignment="Center">
+                                                                <Path Data="{Binding Icon, Converter={StaticResource IconPath}}"
+                                                                      Stretch="Uniform" />
+                                                            </Viewbox>
+                                                            <Border Width="8" Height="8" CornerRadius="4"
+                                                                    Background="{StaticResource BrandPrimary}"
+                                                                    BorderBrush="White" BorderThickness="1.5"
+                                                                    HorizontalAlignment="Right"
+                                                                    VerticalAlignment="Top"
+                                                                    IsVisible="{Binding HasBadge}" />
+                                                        </Grid>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <!-- 底部用户卡 + 退出（单机版无账号体系：整块隐藏，2026-10-28 用户要求） -->
+                    <Border Grid.Row="2" Background="#F2F3F5" BorderBrush="#E4E6E8"
+                            BorderThickness="0,1,0,0" Padding="12,10"
+                            IsVisible="{Binding !IsStandalone}">
+                        <StackPanel Spacing="6">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Border Width="30" Height="30" CornerRadius="15"
+                                        Background="#6C5CE7" VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding Initial}" FontSize="13"
+                                               Foreground="White" HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel VerticalAlignment="Center" Spacing="1"
+                                            IsVisible="{Binding IsExpanded}">
+                                    <TextBlock Text="{Binding Username}" FontSize="13" FontWeight="Bold" />
+                                    <TextBlock Text="账号设置 P1b"
+                                               FontSize="10" Foreground="#86909C" />
+                                </StackPanel>
+                            </StackPanel>
+                            <!-- 单机版没有登录：整组退出按钮隐藏（ShowLogout） -->
+                            <StackPanel Spacing="6" IsVisible="{Binding ShowLogout}">
+                                <Button Content="退出登录"
+                                        Command="{Binding LogoutCommand}"
+                                        HorizontalAlignment="Stretch"
+                                        HorizontalContentAlignment="Center"
+                                        FontSize="12" Padding="8,4"
+                                        Background="Transparent"
+                                        IsVisible="{Binding IsExpanded}" />
+                                <!-- 收起态：仅退出图标 -->
+                                <Button Classes="flat-icon"
+                                        Command="{Binding LogoutCommand}"
+                                        Background="Transparent"
+                                        HorizontalAlignment="Center"
+                                        ToolTip.Tip="退出登录"
+                                        IsVisible="{Binding !IsExpanded}">
+                                    <Viewbox Width="20" Height="20" Stretch="Uniform">
+                                        <Path Data="M17 7L15.59 8.41L18.17 11H8V13H18.17L15.59 15.58L17 17L22 12M4 5H12V3H4C2.9 3 2 3.9 2 5V19C2 20.1 2.9 21 4 21H12V19H4V5Z"
+                                              Stretch="Uniform" />
+                                    </Viewbox>
+                                </Button>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <!-- ═══ 内容区（页面保活叠层：访问过的页面各居一个 ContentControl，切页只切可见性不摘树 ——
+            平台账号页内嵌账号 WebView 标签坞，摘树会销毁 NativeWebView 控制器，必须保活） ═══ -->
+            <Grid Grid.Column="1" x:Name="PageHost" Background="White" />
+        </Grid>
+
+        <!-- ═══ 状态栏 ═══ -->
+        <Border Grid.Row="2" Background="#FAFBFC"
+                BorderBrush="#E4E6E8" BorderThickness="0,1,0,0" Padding="16,5">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <!-- 单机版不显示用户名（状态栏左侧留空，右侧仍标明「单机版 · 本地数据」） -->
+                <TextBlock Text="{Binding Username}" FontSize="11" Foreground="#86909C"
+                           IsVisible="{Binding !IsStandalone}" />
+                <TextBlock Grid.Column="1" Text="{Binding TodayPublishText}"
+                           FontSize="11" Foreground="#86909C"
+                           HorizontalAlignment="Center" />
+                <TextBlock Grid.Column="2" Text="{Binding StatusRightText}"
+                           FontSize="11" Foreground="#86909C" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

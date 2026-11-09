@@ -1,0 +1,124 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="640"
+             x:Class="CreatFlow.NewApp.Views.ActivationView"
+             x:DataType="vm:ActivationViewModel">
+
+    <!-- 无 Design.DataContext：ActivationViewModel 为 DI 注入构造（SessionContext）
+    （激活页为 Expired 用户的默认落点 —— 居中卡片聚焦输入，与登录窗同一套视觉语言） -->
+
+    <Grid Background="White">
+        <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center"
+                    Width="420" Spacing="20">
+
+            <!-- ═══ 标题区 ═══ -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="激活会员"
+                           FontSize="26" FontWeight="Bold"
+                           Foreground="{StaticResource BrandActive}"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="输入激活码延长会员有效期"
+                           FontSize="13" Foreground="{StaticResource TextMuted}"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+
+            <!-- ═══ 激活码输入卡片 ═══ -->
+            <Border Background="{StaticResource BgSubtle}"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="12" Padding="24,20">
+                <StackPanel Spacing="12">
+
+                    <TextBlock Text="激活码"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+
+                    <TextBox Text="{Binding ActivationCode}"
+                             Theme="{StaticResource AppInputTheme}"
+                             IsEnabled="{Binding IsCodeInputEnabled}"
+                             Watermark="例如：CB-XXXX-XXXX-XXXX"
+                             FontSize="15" Height="40" />
+
+                    <!-- 验证中 -->
+                    <ProgressBar IsIndeterminate="True" Height="4"
+                                 IsVisible="{Binding IsCodeValidating}" />
+                    <TextBlock Text="正在与服务器验证…"
+                               IsVisible="{Binding IsCodeValidating}"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+
+                    <!-- 验证失败提示（仅错误态显示；验证中/成功不占用此区） -->
+                    <TextBlock Text="{Binding CodeMessage}"
+                               IsVisible="{Binding IsCodeError}"
+                               FontSize="13" Foreground="{StaticResource ColorError}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 激活按钮（输入为空/验证中自动禁用 → 品牌紫禁用态） ═══
+                 CtaButtonTheme 内建 44 高/17 字号；成功时该按钮替换为下方「继续激活」 -->
+            <Button Theme="{StaticResource CtaButtonTheme}"
+                    Command="{Binding ValidateCodeCommand}"
+                    IsVisible="{Binding IsValidateButtonVisible}"
+                    HorizontalAlignment="Stretch">
+                <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                    <TextBlock Text="激活并延长"
+                               IsVisible="{Binding !IsCodeValidating}" />
+                    <TextBlock Text="正在验证…"
+                               IsVisible="{Binding IsCodeValidating}" />
+                </StackPanel>
+            </Button>
+
+            <!-- ═══ 激活成功卡片 ═══ -->
+            <Border Background="{StaticResource BgSuccess}"
+                    BorderBrush="{StaticResource BgSuccessBorder}" BorderThickness="1"
+                    CornerRadius="12" Padding="20,16"
+                    IsVisible="{Binding HasSuccess}">
+                <StackPanel Spacing="10">
+                    <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Center">
+                        <!-- 勾 ✓：非 emoji，Path 矢量（激活成功主标记；Viewbox 居中） -->
+                        <Viewbox Width="16" Height="16" Stretch="Uniform"
+                                 VerticalAlignment="Center">
+                            <Path Data="M9,16.2L4.8,12L3.4,13.4L9,19L21,7L19.6,5.6L9,16.2Z"
+                                  Fill="{StaticResource ColorSuccess}" Stretch="Uniform" />
+                        </Viewbox>
+                        <TextBlock Text="激活成功！"
+                                   FontSize="15" FontWeight="Bold"
+                                   Foreground="{StaticResource ColorSuccess}" />
+                    </StackPanel>
+                    <Border Height="1" Background="{StaticResource BgSuccessBorder}" />
+                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto" ColumnSpacing="24">
+                        <TextBlock Grid.Row="0" Grid.Column="0"
+                                   Text="延长天数" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}" />
+                        <TextBlock Grid.Row="0" Grid.Column="1"
+                                   Text="{Binding SuccessDuration}"
+                                   FontSize="13" FontWeight="Bold"
+                                   Foreground="{StaticResource ColorSuccess}"
+                                   HorizontalAlignment="Right" />
+                        <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,8,0,0"
+                                   Text="到期时间" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Margin="0,8,0,0"
+                                   Text="{Binding SuccessNewExpire}"
+                                   FontSize="13" FontWeight="Bold"
+                                   Foreground="{StaticResource BrandActive}"
+                                   HorizontalAlignment="Right" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 底部：继续激活（再兑一张码）+ 无码引导 ═══ -->
+            <Button Content="继续激活"
+                    Theme="{StaticResource CtaButtonTheme}"
+                    Command="{Binding ResetCommand}"
+                    IsVisible="{Binding IsCodeValid}"
+                    FontSize="13" Height="34"
+                    HorizontalAlignment="Center" />
+            <TextBlock Text="还没有激活码？联系管理员获取"
+                       IsVisible="{Binding !IsCodeValid}"
+                       FontSize="12" Foreground="{StaticResource TextMuted}"
+                       HorizontalAlignment="Center" />
+        </StackPanel>
+    </Grid>
+</UserControl>

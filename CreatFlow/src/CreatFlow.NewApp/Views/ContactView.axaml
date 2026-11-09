@@ -1,0 +1,123 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             xmlns:html="using:TheArtOfDev.HtmlRenderer.Avalonia"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="700"
+             x:Class="CreatFlow.NewApp.Views.ContactView"
+             x:DataType="vm:ContactViewModel">
+
+    <!-- 无 Design.DataContext：DI 注入 + INavigationAware 进入刷新。
+         内容 = 服务端 contact.content（HTML），由 Avalonia.HtmlRenderer 原生渲染（不执行脚本）。 -->
+
+    <!-- 与「本机设置」页同宽居中（2026-10-28 样式优化：内容不再贴着窗口左边拉满整屏） -->
+    <Grid Background="White" Margin="40,32,40,32" MaxWidth="760"
+          HorizontalAlignment="Center"
+          RowDefinitions="Auto,Auto,Auto,*" RowSpacing="14">
+
+        <!-- ═══ 页头：图标 + 标题 + 刷新 ═══ -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+            <Border Width="42" Height="42" CornerRadius="21"
+                    Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                <!-- Viewbox 才能把墨迹居中（Avalonia Path 在 Stretch 下是左上对齐，见 App.axaml ⚠️） -->
+                <Viewbox Width="20" Height="20" Stretch="Uniform"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                          Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="联系我们" FontSize="20" FontWeight="Bold" />
+                <TextBlock Text="遇到问题或需要帮助？下面任一方式都能联系我们"
+                           FontSize="12" Foreground="{StaticResource TextMuted}" />
+            </StackPanel>
+            <!-- 单机版内容来自本地 appsettings，刷新没有意义 → 隐藏（2026-10-28 用户要求） -->
+            <Button Grid.Column="2" Classes="flat-icon" Cursor="Hand"
+                    VerticalAlignment="Center"
+                    Command="{Binding LoadCommand}"
+                    IsVisible="{Binding ShowRefresh}"
+                    ToolTip.Tip="刷新联系方式">
+                <Viewbox Width="19" Height="19" Stretch="Uniform">
+                    <Path Data="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"
+                          Stretch="Uniform" />
+                </Viewbox>
+            </Button>
+        </Grid>
+
+        <!-- 加载中 -->
+        <ProgressBar Grid.Row="1" IsIndeterminate="True" Height="4"
+                     IsVisible="{Binding IsLoading}" />
+
+        <!-- 降级提示（服务器不可用/未配置时，展示本地默认内容） -->
+        <Border Grid.Row="2" Background="{StaticResource BgSubtle}" CornerRadius="10"
+                Padding="14,8" IsVisible="{Binding HasNotice}">
+            <TextBlock Text="{Binding Notice}" FontSize="12"
+                       Foreground="{StaticResource TextMuted}" TextWrapping="Wrap" />
+        </Border>
+
+        <!-- ═══ 内容卡（联网版）：HTML 富文本（图片/链接/换行都由服务端内容决定） ═══
+             ⚠️ HtmlLabel 的 Padding 会把首行和每行开头裁掉（2026-10-28 实测），一律用 Margin。 -->
+        <Border Grid.Row="3" Background="#FAFBFC"
+                BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                CornerRadius="12" Padding="0" ClipToBounds="True"
+                IsVisible="{Binding ShowHtml}">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+                <html:HtmlLabel x:Name="HtmlBlock"
+                                Text="{Binding Html}"
+                                AutoSize="True" AutoSizeHeightOnly="True"
+                                IsSelectionEnabled="True" IsContextMenuEnabled="True"
+                                HorizontalAlignment="Stretch"
+                                Margin="24,20"
+                                BaseStylesheet="body { font-family: 'Microsoft YaHei UI','Segoe UI',sans-serif; font-size: 14px; color: #1F2329; line-height: 1.7; } p { margin: 0 0 10px 0; } a { color: #6C5CE7; text-decoration: none; } img { max-width: 100%; }" />
+            </ScrollViewer>
+        </Border>
+
+        <!-- ═══ 本机联系方式（单机版）：appsettings 本地内容，原生排版（不经过 HTML 渲染器） ═══ -->
+        <Border Grid.Row="3" x:Name="LocalCard"
+                Background="#FAFBFC"
+                BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                CornerRadius="12" Padding="30,26"
+                VerticalAlignment="Top"
+                IsVisible="{Binding ShowLocalCard}">
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                          VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="22">
+                    <TextBlock Text="{Binding IntroText}" FontSize="13"
+                               Foreground="{StaticResource TextMuted}"
+                               TextWrapping="Wrap" />
+                    <StackPanel Spacing="7">
+                        <TextBlock Text="客服邮箱" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextSecondary}" />
+                        <SelectableTextBlock x:Name="EmailText"
+                                             Text="{Binding EmailsText}"
+                                             FontSize="14" LineHeight="26"
+                                             Foreground="#1F2329" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Spacing="7">
+                        <TextBlock Text="工作时间" FontSize="13" FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextSecondary}" />
+                        <SelectableTextBlock x:Name="HoursText"
+                                             Text="{Binding WorkHours}"
+                                             FontSize="14" LineHeight="26"
+                                             Foreground="#1F2329" TextWrapping="Wrap" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Border>
+
+        <!-- 空态（联网版且服务端与本地都拿不到内容时；单机版永远有本机卡） -->
+        <Border Grid.Row="3" Background="{StaticResource BgSubtle}" CornerRadius="12"
+                Padding="40,34" IsVisible="{Binding ShowEmpty}">
+            <StackPanel Spacing="6" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="暂无联系方式" FontSize="14" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextSecondary}"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="请稍后点右上角刷新，或联系管理员补充内容"
+                           FontSize="12" Foreground="{StaticResource TextMuted}"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

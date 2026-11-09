@@ -1,0 +1,9 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="CreatFlow.NewApp.Views.TabDockView">
+
+    <!-- ═══ 账号 WebView 宿主层:与导航页 ContentControl 同格叠放(声明在后 → 盖在上面) ═══
+         所有标签宿主常驻此 Panel,切标签只切宿主内部 IsVisible,不摘树(WebView 保活);
+         宿主增删由 code-behind 按 Dock.Tabs 集合同步(WebView 生命周期需确定性控制)。 -->
+    <Grid x:Name="HostPanel" />
+</UserControl>

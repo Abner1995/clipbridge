@@ -1,0 +1,148 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+        mc:Ignorable="d" d:DesignWidth="400" d:DesignHeight="600"
+        x:Class="CreatFlow.NewApp.Views.LoginWindow"
+        x:DataType="vm:LoginViewModel"
+        Title="登录 · CreatFlow"
+        Width="400" Height="600"
+        MinWidth="400" MaxWidth="400"
+        MinHeight="600" MaxHeight="600"
+        CanResize="False"
+        WindowStartupLocation="CenterScreen">
+
+    <!-- 主题控件（CTA 按钮 / 白底输入框）已提取到 Styles/Controls.App.axaml，经 Theme 属性 Opt-in 套用 -->
+    <Design.DataContext>
+        <vm:LoginViewModel />
+    </Design.DataContext>
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- ═══ 顶部品牌区（品牌紫渐变，与 app-icon 同色系） ═══ -->
+        <Border Grid.Row="0" Height="148">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                    <GradientStop Offset="0" Color="#6C5CE7" />
+                    <GradientStop Offset="1" Color="#4B3BC3" />
+                </LinearGradientBrush>
+            </Border.Background>
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="5">
+                <TextBlock Text="CreatFlow"
+                           FontSize="34" FontWeight="Bold" Foreground="White"
+                           HorizontalAlignment="Center" />
+                <TextBlock Text="多平台短视频 · 一键批量发布"
+                           FontSize="13" Foreground="#E8E6FB"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <!-- ═══ 表单 / 自动验证 ═══ -->
+        <Grid Grid.Row="1">
+            <!-- 自动验证中 -->
+            <StackPanel Spacing="16" VerticalAlignment="Center" HorizontalAlignment="Center"
+                        IsVisible="{Binding IsAutoChecking}">
+                <ProgressBar IsIndeterminate="True" Width="220" Height="4" />
+                <TextBlock Text="正在验证登录状态…"
+                           FontSize="13" Foreground="#4E5969"
+                           HorizontalAlignment="Center" />
+            </StackPanel>
+
+            <!-- 登录表单 -->
+            <StackPanel Margin="40,32,40,0" Spacing="16"
+                        IsVisible="{Binding !IsAutoChecking}">
+
+                <TextBox Text="{Binding Username}"
+                         Theme="{StaticResource AppInputTheme}"
+                         Watermark="用户名"
+                         FontSize="15" Height="40" />
+
+                <!-- 密码框 + 眼睛（明文/密文切换） -->
+                <Grid>
+                    <TextBox x:Name="PasswordInput"
+                             Text="{Binding Password}"
+                             Theme="{StaticResource AppInputTheme}"
+                             PasswordChar="●"
+                             Watermark="密码"
+                             FontSize="15" Height="40"
+                             VerticalAlignment="Center"
+                             Padding="10,0,44,0" />
+                    <!-- 用 Border 而非 Button：Semi Button 模板自带内边距/最小尺寸，会把内容裁掉（历史踩坑） -->
+                    <Border x:Name="RevealButton"
+                            Background="Transparent"
+                            Width="40" Height="40"
+                            HorizontalAlignment="Right"
+                            VerticalAlignment="Center"
+                            Cursor="Hand"
+                            ToolTip.Tip="显示/隐藏密码"
+                            PointerPressed="RevealButton_PointerPressed">
+                        <StackPanel Orientation="Horizontal">
+                            <!-- 左侧细分隔线，让眼睛与输入文字区隔开 -->
+                            <Border Width="1" Height="18" Background="#E5E6EB"
+                                    Margin="0,0,8,0" VerticalAlignment="Center" />
+                            <!-- Viewbox 居中（Avalonia Path 在 Stretch 下左上对齐）；
+                                 x:Name/IsVisible 挂在 Viewbox 上：一次只占一个 19px 位，
+                                 代码后置切的是 Viewbox.IsVisible，行宽不变 -->
+                            <Viewbox x:Name="EyeIcon" Width="19" Height="19" Stretch="Uniform"
+                                     VerticalAlignment="Center">
+                                <Path Data="M12,4.5 C7,4.5 2.7,7.6 1,12 C2.7,16.4 7,19.5 12,19.5 C17,19.5 21.3,16.4 23,12 C21.3,7.6 17,4.5 12,4.5 Z M12,17 C9.2,17 7,14.8 7,12 C7,9.2 9.2,7 12,7 C14.8,7 17,9.2 17,12 C17,14.8 14.8,17 12,17 Z M12,9 C10.3,9 9,10.3 9,12 C9,13.7 10.3,15 12,15 C13.7,15 15,13.7 15,12 C15,10.3 13.7,9 12,9 Z"
+                                      Fill="#4E5969" Stretch="Uniform" />
+                            </Viewbox>
+                            <Viewbox x:Name="EyeOffIcon" Width="19" Height="19" Stretch="Uniform"
+                                     VerticalAlignment="Center"
+                                     IsVisible="False">
+                                <Path Data="M12,7 C14.8,7 17,9.2 17,12 C17,12.6 16.9,13.3 16.6,13.8 L19.5,16.7 C21,15.4 22.2,13.8 23,12 C21.3,7.6 17,4.5 12,4.5 C10.6,4.5 9.3,4.7 8,5.2 L10.2,7.4 C10.8,7.1 11.4,7 12,7 Z M2,4.3 L4.3,6.6 L4.8,7.1 C3.1,8.4 1.9,10.1 1,12 C2.7,16.4 7,19.5 12,19.5 C13.5,19.5 15,19.2 16.3,18.6 L16.7,19 L19.7,22 L21,20.7 L3.3,3 L2,4.3 Z M7.5,9.8 L9.1,11.4 C9,11.7 9,12 9,12 C9,13.7 10.3,15 12,15 C12.3,15 12.6,14.9 12.9,14.8 L14.5,16.4 C13.7,16.8 12.9,17 12,17 C9.2,17 7,14.8 7,12 C7,11.1 7.2,10.3 7.5,9.8 Z"
+                                      Fill="#4E5969" Stretch="Uniform" />
+                            </Viewbox>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+
+                <!-- 记住我 + 忘记密码（实色文字，不再低透明度发虚） -->
+                <Grid ColumnDefinitions="*,Auto">
+                    <CheckBox Content="记住我（下次自动登录）"
+                              IsChecked="{Binding RememberLogin}"
+                              FontSize="13" Foreground="#4E5969"
+                              VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1"
+                               Text="忘记密码？联系管理员"
+                               FontSize="12" Foreground="#86909C"
+                               VerticalAlignment="Center" />
+                </Grid>
+
+                <!-- 错误提示 -->
+                <TextBlock Text="{Binding Message}"
+                           IsVisible="{Binding IsError}"
+                           FontSize="13" Foreground="#C62828"
+                           TextWrapping="Wrap" />
+
+                <!-- 登录按钮：登录中显示「登录中…」+ 禁用 -->
+                <Button Theme="{StaticResource CtaButtonTheme}"
+                        Command="{Binding LoginCommand}"
+                        Margin="0,6,0,0"
+                        HorizontalAlignment="Stretch">
+                    <StackPanel Orientation="Horizontal" Spacing="8"
+                                HorizontalAlignment="Center">
+                        <TextBlock Text="登  录"
+                                   IsVisible="{Binding !IsLoggingIn}" />
+                        <TextBlock Text="登录中…"
+                                   IsVisible="{Binding IsLoggingIn}" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <!-- ═══ 底部联系方式（实色灰阶，提高可读性） ═══ -->
+        <StackPanel Grid.Row="2" Spacing="3" Margin="0,0,0,16">
+            <!-- 多个邮箱由 VM 按行拆开（每行一个），TextAlignment 才能让每行都居中 -->
+            <TextBlock Text="{Binding ContactEmail}"
+                       FontSize="13" Foreground="#4E5969"
+                       HorizontalAlignment="Center" TextAlignment="Center"
+                       TextWrapping="Wrap" />
+            <TextBlock Text="{Binding ContactWorkHours}"
+                       FontSize="13" Foreground="#86909C"
+                       HorizontalAlignment="Center" />
+        </StackPanel>
+    </Grid>
+</Window>

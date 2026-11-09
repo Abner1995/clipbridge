@@ -1,0 +1,150 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.DingTalkConfigView"
+             x:DataType="vm:DingTalkConfigViewModel">
+
+    <!-- 无 Design.DataContext：DI 注入 + INavigationAware 首进加载 -->
+
+    <ScrollViewer Background="White">
+        <!-- 立柱宽度要定死：Center 时列宽 = 内容自然宽（输入框一变整列就变宽）；
+             Stretch + MaxWidth 由布局钳成 min(920, 可视宽-80) 并在 MaxWidth 处居中（2026-10-10 修） -->
+        <StackPanel Margin="40,32,40,40" MaxWidth="920"
+                    HorizontalAlignment="Stretch" Spacing="18">
+
+            <!-- ═══ 页头 ═══ -->
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
+                <Border Width="42" Height="42" CornerRadius="21"
+                        Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                    <!-- Viewbox 才能把墨迹居中（Avalonia Path 在 Stretch 下是左上对齐，见 App.axaml ⚠️）；
+                         图标框 20 而非 21：42-20 为偶数，四边整数留白 -->
+                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                             HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                              Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                    </Viewbox>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Text="钉钉通知" FontSize="20" FontWeight="Bold" />
+                    <TextBlock Text="上传/发布结果实时推送到钉钉群，配置一次全设备生效（服务端）"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- 加载中 -->
+            <ProgressBar IsIndeterminate="True" Height="4"
+                         IsVisible="{Binding IsLoading}" />
+
+            <!-- ═══ 机器人配置卡 ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20">
+                <StackPanel Spacing="16">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="群机器人配置" FontSize="15" FontWeight="Bold" />
+                        <Border Background="{StaticResource BrandSoft}" CornerRadius="6"
+                                Padding="7,2" VerticalAlignment="Center"
+                                IsVisible="{Binding IsConfigured}">
+                            <TextBlock Text="已配置" FontSize="10" FontWeight="Bold"
+                                       Foreground="{StaticResource BrandActive}" />
+                        </Border>
+                        <Border Background="#F2F3F5" CornerRadius="6" Padding="7,2"
+                                VerticalAlignment="Center" IsVisible="{Binding !IsConfigured}">
+                            <TextBlock Text="未配置" FontSize="10" FontWeight="Bold"
+                                       Foreground="{StaticResource TextMuted}" />
+                        </Border>
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="Webhook Key（钉钉群机器人 access_token）"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}" />
+                        <TextBox Text="{Binding WebhookKey}"
+                                 Theme="{StaticResource AppInputTheme}"
+                                 Watermark="复制钉钉机器人 Webhook 中的 access_token"
+                                 FontSize="14" Height="38" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="签名 Secret（加签模式 · 只写不回显）"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}" />
+                        <TextBox Text="{Binding Secret}"
+                                 Theme="{StaticResource AppInputTheme}"
+                                 PasswordChar="●"
+                                 FontSize="14" Height="38" />
+                        <TextBlock FontSize="11"
+                                   Foreground="{StaticResource TextPlaceholder}"
+                                   IsVisible="{Binding HasSecretMask}"
+                                   TextWrapping="Wrap"
+                                   Text="已隐藏原 Secret（显示为掩码）。需要更新时才在此粘贴完整新 Secret 再保存；未配置时直接粘贴即可。" />
+                    </StackPanel>
+
+                    <!-- 状态（有文案才显示；错误红底 / 成功绿底） -->
+                    <Grid IsVisible="{Binding HasStatus}">
+                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding IsStatusError}">
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                        </Border>
+                        <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding !IsStatusError}">
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorSuccess}" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+
+                    <!-- 操作行（三键等高 32 + CTA 内边距 24 → 左右留白均匀） -->
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Theme="{StaticResource CtaButtonTheme}"
+                                Content="保存配置"
+                                Height="32" FontSize="13"
+                                Command="{Binding SaveConfigCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                Content="测试发送"
+                                Height="32" FontSize="13"
+                                Command="{Binding TestSendCommand}" />
+                        <Button Theme="{StaticResource DangerButtonTheme}"
+                                Content="删除配置"
+                                Height="32" FontSize="13"
+                                Command="{Binding DeleteConfigCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 接入指南 ═══ -->
+            <Border Background="{StaticResource BgSubtle}" CornerRadius="14"
+                    Padding="24,20">
+                <StackPanel Spacing="14">
+                    <TextBlock Text="{Binding GuideTitle}" FontSize="15" FontWeight="Bold" />
+                    <ItemsControl ItemsSource="{Binding GuideCards}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:GuideStepCard">
+                                <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12"
+                                      Margin="0,0,0,10">
+                                    <Border Width="24" Height="24" CornerRadius="12"
+                                            Background="{StaticResource BrandSoft}"
+                                            VerticalAlignment="Top">
+                                        <TextBlock Text="{Binding No}" FontSize="11"
+                                                   FontWeight="Bold"
+                                                   Foreground="{StaticResource BrandActive}"
+                                                   HorizontalAlignment="Center"
+                                                   VerticalAlignment="Center" />
+                                    </Border>
+                                    <StackPanel Grid.Column="1" Spacing="2">
+                                        <TextBlock Text="{Binding Title}" FontSize="13"
+                                                   FontWeight="SemiBold" />
+                                        <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

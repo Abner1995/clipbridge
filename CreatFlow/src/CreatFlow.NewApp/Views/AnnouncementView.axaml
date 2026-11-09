@@ -1,0 +1,128 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="700"
+             x:Class="CreatFlow.NewApp.Views.AnnouncementView"
+             x:DataType="vm:AnnouncementViewModel">
+
+    <!-- 无 Design.DataContext：DI 注入 + INavigationAware 进入刷新 -->
+
+    <UserControl.Styles>
+        <!-- 公告卡片悬浮（DataTemplate 内取不到页面资源，故用类选择器样式） -->
+        <Style Selector="Border.announce-card">
+            <Setter Property="Transitions">
+                <Transitions>
+                    <BrushTransition Property="Background" Duration="0:0:0.12" />
+                </Transitions>
+            </Setter>
+        </Style>
+        <Style Selector="Border.announce-card:pointerover">
+            <Setter Property="Background" Value="#F2F3F5" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer Background="White">
+        <StackPanel Margin="40,32,40,40" Spacing="18">
+
+            <!-- ═══ 页头：图标 + 标题 + 状态/刷新 ═══ -->
+            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14">
+                <Border Width="42" Height="42" CornerRadius="21"
+                        Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                    <!-- Viewbox 才能把墨迹居中（Avalonia Path 在 Stretch 下是左上对齐，见 App.axaml ⚠️）；
+                         图标框 20 而非 21：42-20 为偶数，四边整数留白 -->
+                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                             HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                              Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                    </Viewbox>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Text="公告" FontSize="20" FontWeight="Bold" />
+                    <TextBlock Text="产品更新、维护通知与运营动态，点击查看详情"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                            VerticalAlignment="Center">
+                    <TextBlock Text="{Binding StatusMessage}"
+                               FontSize="11" Foreground="{StaticResource TextMuted}"
+                               VerticalAlignment="Center" />
+                    <Button Classes="flat-icon" Cursor="Hand"
+                            Command="{Binding LoadCommand}" ToolTip.Tip="刷新公告">
+                        <Viewbox Width="19" Height="19" Stretch="Uniform">
+                            <Path Data="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"
+                                  Stretch="Uniform" />
+                        </Viewbox>
+                    </Button>
+                </StackPanel>
+            </Grid>
+
+            <!-- 加载中 / 错误 -->
+            <ProgressBar IsIndeterminate="True" Height="4"
+                         IsVisible="{Binding IsLoading}" />
+            <Border Background="{StaticResource BgError}" CornerRadius="10"
+                    Padding="14,10" IsVisible="{Binding HasError}">
+                <TextBlock Text="{Binding Error}" FontSize="13"
+                           Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+            </Border>
+
+            <!-- ═══ 公告列表 ═══ -->
+            <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:AnnouncementRow">
+                        <!-- 行内不取 StaticResource（DataTemplate 实例化取不到页面资源）：色值已由 VM 算好 -->
+                        <Border Classes="announce-card"
+                                Background="#FAFBFC"
+                                BorderBrush="#E4E6E8" BorderThickness="1"
+                                CornerRadius="12" Padding="0"
+                                Margin="0,0,0,10" Cursor="Hand"
+                                Tapped="AnnouncementCard_Tapped">
+                            <Grid ColumnDefinitions="3,Auto,*,Auto" ColumnSpacing="12">
+                                <!-- 左侧类型色条 -->
+                                <Border Width="3" CornerRadius="1.5,0,0,1.5"
+                                        Background="{Binding BarColor}" />
+                                <!-- 类型徽章 -->
+                                <Border Grid.Column="1" CornerRadius="6" Padding="8,3"
+                                        Background="{Binding BadgeBg}"
+                                        VerticalAlignment="Center" Margin="4,0,0,0">
+                                    <TextBlock Text="{Binding TypeText}" FontSize="10"
+                                               FontWeight="Bold"
+                                               Foreground="{Binding BadgeFg}" />
+                                </Border>
+                                <!-- 标题 + 时间 -->
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center"
+                                            Spacing="3" Margin="0,10">
+                                    <TextBlock Text="{Binding Title}" FontSize="14"
+                                               FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding TimeText}" FontSize="11"
+                                               Foreground="{StaticResource TextPlaceholder}" />
+                                </StackPanel>
+                                <!-- 右箭头（Viewbox 居中，Grid/外距留在 Viewbox 上） -->
+                                <Viewbox Grid.Column="3" Width="16" Height="16" Stretch="Uniform"
+                                         VerticalAlignment="Center" Margin="0,0,14,0">
+                                    <Path Data="M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z"
+                                          Fill="#A9AEB8" Stretch="Uniform" />
+                                </Viewbox>
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+
+            <!-- ═══ 空态 ═══ -->
+            <Border Background="{StaticResource BgSubtle}" CornerRadius="12"
+                    Padding="40,34" IsVisible="{Binding IsEmpty}">
+                <StackPanel Spacing="6" HorizontalAlignment="Center">
+                    <TextBlock Text="暂无公告" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextSecondary}"
+                               HorizontalAlignment="Center" />
+                    <TextBlock Text="点击右上角刷新同步最新内容"
+                               FontSize="12" Foreground="{StaticResource TextMuted}"
+                               HorizontalAlignment="Center" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

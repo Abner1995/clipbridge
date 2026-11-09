@@ -1,0 +1,485 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             xmlns:media="using:CreatFlow.Media.Llm"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.AiSettingsView"
+             x:DataType="vm:AiSettingsViewModel">
+
+    <!-- AI 设置页：引擎选择（本地内置【默认、零 key】/ DeepSeek / Qwen）
+         + 本地模型档位管理（4B 随包、8B 应用内下载）+ Kokoro 本地配音模型。
+         配置本机 llm.json（LlmConfigStore），不上传服务器。 -->
+
+    <UserControl.Resources>
+        <!-- 自绘单选行外壳（发布页同款；不套模板 Semi 的 :checked 会画蓝色勾选框） -->
+        <ControlTemplate x:Key="RowTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="8">
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="#FAFBFC" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="24,20" />
+        </Style>
+        <Style Selector="TextBlock.sec">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="TextBlock.lbl">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- 角色库行卡（内层白卡；页面卡是浅灰底，TtsView 同款） -->
+        <Style Selector="Border.row">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="12,10" />
+        </Style>
+
+        <!-- 自绘单选圈（发布页同款） -->
+        <Style Selector="ToggleButton.radio-row">
+            <Setter Property="Template" Value="{StaticResource RowTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <!-- 不钉住 Foreground，选中项文字会被 Semi 刷成白色而看不见 -->
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.radio-row:checked">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.radio-row:pointerover">
+            <Setter Property="Background" Value="#F7F8FA" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="Border.radio">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="ToggleButton.radio-row:not(:checked) Border.radio">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#C9CDD4" />
+        </Style>
+        <Style Selector="ToggleButton.radio-row:checked Border.radio">
+            <Setter Property="Background" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.radio-row:not(:checked) Border.radio-core">
+            <Setter Property="IsVisible" Value="False" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer Background="White">
+        <!-- 立柱宽度要定死：Center 时列宽 = 内容自然宽（输入框/文案一变整列就变宽）；
+             Stretch + MaxWidth 由布局钳成 min(920, 可视宽-80) 并在 MaxWidth 处居中（2026-10-10 修） -->
+        <StackPanel Margin="40,32,40,40" MaxWidth="920"
+                    HorizontalAlignment="Stretch" Spacing="18">
+
+            <!-- ═══ 页头 ═══ -->
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
+                <Border Width="42" Height="42" CornerRadius="21"
+                        Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                             HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                              Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                    </Viewbox>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Text="AI 设置" FontSize="20" FontWeight="Bold" />
+                    <TextBlock Text="本地引擎随包内置、零配置开箱；云端 Key 为进阶选项。配置只存本机，不上传服务器"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+                </StackPanel>
+            </Grid>
+
+            <ProgressBar IsIndeterminate="True" Height="4" IsVisible="{Binding IsLoading}" />
+
+            <!-- ═══ 生效与保存 ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="当前生效" />
+                        <TextBlock Text="{Binding EffectiveSummary}" FontSize="13"
+                                   Foreground="{StaticResource TextSecondary}" />
+                    </StackPanel>
+
+                    <Grid IsVisible="{Binding HasStatus}">
+                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding IsStatusError}">
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                        </Border>
+                        <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding !IsStatusError}">
+                            <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorSuccess}" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Theme="{StaticResource CtaButtonTheme}"
+                                Content="保存配置" Height="32" FontSize="13"
+                                Command="{Binding SaveConfigCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                Content="测试生成" Height="32" FontSize="13"
+                                Command="{Binding TestGenerateCommand}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 引擎选择 ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="sec" Text="AI 引擎" />
+                    <ItemsControl ItemsSource="{Binding Engines}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:EngineOption">
+                                <ToggleButton Classes="radio-row" Padding="6,4"
+                                              Margin="0,0,18,6"
+                                              IsChecked="{Binding IsSelected}"
+                                              Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).SelectEngineCommand}"
+                                              CommandParameter="{Binding}">
+                                    <StackPanel Orientation="Horizontal" Spacing="6">
+                                        <Border Classes="radio">
+                                            <Border Classes="radio-core" Width="8" Height="8"
+                                                    CornerRadius="4" Background="White"
+                                                    HorizontalAlignment="Center"
+                                                    VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Spacing="1">
+                                            <TextBlock Text="{Binding Title}" FontSize="12.5" />
+                                            <TextBlock Classes="hint" Text="{Binding Note}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </ToggleButton>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 本地引擎 ═══ -->
+            <Border Classes="card" IsVisible="{Binding IsLocal}">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="本地引擎（内置 llama-server）" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap"
+                                   Text="无需安装任何软件、无需 API Key、离线可用。首次使用时自动加载模型（数秒~十几秒），空闲约 10 分钟后自动卸载释放内存。" />
+                    </StackPanel>
+
+                    <!-- 引擎文件缺失（开发期没跑下载脚本 / 打包漏带） -->
+                    <Border Background="{StaticResource BgError}" CornerRadius="10" Padding="12,9"
+                            IsVisible="{Binding IsEngineMissing}">
+                        <TextBlock FontSize="12" Foreground="{StaticResource ColorError}" TextWrapping="Wrap"
+                                   Text="推理引擎文件缺失（runtime/llm/llama-server.exe）：开发期请运行 scripts/download_llama.ps1；打包版应随包附带。" />
+                    </Border>
+
+                    <!-- 档位选择 -->
+                    <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
+                        <TextBlock Classes="lbl" Text="模型档位" />
+                        <ComboBox Grid.Column="1" HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding LocalTiers}"
+                                  SelectedItem="{Binding SelectedTier}">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="media:LlmModelTier">
+                                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                        <TextBlock Text="{Binding DisplayName}" FontSize="12.5"
+                                                   VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1" Classes="hint"
+                                                   VerticalAlignment="Center"
+                                                   Text="{Binding SizeGb, StringFormat='{}{0} GB'}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <TextBlock Grid.Column="2" Classes="lbl" Text="{Binding TierStatusText}" />
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
+                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="下载" Height="30" FontSize="12"
+                                    IsEnabled="{Binding CanDownload}"
+                                    IsVisible="{Binding !IsDownloading}"
+                                    Command="{Binding DownloadTierCommand}" />
+                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="取消" Height="30" FontSize="12"
+                                    IsVisible="{Binding IsDownloading}"
+                                    Command="{Binding CancelDownloadTierCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <StackPanel Spacing="6" IsVisible="{Binding IsDownloading}">
+                        <ProgressBar Minimum="0" Maximum="100" Height="6"
+                                     Value="{Binding DownloadProgress}"
+                                     Theme="{StaticResource ThinProgressTheme}" />
+                        <TextBlock Classes="hint" Text="{Binding DownloadMessage}" />
+                    </StackPanel>
+
+                    <!-- 服务状态 -->
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                        <TextBlock Classes="lbl" Text="服务状态" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                            <TextBlock Text="{Binding LocalServerStatus}" FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}" />
+                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="立即加载" Height="30" FontSize="12"
+                                    IsEnabled="{Binding IsTierReady}"
+                                    Command="{Binding StartLocalCommand}" />
+                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="卸载" Height="30" FontSize="12"
+                                    IsVisible="{Binding IsLocalServerRunning}"
+                                    Command="{Binding StopLocalCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="提示：4B 档生成快、通用文案够用；资料里含证件号/地址/电话等必须原样念出的硬信息（房产合规类）时，建议改用 8B 档或云端引擎。" />
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 云端（DeepSeek / Qwen） ═══ -->
+            <Border Classes="card" IsVisible="{Binding IsCloud}">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="{Binding SelectedEngine.Title}" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap"
+                                   Text="云端引擎质量最好（含硬信息保全更稳），需要自备 API Key；Key 只存本机。" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Classes="lbl" Text="API Key" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                            <TextBox Text="{Binding ApiKey}"
+                                     Theme="{StaticResource AppInputTheme}"
+                                     PasswordChar="●"
+                                     Watermark="粘贴 API Key"
+                                     FontSize="14" Height="38" />
+                            <Button Grid.Column="1" Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="获取 API Key"
+                                    Height="38" FontSize="13"
+                                    IsVisible="{Binding HasApiKeyUrl}"
+                                    Command="{Binding OpenApiKeyPageCommand}" />
+                        </Grid>
+                    </StackPanel>
+
+                    <StackPanel Spacing="6">
+                        <TextBlock Classes="lbl" Text="模型" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                            <TextBox Text="{Binding Model}"
+                                     Theme="{StaticResource AppInputTheme}"
+                                     Watermark="模型名（可手输，或从官方列表选择）"
+                                     FontSize="14" Height="38" />
+                            <Button Grid.Column="1" Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="刷新官方列表"
+                                    Height="38" FontSize="13"
+                                    Command="{Binding RefreshModelsCommand}" />
+                        </Grid>
+                        <ComboBox HorizontalAlignment="Stretch"
+                                  ItemsSource="{Binding ModelOptions}"
+                                  SelectedItem="{Binding Model}"
+                                  IsVisible="{Binding HasModelOptions}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ Kokoro 本地配音模型（TTS） ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="本地配音模型（Kokoro TTS）" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap"
+                                   Text="配音页 /「合成视频」页都用它：免费离线、不依赖微软接口。未下载时无法生成配音 —— 请先在这里下载模型。" />
+                    </StackPanel>
+
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="12">
+                        <TextBlock Classes="lbl" Text="状态" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+                            <TextBlock Text="{Binding KokoroStatusText}" FontSize="12"
+                                       VerticalAlignment="Center"
+                                       Foreground="{StaticResource TextSecondary}" />
+                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="下载模型"
+                                    Height="30" FontSize="12"
+                                    IsEnabled="{Binding !IsKokoroDownloading}"
+                                    IsVisible="{Binding !KokoroReady}"
+                                    Command="{Binding DownloadKokoroCommand}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <StackPanel Spacing="6" IsVisible="{Binding IsKokoroDownloading}">
+                        <ProgressBar Minimum="0" Maximum="100" Height="6"
+                                     Value="{Binding KokoroDownloadProgress}"
+                                     Theme="{StaticResource ThinProgressTheme}" />
+                        <TextBlock Classes="hint" Text="{Binding KokoroMessage}" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 角色库（2026-10-11 批次 4：合成页套模板 / AI 优化的人设来源） ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="角色库" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap"
+                                   Text="角色 = 名称 + 台词模板 + 人设提示词 + 知识库。合成页/文件夹批量选角色后：台词模板套在你的文案上（{内容} 处替换；提交的配音与字幕就是套好的整句），点「AI 优化」时按人设提示词改写文案；人设为空则不能 AI 优化。模板建议一行写完（分镜模式下换行 = 新的一句），且只用中文标点（拉丁字母/表情会被配音丢掉）。" />
+                    </StackPanel>
+
+                    <Grid IsVisible="{Binding HasRoleStatus}">
+                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding IsRoleStatusError}">
+                            <TextBlock Text="{Binding RoleStatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                        </Border>
+                        <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding !IsRoleStatusError}">
+                            <TextBlock Text="{Binding RoleStatusMessage}" FontSize="12"
+                                       Foreground="{StaticResource ColorSuccess}" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="还没有角色 —— 点下面「新建角色」；内置示例角色已随包带（首次打开就看到「房淘惠」「毛豆妈妈」两条）。"
+                               IsVisible="{Binding !HasRoleRows}" />
+
+                    <ItemsControl ItemsSource="{Binding RoleRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ComposeRoleRow">
+                                <Border Classes="row" Margin="0,0,0,8">
+                                    <StackPanel>
+                                        <!-- 折叠态：名称 + 摘要 + [编辑][删除] -->
+                                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12"
+                                              IsVisible="{Binding !IsEditing}">
+                                            <StackPanel Spacing="3" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Name}" FontSize="14"
+                                                           FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Classes="hint" Text="{Binding SummaryText}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"
+                                                        VerticalAlignment="Center">
+                                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="编辑"
+                                                        Height="28" FontSize="12"
+                                                        Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).BeginEditRoleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="删除"
+                                                        Height="28" FontSize="12"
+                                                        Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).BeginDeleteRoleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- 展开态：四字段编辑 + [保存][取消] -->
+                                        <StackPanel Spacing="10" IsVisible="{Binding IsEditing}">
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Classes="lbl" Text="角色名称（必填）" />
+                                                <TextBox Text="{Binding Name}" Theme="{StaticResource AppInputTheme}"
+                                                         Height="34" FontSize="13"
+                                                         Watermark="如：房淘惠 / 毛豆妈妈" />
+                                            </StackPanel>
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Classes="lbl" Text="台词模板（{内容} = 你的文案；套用后作为配音与字幕）" />
+                                                <TextBox Text="{Binding Template}" Theme="{StaticResource AppInputTheme}"
+                                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                                         MinHeight="60" MaxHeight="140" Padding="10,6"
+                                                         VerticalContentAlignment="Top" FontSize="13"
+                                                         Watermark="如：您好，我是房淘惠。{内容}。欢迎大家私信获取详细信息。" />
+                                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                                           Text="含 {内容} = 替换成你的文案；不含 = 文案接在模板后面；建议一行写完。" />
+                                            </StackPanel>
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Classes="lbl" Text="人设提示词（AI 优化按它改写口吻；不填则不能 AI 优化）" />
+                                                <TextBox Text="{Binding Persona}" Theme="{StaticResource AppInputTheme}"
+                                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                                         MinHeight="60" MaxHeight="140" Padding="10,6"
+                                                         VerticalContentAlignment="Top" FontSize="13"
+                                                         Watermark="如：你是房产置业顾问「房淘惠」，热情、专业、接地气……" />
+                                            </StackPanel>
+                                            <StackPanel Spacing="4">
+                                                <TextBlock Classes="lbl" Text="知识库 / 常用资料（可选；AI 优化时的真实资料，别写太长）" />
+                                                <TextBox Text="{Binding Knowledge}" Theme="{StaticResource AppInputTheme}"
+                                                         AcceptsReturn="True" TextWrapping="Wrap"
+                                                         MinHeight="60" MaxHeight="140" Padding="10,6"
+                                                         VerticalContentAlignment="Top" FontSize="13"
+                                                         Watermark="如：楼盘名、地址、面积、价格、电话、预售证号……" />
+                                            </StackPanel>
+                                            <TextBlock Classes="hint" Foreground="{StaticResource ColorError}"
+                                                       Text="{Binding Error}" IsVisible="{Binding HasError}" />
+                                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                                <Button Theme="{StaticResource CtaButtonTheme}" Content="保存"
+                                                        Height="30" FontSize="12.5"
+                                                        Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).SaveRoleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                                        Height="30" FontSize="12.5"
+                                                        Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).CancelEditRoleCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+
+                                        <!-- 两段式删除确认条（原地确认，不弹窗） -->
+                                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                                Padding="12,9" Margin="0,10,0,0"
+                                                IsVisible="{Binding IsConfirmingDelete}">
+                                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                                <TextBlock FontSize="11.5" Foreground="{StaticResource ColorError}"
+                                                           TextWrapping="Wrap" VerticalAlignment="Center"
+                                                           Text="删除后合成页 / 批量页将不再能选它（已入队的任务不受影响）。" />
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                                                    <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                                            Height="26" FontSize="12"
+                                                            Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).CancelDeleteRoleCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                    <Button Theme="{StaticResource DangerButtonTheme}" Content="确认删除"
+                                                            Height="26" FontSize="12"
+                                                            Command="{Binding $parent[ItemsControl].((vm:AiSettingsViewModel)DataContext).ConfirmDeleteRoleCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="新建角色"
+                                Height="30" FontSize="12.5"
+                                Command="{Binding AddRoleCommand}" />
+                    </StackPanel>
+
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="{Binding RoleStorePath, StringFormat='角色存档：{0}（明文存本机、跟随账号；改动自动同步到云端，换机/重装自动带回；合成页与文件夹批量都能选）'}" />
+                </StackPanel>
+            </Border>
+
+            <TextBlock Classes="hint" TextWrapping="Wrap"
+                       Text="配置文件：%LocalAppData%\CreatFlow\llm.json（明文、仅本机；云端 Key 与引擎选择都在这份文件里）" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

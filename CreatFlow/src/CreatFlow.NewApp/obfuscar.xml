@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Obfuscator>
+  <!--
+    CreatFlow.NewApp configuration for Obfuscar（新版桌面端，脚本 scripts/build-newapp.ps1 使用）
+    Install: dotnet tool install -g Obfuscar.GlobalTool
+    Run:     在 publish 目录里执行 obfuscar.console <本文件路径> —— InPath/OutPath 相对【进程 CWD】
+             解析，不是相对本文件；所以脚本必须 Push-Location 到 publish 目录再跑。
+             ⚠️ 本文件绝不要拷进 publish 目录（会进分发包）——老脚本靠步骤顺序侥幸没混进，新脚本不走那条路。
+
+    ⚠️ Obfuscar 2.2.x 只认 <Module> 内部的 SkipType（文档级的会被静默忽略）。
+    ⚠️ 真实失败模式（2026-10-14 实测核对，勿沿用老注释里的错误说法）：Obfuscar 2.2.50 **保留**构造函数
+       参数名（实测 2315 行仅 13 个空名且全是 Out 参数），出问题的是**属性/成员改名**——
+       本仓库 JSON 全靠 CLR 名绑定（camelCase + 大小写不敏感，全仓零 [JsonPropertyName]），
+       属性名被改成乱码后：反序列化绑不上（字段全默认值）、序列化改字段名（服务端拒收）、
+       LocalJsonFile 读坏**静默返回 null**（= 用户存档无声丢弃）。凡过 JSON 的类型一律 SkipType。
+
+    模块清单 = publish 输出里要混淆的自研程序集（NewApp 引用 Shared/Platforms/Media，Platforms 再带 Domain），
+    以及单机版（edition/standalone）新增的 Application / LocalStore / DingTalk。
+
+    ⚠️ 单机版怎么处理这三块：**刻意不列进 <Module>（doc 14.2.1 方案 A）**。
+        · Application / LocalStore 是本地路由的 JSON 契约边界（DTO 属性名就是线上协议），
+          混淆收益低、翻车代价高（LocalHandler 反序列化静默丢字段）；
+        · 本项目源码公开，混淆不是防线；要护的逆向资产仍在 Platforms/Media。
+        · 实测（2026-10-28）：Domain 等模块混淆后，LocalStore/Application 对它们的引用不受影响
+          （Obfuscar 默认保留跨程序集可见的公共 API），混淆版 selftest / smoke 门禁均通过。
+        · 若将来要把它们加进来，必须给 Application.Dtos.* / LocalStore 的持久化类型
+          逐个 SkipType，并重跑混淆后 selftest 门禁。
+  -->
+  <Var name="InPath" value="." />
+  <Var name="OutPath" value="../NewAppPublishObfuscated" />
+
+  <Module file="$(InPath)/CreatFlow.NewApp.dll">
+    <!-- 匿名类型：PostAsync 请求体（new { ... }），STJ 序列化边界（改字段名=服务端绑定失败） -->
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- 服务端 API DTO（records，Models 命名空间整体）—— 反序列化边界；
+         其中 PublishPayloads.* 还会随 ExtraDataJson 持久化进服务端库（跨版本），字段名必须稳定 -->
+    <SkipType name="CreatFlow.NewApp.Models.*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- Avalonia 反射入口：App.axaml 注册全局 ViewLocator，ViewLocator.cs 按字符串
+         FullName.Replace("ViewModel","View") + Type.GetType 反射解析页面 —— 任一 View/ViewModel
+         改名都会让页面渲染成 "Not Found: …"。XAML 编译绑定同样依赖类型/属性名。 -->
+    <SkipType name="CreatFlow.NewApp.App" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <SkipType name="CreatFlow.NewApp.Views.*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <SkipType name="CreatFlow.NewApp.ViewModels.*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- Services 整命名空间跳过（不是偷懒，是 JSON 边界太密）：
+         13 个 LocalJsonFile store（account-groups / compose_queue / tts_queue / publish-drafts /
+         token.dat / accounts\*.json / video-meta-cache / llm.json …）+ 33 个 record（含私有嵌套：
+         LlmConfigFile、DraftSnapshot、TargetSnapshot、CachedMeta…）。逐个列举将来必漏（每加一个
+         store 就多一个边界，漏了不报错、直接静默丢存档），整跳一劳永逸。
+         收益边界（如实记录）：NewApp.dll 此后只剩字符串加密/控制流混淆，名字保护主要落在
+         Platforms（逆向协议）与 Media（合成/TTS 管线）——那才是真正要护的资产。 -->
+    <SkipType name="CreatFlow.NewApp.Services.*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+  </Module>
+
+  <Module file="$(InPath)/CreatFlow.Media.dll">
+    <!-- LLM 请求体 new { }（OpenAiCompatibleLlmClient 的 chat.completions body） -->
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- LLM 配置 record：经 NewApp 的 llm.json 落盘（与老版共享同一份文件，跨版本读写） -->
+    <SkipType name="CreatFlow.Media.Llm.LlmConfig" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- 字幕行 record：TtsCache 的 meta 里按 CLR 名持久化（Text/StartMs/EndMs） -->
+    <SkipType name="CreatFlow.Media.SubtitleItem" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- TTS 缓存落盘（%LocalAppData% 下的 meta json）；嵌套 Meta 只读 [JsonPropertyName("subtitles")]，
+         但外层类整跳更稳（缓存目录类无混淆价值） -->
+    <SkipType name="CreatFlow.Media.Tts.TtsCache" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+  </Module>
+
+  <Module file="$(InPath)/CreatFlow.Platforms.dll">
+    <!-- 快手/抖音 SDK 请求体大量使用 new { SessionKey = ... } -->
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- 微信视频号响应 DTO：STJ 按属性名绑定 JSON（PropertyNameCaseInsensitive），
+         属性名被 RenameProperties 改成乱码后绑定全失效 → JsonElement.GetRawText()
+         抛 "Operation is not valid due to the current state of the object"。
+         兜底整体跳过；代码层已同时加 [JsonPropertyName] 双保险 -->
+    <SkipType name="CreatFlow.Platforms.WechatVideo.Requests.*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- 环境快照：序列化进 extraDataJson 落库（跨版本持久化），属性名必须稳定。
+         代码层已加 [JsonPropertyName]，此处 SkipType 兜底 -->
+    <SkipType name="CreatFlow.Platforms.Core.PlatformEnvironmentSnapshot" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+    <!-- 抖音 STS 凭证 positions record：无 [JsonPropertyName]，靠 PropertyNameCaseInsensitive
+         按 CLR 名绑定（AccessKeyID 等）——改名即 STS 刷新失败 → 抖音上传全挂。
+         （2026-10-14 盘点时发现的缺口；其余 Deserialize 目标都是带属性的类或手工构造） -->
+    <SkipType name="CreatFlow.Platforms.Douyin.Requests.DouyinStsToken" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+  </Module>
+
+  <Module file="$(InPath)/CreatFlow.Shared.dll">
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+  </Module>
+
+  <Module file="$(InPath)/CreatFlow.Domain.dll">
+    <SkipType name="*AnonymousType*" skipFields="true" skipMethods="true" skipProperties="true" skipEvents="true" skipStringHiding="true" />
+  </Module>
+
+  <!-- 保留公开 API（Avalonia 需要反射绑定） -->
+  <AssemblySearchPath path="$(InPath)" />
+
+  <!-- 不混淆的内容 -->
+  <Settings>
+    <!-- 保留命名空间结构 -->
+    <Setting name="KeepNamespaces" value="false" />
+    <!-- 字符串加密 -->
+    <Setting name="HideStrings" value="true" />
+    <!-- 控制流混淆 -->
+    <Setting name="OptimizeMethods" value="true" />
+    <!-- 禁用不必要的资源加密 -->
+    <Setting name="HidePrivateApi" value="true" />
+    <Setting name="RenameFields" value="true" />
+    <Setting name="UseUnicodeNames" value="true" />
+    <Setting name="HideCallInfo" value="true" />
+    <Setting name="RenameProperties" value="true" />
+    <Setting name="RenameEvents" value="true" />
+  </Settings>
+</Obfuscator>

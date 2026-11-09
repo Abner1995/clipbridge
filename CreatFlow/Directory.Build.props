@@ -1,0 +1,17 @@
+<Project>
+  <!--
+    版本号唯一来源（2026-10-21）。
+
+    · dotnet build / dotnet publish 不传 -p:Version 时用这里的值；
+    · scripts/build-newapp.ps1 不传 -Version 时也读这里；
+    · 传参时以参数为准（打包脚本会把同一个值同时给 MSBuild 和 Inno Setup）。
+
+    ⚠️ 改版本只改这一处（或打包时显式传 -Version），不要在各 csproj 里再写 <Version>。
+    ⚠️ IncludeSourceRevisionInInformationalVersion=false：否则 SDK 会自动把 git 短哈希
+       拼进 AssemblyInformationalVersion（1.0.0+abc1234），UI 显示会与安装包名对不上。
+  -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>

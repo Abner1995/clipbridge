@@ -1,0 +1,204 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             xmlns:services="using:CreatFlow.NewApp.Services"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.TtsView"
+             x:DataType="vm:TtsViewModel">
+
+    <!-- 配音页（2026-10-10 按用户反馈重做为「列表式批量配音」）：一条 = 文案 + 独立音色 + 独立语速，
+         可单条试听；「开始批量合成」把每条按各自参数提交进「配音队列」并行生成 mp3（并行数按本机核数自动定）。
+         滑块用 App 级 AppSliderTheme（App.axaml）。 -->
+
+    <UserControl.Styles>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="#FAFBFC" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="24,20" />
+        </Style>
+        <Style Selector="TextBlock.sec">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="TextBlock.lbl">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- 一条配音的内层白卡（页面卡是浅灰底，条目用白底压一层） -->
+        <Style Selector="Border.row">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="10" />
+            <Setter Property="Padding" Value="12,10" />
+        </Style>
+
+        <!-- 行内状态小字（试听进度 / 失败原因） -->
+        <Style Selector="TextBlock.row-status">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="TextBlock.row-status.err">
+            <Setter Property="Foreground" Value="{StaticResource ColorError}" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer Background="White">
+        <!-- 立柱宽度要定死：Center 时列宽 = 内容自然宽（文案框里打了长句整列就变宽 —— 实测「宽度会变」）；
+             Stretch + MaxWidth 由布局钳成 min(920, 可视宽-80) 并在 MaxWidth 处居中 -->
+        <StackPanel Margin="40,32,40,40" MaxWidth="920"
+                    HorizontalAlignment="Stretch" Spacing="18">
+
+            <!-- ═══ 页头 ═══ -->
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
+                <Border Width="42" Height="42" CornerRadius="21"
+                        Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                             HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                              Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                    </Viewbox>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Text="配音" FontSize="20" FontWeight="Bold" />
+                    <TextBlock Text="一条配音 = 一个文案 + 独立音色 / 语速（Kokoro 本地离线）；批量生成 mp3，可当合成页的「本地音频」用，也可以拿去别的软件"
+                               FontSize="12" Foreground="{StaticResource TextMuted}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ═══ 配音列表 ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="4">
+                        <TextBlock Classes="sec" Text="配音列表" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap"
+                                   Text="每条独立设置文案 / 音色 / 语速（点「添加配音」继续加）；可单条试听，点「开始批量合成」后按条快照进「配音队列」并行合成 mp3。" />
+                    </StackPanel>
+
+                    <ItemsControl ItemsSource="{Binding BatchRows}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:TtsBatchRow">
+                                <Border Classes="row" Margin="0,0,0,10">
+                                    <StackPanel Spacing="8">
+                                        <!-- 序号 + 行操作 -->
+                                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                                            <TextBlock Text="{Binding NumberLabel}" FontSize="12"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       VerticalAlignment="Center" />
+                                            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+                                                <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                        Content="{Binding PreviewButtonText}" Height="28" FontSize="12"
+                                                        ToolTip.Tip="试听这一条（用本条的文案 / 音色 / 语速合成后播放，不落盘；再点一次停止）"
+                                                        Command="{Binding $parent[ItemsControl].((vm:TtsViewModel)DataContext).PreviewRowCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                        Content="删除" Height="28" FontSize="12"
+                                                        ToolTip.Tip="删掉这一条（未提交的内容）"
+                                                        Command="{Binding $parent[ItemsControl].((vm:TtsViewModel)DataContext).RemoveBatchRowCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <!-- 本条文案 -->
+                                        <TextBox Text="{Binding Text}" Theme="{StaticResource AppInputTheme}"
+                                                 AcceptsReturn="True" TextWrapping="Wrap"
+                                                 MinHeight="60" MaxHeight="140" Padding="10,6"
+                                                 VerticalContentAlignment="Top" FontSize="13"
+                                                 Watermark="输入这一条的配音文案…" />
+
+                                        <!-- 本条音色 / 语速 -->
+                                        <Grid ColumnDefinitions="Auto,Auto,Auto,*,Auto" ColumnSpacing="8">
+                                            <TextBlock Classes="lbl" Text="音色" />
+                                            <ComboBox Grid.Column="1" MinWidth="220" MaxWidth="300"
+                                                      HorizontalAlignment="Left" FontSize="12.5"
+                                                      ItemsSource="{Binding $parent[ItemsControl].((vm:TtsViewModel)DataContext).Voices}"
+                                                      SelectedItem="{Binding Voice, Mode=TwoWay}">
+                                                <ComboBox.ItemTemplate>
+                                                    <DataTemplate x:DataType="services:TtsVoiceOption">
+                                                        <TextBlock Text="{Binding DisplayText}" FontSize="12.5" />
+                                                    </DataTemplate>
+                                                </ComboBox.ItemTemplate>
+                                            </ComboBox>
+                                            <TextBlock Grid.Column="2" Classes="lbl" Text="语速" Margin="12,0,0,0" />
+                                            <Slider Grid.Column="3" Theme="{StaticResource AppSliderTheme}"
+                                                    Minimum="0.5" Maximum="2" TickFrequency="0.05"
+                                                    IsSnapToTickEnabled="True"
+                                                    Value="{Binding Speed}"
+                                                    VerticalAlignment="Center" MinWidth="100" />
+                                            <TextBlock Grid.Column="4" Text="{Binding Speed, StringFormat='{}{0:0.00}x'}"
+                                                       FontSize="12" Width="44" TextAlignment="Right"
+                                                       VerticalAlignment="Center" />
+                                        </Grid>
+
+                                        <!-- 行内状态（试听进度 / 报错；正常时隐藏） -->
+                                        <TextBlock Classes="row-status" Classes.err="{Binding IsStatusError}"
+                                                   Text="{Binding StatusText}" TextWrapping="Wrap"
+                                                   IsVisible="{Binding HasStatusText}" />
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               IsVisible="{Binding !HasBatchRows}"
+                               Text="还没有配音条目 —— 点下面「添加配音」加一条" />
+
+                    <Button Theme="{StaticResource SecondaryButtonTheme}" Content="添加配音"
+                            Height="34" HorizontalAlignment="Left"
+                            ToolTip.Tip="加一条配音（一条 = 一个文案 + 独立音色 / 语速）"
+                            Command="{Binding AddBatchRowCommand}" />
+
+                    <Border Height="1" Background="{StaticResource LineBorder}" />
+
+                    <!-- 保存目录 -->
+                    <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10">
+                        <TextBlock Classes="lbl" Text="保存目录" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <TextBox Text="{Binding SaveTargetText}" Theme="{StaticResource AppInputTheme}"
+                                     IsReadOnly="True" FontSize="12.5" Height="34" MinWidth="360" />
+                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="选择…"
+                                    Height="34" Command="{Binding PickExportFolderCommand}" />
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="提交后队列把每条 mp3 存到这个目录（文件名自动带时间、序号和文案开头；重名自动加后缀）" />
+
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Theme="{StaticResource CtaButtonTheme}" Content="开始批量合成"
+                                Height="38" Padding="24,0"
+                                ToolTip.Tip="把列表里所有非空条目按各自的音色 / 语速提交进「配音队列」并行合成（并行数按本机性能自动定）"
+                                Command="{Binding SubmitBatchCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="查看配音队列"
+                                Height="38" Command="{Binding GoQueueCommand}" />
+                    </StackPanel>
+
+                    <Grid IsVisible="{Binding HasBatchStatus}">
+                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding IsBatchStatusError}">
+                            <TextBlock Text="{Binding BatchStatus}" FontSize="12"
+                                       Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                        </Border>
+                        <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding !IsBatchStatusError}">
+                            <TextBlock Text="{Binding BatchStatus}" FontSize="12"
+                                       Foreground="{StaticResource ColorSuccess}" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

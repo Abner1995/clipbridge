@@ -1,0 +1,439 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             xmlns:services="using:CreatFlow.NewApp.Services"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.ComposeQueueView"
+             x:DataType="vm:ComposeQueueViewModel">
+
+    <!-- 合成队列页：本机任务串行执行（不依赖服务端）；关掉再开续跑、合成中标已中断可重试。
+         单条合成（合成页「开始合成」入队即跑）与「从文件夹批量添加」都从这里入队。 -->
+
+    <UserControl.Resources>
+        <!-- 自绘单选行外壳（发布页 / 合成页 / AI 设置页同款；不套模板 Semi 的 :checked 会画蓝色勾选框） -->
+        <ControlTemplate x:Key="RowTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="8">
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+
+        <!-- 素底按钮模板（分组组条用；与 PublishView.PlainButtonTemplate 同款） -->
+        <ControlTemplate x:Key="PlainButtonTemplate" TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                <ContentPresenter Name="PlainButtonContent"
+                                  Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  Padding="{TemplateBinding Padding}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="#FAFBFC" />
+            <Setter Property="BorderBrush" Value="{StaticResource LineBorder}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="Padding" Value="24,20" />
+        </Style>
+        <Style Selector="TextBlock.sec">
+            <Setter Property="FontSize" Value="15" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="TextBlock.lbl">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- ─── 自动发布账号芯片（与 ComposeView.axaml / PublishView.axaml 的 ToggleButton.chip 同款，改一处要同步另两处）─── -->
+        <Style Selector="ToggleButton.chip">
+            <Setter Property="Template" Value="{StaticResource RowTemplate}" />
+            <Setter Property="Padding" Value="10,6" />
+            <Setter Property="Margin" Value="0,0,8,6" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.chip:not(:checked)">
+            <Setter Property="Background" Value="#F7F8FA" />
+        </Style>
+        <Style Selector="ToggleButton.chip:checked">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+        </Style>
+        <Style Selector="ToggleButton.chip:pointerover">
+            <Setter Property="Background" Value="#EFF1F4" />
+        </Style>
+        <Style Selector="ToggleButton.chip:not(:checked) TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="ToggleButton.chip:checked TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource BrandActive}" />
+        </Style>
+        <Style Selector="ToggleButton.chip:not(:checked) Path.chip-check">
+            <Setter Property="IsVisible" Value="False" />
+        </Style>
+        <Style Selector="ToggleButton.chip:not(:checked) Border.chip-dot">
+            <Setter Property="Opacity" Value="0.35" />
+        </Style>
+
+        <!-- ─── 分组组条（2026-10-14：点一格 = 只勾选该组账号；与 PublishView / ComposeView 同款，改一处同步另两处） ─── -->
+        <Style Selector="Button.group-chip">
+            <Setter Property="Template" Value="{StaticResource PlainButtonTemplate}" />
+            <Setter Property="Background" Value="#F7F8FA" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+            <Setter Property="Height" Value="24" />
+            <Setter Property="Padding" Value="9,0" />
+            <Setter Property="FontSize" Value="11.5" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.group-chip:pointerover">
+            <Setter Property="Background" Value="#EFF1F4" />
+        </Style>
+        <Style Selector="Button.group-chip.active">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+            <Setter Property="Foreground" Value="{StaticResource BrandActive}" />
+        </Style>
+        <Style Selector="Button.group-chip.active:pointerover">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+        </Style>
+        <Style Selector="Button.group-chip:disabled">
+            <Setter Property="Opacity" Value="0.45" />
+        </Style>
+    </UserControl.Styles>
+
+    <ScrollViewer Background="White">
+        <!-- 立柱宽度要定死：Center 时列宽 = 内容自然宽（任务标题一长整列就变宽）；
+             Stretch + MaxWidth 由布局钳成 min(920, 可视宽-80) 并在 MaxWidth 处居中（2026-10-10 修） -->
+        <StackPanel Margin="40,32,40,40" MaxWidth="920"
+                    HorizontalAlignment="Stretch" Spacing="18">
+
+            <!-- ═══ 页头 ═══ -->
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="14">
+                <Border Width="42" Height="42" CornerRadius="21"
+                        Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                    <Viewbox Width="20" Height="20" Stretch="Uniform"
+                             HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                              Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                    </Viewbox>
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                    <TextBlock Text="合成队列" FontSize="20" FontWeight="Bold" />
+                    <TextBlock Text="多任务串行合成（本机执行）：关掉再开能接着跑，合成中被中断的可以重试"
+                               FontSize="12" Foreground="{StaticResource TextMuted}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ═══ 添加任务（新建模板 / 文件夹批量） ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <TextBlock Classes="sec" Text="添加合成任务" />
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="「新建模板」先生成一个「合成单元模板」文件夹（示例图片 + 资料.txt 文案 + 说明.txt）：复制多份、改成标题、把示例素材换成你的，再用「从文件夹批量添加」整批入队。批量规则：「带素材的子文件夹」每个合成一条（标题 = 文件夹名）；有 资料.txt 就按文案配音 + 出字幕（文件夹里的音频自动当背景音乐，bgm 开头的优先）；没有 资料.txt 时第一个音频当配音（没有字幕）；资料.txt 行首 # 是注释；素材按文件名自然排序（1、2、…、10）。选了「批量角色」会把角色的台词模板套在每条文案上（{内容} 处替换）；勾了「用 AI 优化每条」会逐条按角色人设改写（默认不勾 —— 首次使用本地引擎要加载模型，较慢，优化中可随时取消）。" />
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="新建模板"
+                                Height="34" FontSize="12.5"
+                                ToolTip.Tip="生成一个可直接复制改名的示例文件夹：替换里面的图片、改 资料.txt 文案，就能整批合成"
+                                Command="{Binding CreateTemplateCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="从文件夹批量添加"
+                                Height="34" FontSize="12.5"
+                                ToolTip.Tip="没有素材的文件夹会被跳过；跳过的原因显示在下面"
+                                Command="{Binding PickBatchFolderCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="打开模板文件夹"
+                                Height="34" FontSize="12.5" IsVisible="{Binding HasTemplateFolder}"
+                                ToolTip.Tip="打开最近生成的「合成单元模板」"
+                                Command="{Binding OpenTemplateFolderCommand}" />
+                    </StackPanel>
+
+                    <!-- 批量自动发布确认条：批量 N 条 × M 账号的误发面太大，入口单独确认一次
+                         （撤回确认条同款惯例：破坏性动作原地过一步，不弹窗） -->
+                    <Border IsVisible="{Binding IsConfirmingBatch}"
+                            Background="{StaticResource BrandSoft}"
+                            BorderBrush="{StaticResource BrandPrimary}" BorderThickness="1"
+                            CornerRadius="10" Padding="12,9">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="{Binding BatchConfirmText}" FontSize="12"
+                                       Foreground="{StaticResource BrandActive}" TextWrapping="Wrap" />
+                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                <Button Theme="{StaticResource CtaButtonTheme}" Content="确认并自动发布"
+                                        Height="30" FontSize="12.5"
+                                        ToolTip.Tip="整批合成完成后自动提交进「上传队列」"
+                                        Command="{Binding ConfirmBatchAddCommand}" />
+                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="仅添加（不自动发布）"
+                                        Height="30" FontSize="12.5"
+                                        ToolTip.Tip="只合成；发布走「发布视频」页导入"
+                                        Command="{Binding AddBatchWithoutPublishCommand}" />
+                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                        Height="30" FontSize="12.5"
+                                        Command="{Binding CancelBatchAddCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- 批量角色 / AI 优化（2026-10-11 批次 4）：只作用于「从文件夹批量添加」 -->
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+                        <TextBlock Classes="lbl" Text="批量角色" VerticalAlignment="Center" />
+                        <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="200"
+                                  ItemsSource="{Binding Roles}"
+                                  SelectedIndex="{Binding SelectedRoleIndex}"
+                                  ToolTip.Tip="所选角色的台词模板会套到每条文件夹文案上；角色在「AI 设置 → 角色库」管理">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate x:DataType="services:ComposeRole">
+                                    <TextBlock Text="{Binding Name}" FontSize="12.5" />
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <CheckBox Grid.Column="2" Content="用 AI 优化每条文案（未勾 = 直接用 资料.txt 原文）"
+                                  FontSize="12" VerticalAlignment="Center"
+                                  IsChecked="{Binding UseAiOptimize}"
+                                  IsEnabled="{Binding CanUseAiOptimize}"
+                                  ToolTip.Tip="逐条按角色人设改写（先优化原文、再套模板）：每条约几秒到十几秒，首次还要加载模型；单条失败回落原文" />
+                    </Grid>
+
+                    <StackPanel Spacing="6" IsVisible="{Binding IsBatchOptimizing}">
+                        <ProgressBar Minimum="0" Maximum="100" Height="6"
+                                     Value="{Binding BatchOptimizeProgress}"
+                                     Theme="{StaticResource ThinProgressTheme}" />
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                            <TextBlock Classes="hint" Text="{Binding BatchOptimizeMessage}" TextWrapping="Wrap" />
+                            <Button Grid.Column="1" Theme="{StaticResource SecondaryButtonTheme}" Content="取消优化"
+                                    Height="26" FontSize="12"
+                                    Command="{Binding CancelBatchOptimizeCommand}" />
+                        </Grid>
+                    </StackPanel>
+
+                    <!-- ═══ 发布（2026-10-15 批次 6）：定时发布 + 合成完成后自动发布 ═══
+                         与合成页同款控件、共享同一份勾选/开关存档（「在哪边改都生效」）。
+                         定时为批次级：整批同一个时间点，写入每条发布单元的「发布时间」；
+                         自动发布开着时，确认条里会把「立即发布」换成「将于 … 发布」。 -->
+                    <Border Height="1" Background="{StaticResource LineBorder}" Margin="0,2" />
+                    <StackPanel Spacing="8">
+                        <CheckBox Content="定时发布（写入发布单元的「发布时间」；不勾 = 立即发布）"
+                                  IsChecked="{Binding IsScheduled}" FontSize="12.5"
+                                  Foreground="{StaticResource TextSecondary}" />
+                        <StackPanel Orientation="Horizontal" Spacing="10" IsVisible="{Binding IsScheduled}">
+                            <DatePicker Theme="{StaticResource AppDatePickerTheme}"
+                                        SelectedDate="{Binding ScheduledDate}" />
+                            <TimePicker Theme="{StaticResource AppTimePickerTheme}"
+                                        SelectedTime="{Binding ScheduledTime}" />
+                        </StackPanel>
+
+                        <CheckBox Content="合成完成后自动发布（提交进「上传队列」；标题 = 文件夹名，其余参数跟随发布单元 / 账号预设）"
+                                  IsChecked="{Binding AutoPublish}" FontSize="12.5"
+                                  Foreground="{StaticResource TextSecondary}" />
+
+                        <TextBlock TextWrapping="Wrap"
+                                   Text="还没有绑定任何平台账号 —— 到「平台账号」页登录一个，再回来开自动发布"
+                                   FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                   IsVisible="{Binding !HasTargetChips}" />
+
+                        <!-- 分组组条（2026-10-14）：点一格 = 只勾选该格账号（替换式，芯片仍全部可见、
+                             可再手动微调）；「全部」是第 0 格哨兵。没有分组时整条不出现。 -->
+                        <StackPanel Orientation="Horizontal" Spacing="8"
+                                    IsVisible="{Binding HasGroupChoices}">
+                            <TextBlock Text="分组" FontSize="11"
+                                       Foreground="{StaticResource TextMuted}"
+                                       VerticalAlignment="Center" />
+                            <ItemsControl ItemsSource="{Binding GroupChoices}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:AccountGroupChoiceViewModel">
+                                        <Button Classes="group-chip" Margin="0,0,6,4"
+                                                Classes.active="{Binding IsActive}"
+                                                IsEnabled="{Binding !IsEmpty}"
+                                                Content="{Binding Text}"
+                                                Command="{Binding $parent[UserControl].((vm:ComposeQueueViewModel)DataContext).ApplyTargetGroupCommand}"
+                                                CommandParameter="{Binding}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <ItemsControl ItemsSource="{Binding TargetChips}" IsVisible="{Binding HasTargetChips}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:AccountChipViewModel">
+                                    <ToggleButton Classes="chip" IsChecked="{Binding IsOn}"
+                                                  IsEnabled="{Binding CanPublish}">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Border Classes="chip-dot" Width="8" Height="8"
+                                                    CornerRadius="4"
+                                                    Background="{Binding BrandHex}"
+                                                    VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding PlatformName}" FontSize="12"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding AccountLabel}" FontSize="11"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       VerticalAlignment="Center" />
+                                            <Border Background="#F2F3F5" CornerRadius="4" Padding="4,1"
+                                                    VerticalAlignment="Center"
+                                                    IsVisible="{Binding ShowUnsupported}">
+                                                <TextBlock Text="未接入" FontSize="9.5"
+                                                           Foreground="#86909C" />
+                                            </Border>
+                                            <Border Width="6" Height="6" CornerRadius="3"
+                                                    Background="#FA8C16" VerticalAlignment="Center"
+                                                    IsVisible="{Binding ShowExpired}"
+                                                    ToolTip.Tip="登录已过期，需重新登录" />
+                                            <Viewbox Width="11" Height="11" Stretch="Uniform"
+                                                     VerticalAlignment="Center">
+                                                <Path Classes="chip-check"
+                                                      Data="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z"
+                                                      Fill="{StaticResource BrandPrimary}"
+                                                      Stretch="Uniform" />
+                                            </Viewbox>
+                                        </StackPanel>
+                                    </ToggleButton>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <Grid>
+                            <TextBlock TextWrapping="Wrap" FontSize="11.5"
+                                       Text="{Binding AutoPublishSummary}"
+                                       Foreground="{StaticResource TextSecondary}"
+                                       IsVisible="{Binding !IsAutoPublishSummaryError}" />
+                            <TextBlock TextWrapping="Wrap" FontSize="11.5"
+                                       Text="{Binding AutoPublishSummary}"
+                                       Foreground="{StaticResource ColorError}"
+                                       IsVisible="{Binding IsAutoPublishSummaryError}" />
+                        </Grid>
+                    </StackPanel>
+
+                    <Grid IsVisible="{Binding HasStatusNote}">
+                        <Border Background="{StaticResource BgError}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding IsStatusError}">
+                            <TextBlock Text="{Binding StatusNote}" FontSize="12"
+                                       Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                        </Border>
+                        <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                                Padding="12,9" IsVisible="{Binding !IsStatusError}">
+                            <TextBlock Text="{Binding StatusNote}" FontSize="12"
+                                       Foreground="{StaticResource ColorSuccess}" TextWrapping="Wrap" />
+                        </Border>
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 任务列表 ═══ -->
+            <Border Classes="card">
+                <StackPanel Spacing="12">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <TextBlock Classes="sec" Text="任务" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding SummaryText}" FontSize="12"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap" />
+                        <Button Grid.Column="2" Theme="{StaticResource SecondaryButtonTheme}"
+                                Content="清空已完成" Height="28" FontSize="12"
+                                IsVisible="{Binding HasTasks}"
+                                Command="{Binding ClearFinishedCommand}" />
+                    </Grid>
+
+                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                               Text="队列为空 —— 到「合成视频」点开始合成，或用上方「新建模板」/「从文件夹批量添加」"
+                               IsVisible="{Binding IsEmpty}" />
+
+                    <ItemsControl ItemsSource="{Binding Tasks}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ComposeTask">
+                                <Border BorderBrush="{StaticResource LineBorder}"
+                                        BorderThickness="0,0,0,1" Padding="0,10">
+                                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                        <StackPanel Spacing="4">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <TextBlock Text="{Binding Title}" FontSize="13"
+                                                           FontWeight="SemiBold" VerticalAlignment="Center" />
+                                                <Border Background="{StaticResource BgSubtle}"
+                                                        CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding StatusText}" FontSize="11"
+                                                               Foreground="{StaticResource TextSecondary}" />
+                                                </Border>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                <TextBlock Classes="hint" Text="{Binding MaterialsSummary}" />
+                                                <TextBlock Classes="hint" Text="·" />
+                                                <TextBlock Classes="hint" Text="{Binding VoiceSummary}" />
+                                                <TextBlock Classes="hint" Text="·" />
+                                                <TextBlock Classes="hint" Text="{Binding AspectText}" />
+                                                <TextBlock Classes="hint" Text="·" IsVisible="{Binding HasRole}" />
+                                                <TextBlock Classes="hint" Text="{Binding RoleText}"
+                                                           IsVisible="{Binding HasRole}" />
+                                                <TextBlock Classes="hint" Text="·"
+                                                           IsVisible="{Binding HasAutoPublish}" />
+                                                <TextBlock Classes="hint" Text="{Binding AutoPublishSummary}"
+                                                           IsVisible="{Binding HasAutoPublish}" />
+                                                <TextBlock Classes="hint" Text="·"
+                                                           IsVisible="{Binding HasSchedule}" />
+                                                <TextBlock Classes="hint" Text="{Binding ScheduleText}"
+                                                           IsVisible="{Binding HasSchedule}" />
+                                            </StackPanel>
+                                            <TextBlock Text="{Binding StatusMessage}" FontSize="11.5"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       TextWrapping="Wrap" MaxWidth="560"
+                                                       HorizontalAlignment="Left"
+                                                       IsVisible="{Binding HasMessage}" />
+                                            <TextBlock Text="{Binding AutoPublishText}" FontSize="11.5"
+                                                       Foreground="{Binding AutoPublishTextHex}"
+                                                       TextWrapping="Wrap" MaxWidth="560"
+                                                       HorizontalAlignment="Left"
+                                                       IsVisible="{Binding HasAutoPublishText}" />
+                                            <ProgressBar IsVisible="{Binding IsRunning}" Minimum="0" Maximum="100"
+                                                         Value="{Binding Progress}" Height="4"
+                                                         Theme="{StaticResource ThinProgressTheme}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                                                    VerticalAlignment="Center">
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                                    Height="28" FontSize="12" IsVisible="{Binding CanCancel}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).CancelTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="重试"
+                                                    Height="28" FontSize="12" IsVisible="{Binding CanRetry}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).RetryTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="移除"
+                                                    Height="28" FontSize="12" IsVisible="{Binding CanRemove}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).RemoveTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="播放"
+                                                    Height="28" FontSize="12" IsVisible="{Binding HasOutput}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).PlayTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="打开文件夹"
+                                                    Height="28" FontSize="12" IsVisible="{Binding HasOutput}"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).OpenTaskFolderCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Theme="{StaticResource SecondaryButtonTheme}" Content="去上传队列"
+                                                    Height="28" FontSize="12" IsVisible="{Binding ShowQueueLink}"
+                                                    ToolTip.Tip="看这些账号的发布进度；误发可在那边撤回未发出的记录"
+                                                    Command="{Binding $parent[ItemsControl].((vm:ComposeQueueViewModel)DataContext).GoUploadQueueCommand}" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

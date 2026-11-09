@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+	<ItemGroup>
+		<ProjectReference Include="..\CreatFlow.Domain\CreatFlow.Domain.csproj" />
+		<ProjectReference Include="..\CreatFlow.DingTalk\CreatFlow.DingTalk.csproj" />
+		<ProjectReference Include="..\CreatFlow.Shared\CreatFlow.Shared.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Folder Include="Dtos\" />
+		<Folder Include="Identity\Commands\" />
+	</ItemGroup>
+
+	<ItemGroup>
+	  <PackageReference Include="MailKit" Version="4.17.0" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<TargetFramework>net10.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+</Project>

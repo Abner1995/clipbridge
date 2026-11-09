@@ -1,0 +1,39 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="CreatFlow.NewApp.Views.AnnouncementDetailWindow"
+        Title="公告详情"
+        Width="560" Height="480"
+        MinWidth="420" MinHeight="320"
+        WindowStartupLocation="CenterOwner">
+
+    <!-- 无 x:DataType 绑定的直接赋值窗（构造参数注入行模型），代码设置文本 -->
+
+    <Grid RowDefinitions="Auto,Auto,Auto,*" Margin="26,22,26,20">
+
+        <!-- 类型徽章 + 时间 -->
+        <Grid ColumnDefinitions="Auto,*,Auto">
+            <Border x:Name="TypeBadge" CornerRadius="6" Padding="9,3"
+                    VerticalAlignment="Center">
+                <TextBlock x:Name="TypeText" FontSize="11" FontWeight="Bold" />
+            </Border>
+            <TextBlock x:Name="MetaText" Grid.Column="2" FontSize="12"
+                       Foreground="{StaticResource TextPlaceholder}"
+                       VerticalAlignment="Center" />
+        </Grid>
+
+        <!-- 标题 -->
+        <TextBlock x:Name="TitleText" Grid.Row="1" FontSize="19" FontWeight="Bold"
+                   TextWrapping="Wrap" Margin="0,10,0,0" />
+
+        <!-- 分隔线 -->
+        <Border Grid.Row="2" Height="1" Background="{StaticResource BgDivider}"
+                Margin="0,14,0,14" />
+
+        <!-- 正文（可选文本，Semi 主题下直接阅读） -->
+        <ScrollViewer Grid.Row="3">
+            <SelectableTextBlock x:Name="ContentText" FontSize="14"
+                                 Foreground="{StaticResource TextSecondary}"
+                                 TextWrapping="Wrap" LineHeight="24" />
+        </ScrollViewer>
+    </Grid>
+</Window>

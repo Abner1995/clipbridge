@@ -1,0 +1,429 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="960" d:DesignHeight="700"
+             x:Class="CreatFlow.NewApp.Views.AccountView"
+             x:DataType="vm:AccountViewModel">
+
+    <UserControl.Resources>
+        <!-- 素底按钮模板（同 PublishView.PlainButtonTemplate；档位按钮用它自绘选中态） -->
+        <ControlTemplate x:Key="PlainButtonTemplate" TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                <ContentPresenter Name="PlainButtonContent"
+                                  Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  Padding="{TemplateBinding Padding}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <!-- 日志保留档位按钮：默认灰底灰字，选中（Classes.on，先例 TtsView.row-status）品牌淡紫 -->
+        <Style Selector="Button.ret">
+            <Setter Property="Template" Value="{StaticResource PlainButtonTemplate}" />
+            <Setter Property="Background" Value="#F7F8FA" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.ret:pointerover">
+            <Setter Property="Background" Value="#EFF1F4" />
+        </Style>
+        <Style Selector="Button.ret.on">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+            <Setter Property="Foreground" Value="{StaticResource BrandActive}" />
+        </Style>
+        <!-- 后声明：选中档的悬停不回灰 -->
+        <Style Selector="Button.ret.on:pointerover">
+            <Setter Property="Background" Value="{StaticResource BrandSoft}" />
+        </Style>
+    </UserControl.Styles>
+
+    <!-- 无 Design.DataContext：DI 注入 SessionContext -->
+    <ScrollViewer Background="White">
+        <StackPanel Margin="40,32,40,40" MaxWidth="760"
+                    HorizontalAlignment="Center" Spacing="22">
+
+            <!-- ═══ 页头：头像 + 标题 ═══ -->
+            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+                <!-- 头像渐变圆（品牌紫渐变，首字母） -->
+                <Border Width="58" Height="58" CornerRadius="29"
+                        VerticalAlignment="Center">
+                    <Border.Background>
+                        <LinearGradientBrush StartPoint="0%,0%" EndPoint="100%,100%">
+                            <GradientStop Offset="0" Color="#6C5CE7" />
+                            <GradientStop Offset="1" Color="#4B3BC3" />
+                        </LinearGradientBrush>
+                    </Border.Background>
+                    <TextBlock Text="{Binding Initial}" FontSize="24" FontWeight="Bold"
+                               Foreground="White" HorizontalAlignment="Center"
+                               VerticalAlignment="Center" />
+                </Border>
+                <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="3">
+                    <TextBlock Text="{Binding HeaderTitle}" FontSize="22" FontWeight="Bold" />
+                    <TextBlock Text="{Binding AccountSubtitle}"
+                               FontSize="12" Foreground="{StaticResource TextMuted}"
+                               TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ═══ 会话信息卡（单机版没有会员/登录概念 → 整块隐藏） ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20"
+                    IsVisible="{Binding ShowMembership}">
+                <StackPanel Spacing="0">
+
+                    <!-- 会员状态 -->
+                    <Grid ColumnDefinitions="120,*">
+                        <TextBlock Text="会员状态" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <Border Background="{StaticResource BgSuccess}" CornerRadius="6"
+                                    Padding="10,3" IsVisible="{Binding !IsExpired}"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="有效期内" FontSize="12" FontWeight="Bold"
+                                           Foreground="{StaticResource ColorSuccess}" />
+                            </Border>
+                            <Border Background="{StaticResource BgError}" CornerRadius="6"
+                                    Padding="10,3" IsVisible="{Binding IsExpired}"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="已过期" FontSize="12" FontWeight="Bold"
+                                           Foreground="{StaticResource ColorError}" />
+                            </Border>
+                            <TextBlock Text="即将到期，请及时续期"
+                                       FontSize="11" Foreground="#FA8C16"
+                                       VerticalAlignment="Center"
+                                       IsVisible="{Binding IsUrgent}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Height="1" Background="{StaticResource BgDivider}" Margin="0,12" />
+
+                    <!-- 到期时间 + 剩余天数 -->
+                    <Grid ColumnDefinitions="120,*">
+                        <TextBlock Text="到期时间" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Top" Margin="0,1,0,0" />
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="{Binding ExpireDateText}" FontSize="14"
+                                       FontWeight="SemiBold"
+                                       TextWrapping="Wrap" />
+                            <!-- 剩余天数：临期(≤3天)橙字提醒；平时灰字；已过期不再展示 -->
+                            <TextBlock Text="{Binding DaysText}" FontSize="11"
+                                       Foreground="#FA8C16"
+                                       IsVisible="{Binding IsUrgent}" />
+                            <TextBlock Text="{Binding DaysText}" FontSize="11"
+                                       Foreground="{StaticResource TextPlaceholder}"
+                                       IsVisible="{Binding ShowDaysText}" />
+                        </StackPanel>
+                    </Grid>
+
+                    <Border Height="1" Background="{StaticResource BgDivider}" Margin="0,12" />
+
+                    <!-- 最近登录 IP -->
+                    <Grid ColumnDefinitions="120,*">
+                        <TextBlock Text="最近登录 IP" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding LastLoginIpText}"
+                                   FontSize="14" FontFamily="Consolas,Menlo,monospace" />
+                    </Grid>
+
+                    <Border Height="1" Background="{StaticResource BgDivider}" Margin="0,12" />
+
+                    <!-- 最近登录时间 -->
+                    <Grid ColumnDefinitions="120,*">
+                        <TextBlock Text="最近登录时间" FontSize="13"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Text="{Binding LastLoginTimeText}"
+                                   FontSize="14" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 日志与存储（2026-10-14 用户需求：日志自动清理，保留期可设置） ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="3">
+                        <TextBlock Text="日志与存储" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap"
+                                   Text="本机日志（logs）与崩溃记录（crashes）按天保留，超期的在每次启动时自动清理；改保留期会立刻清理一次。" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBlock Text="保留天数" FontSize="13" Width="120"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <Button Classes="ret" Classes.on="{Binding IsRet15}" Content="15 天"
+                                Command="{Binding SelectRet15Command}" />
+                        <Button Classes="ret" Classes.on="{Binding IsRet30}" Content="30 天"
+                                Command="{Binding SelectRet30Command}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                Content="立即清理" Height="30" FontSize="12.5"
+                                IsEnabled="{Binding !IsCleaning}"
+                                Command="{Binding CleanNowCommand}" />
+                        <TextBlock Text="{Binding CleanupStatus}" FontSize="12"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   VerticalAlignment="Center"
+                                   IsVisible="{Binding HasCleanupStatus}" />
+                    </StackPanel>
+
+                    <TextBlock Text="{Binding StorageText}" FontSize="11.5"
+                               Foreground="{StaticResource TextPlaceholder}" />
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 视频水印（2026-10-21 用户需求：合成视频烧水印，默认开启） ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20">
+                <StackPanel Spacing="14">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="视频水印" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                       TextWrapping="Wrap"
+                                       Text="合成视频时在成片角落烧录水印（默认开启）。封面 cover.jpg 保持干净，不带水印。" />
+                        </StackPanel>
+                        <!-- 保存状态：改动自动保存 → 正在保存… → 已保存 · HH:mm:ss（失败红字） -->
+                        <TextBlock Grid.Column="1" Text="{Binding WatermarkSaveStatus}"
+                                   Foreground="{Binding WatermarkSaveStatusHex}"
+                                   FontSize="11.5" VerticalAlignment="Top"
+                                   Margin="12,2,0,0" />
+                    </Grid>
+
+                    <CheckBox Content="合成视频时加水印" IsChecked="{Binding WatermarkEnabled}"
+                              FontSize="12.5" Foreground="{StaticResource TextSecondary}" />
+
+                    <StackPanel Spacing="6" IsEnabled="{Binding WatermarkEnabled}">
+                        <TextBlock Text="水印文字" FontSize="13" Foreground="{StaticResource TextMuted}" />
+                        <TextBox Text="{Binding WatermarkText}" Theme="{StaticResource AppInputTheme}"
+                                 MaxLength="20" Height="34" FontSize="13"
+                                 Watermark="如：房淘惠（留空 = 不加水印，最多 20 字）" />
+                        <TextBlock Text="水印文字为空：合成时不会加水印" FontSize="11.5"
+                                   Foreground="#D46B08"
+                                   IsVisible="{Binding ShowWatermarkEmptyHint}" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8"
+                                IsEnabled="{Binding WatermarkEnabled}">
+                        <TextBlock Text="位置" FontSize="13" Width="120"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <Button Classes="ret" Classes.on="{Binding IsWmTopLeft}" Content="左上"
+                                Command="{Binding SelectWmTopLeftCommand}" />
+                        <Button Classes="ret" Classes.on="{Binding IsWmTopRight}" Content="右上"
+                                Command="{Binding SelectWmTopRightCommand}" />
+                        <Button Classes="ret" Classes.on="{Binding IsWmBottomLeft}" Content="左下"
+                                Command="{Binding SelectWmBottomLeftCommand}" />
+                        <Button Classes="ret" Classes.on="{Binding IsWmBottomRight}" Content="右下"
+                                Command="{Binding SelectWmBottomRightCommand}" />
+                        <Button Classes="ret" Classes.on="{Binding IsWmRandom}" Content="随机"
+                                Command="{Binding SelectWmRandomCommand}" />
+                    </StackPanel>
+
+                    <TextBlock FontSize="11" Foreground="{StaticResource TextPlaceholder}"
+                               TextWrapping="Wrap"
+                               Text="随机 = 每条成片合成时从四角选一个。左下/右下在平台 App 内会被底部作者名/文案区盖住一部分，下载下来的成片是完整的。" />
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 上传提示音（2026-10-22 用户需求：成功/失败提示音音量可调） ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20">
+                <StackPanel Spacing="14">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                            <TextBlock Text="上传提示音" FontSize="15" FontWeight="SemiBold" />
+                            <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                       TextWrapping="Wrap"
+                                       Text="上传发布成功或失败时播放提示音：成功在一条视频的全部平台完成后响一次，失败立即响。拖动滑块立即生效，拖到 0 = 关闭。" />
+                        </StackPanel>
+                        <!-- 保存状态：改动自动保存 → 正在保存… → 已保存 · HH:mm:ss（失败红字） -->
+                        <TextBlock Grid.Column="1" Text="{Binding SoundSaveStatus}"
+                                   Foreground="{Binding SoundSaveStatusHex}"
+                                   FontSize="11.5" VerticalAlignment="Top"
+                                   Margin="12,2,0,0" />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
+                        <TextBlock Text="音量" FontSize="13" Width="120"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center" />
+                        <Slider Grid.Column="1" Theme="{StaticResource AppSliderTheme}"
+                                Minimum="0" Maximum="100" TickFrequency="5" IsSnapToTickEnabled="True"
+                                Value="{Binding SoundVolumePercent}"
+                                VerticalAlignment="Center"
+                                ToolTip.Tip="0 = 关闭提示音；拖动调整上传成功/失败提示音的音量" />
+                        <TextBlock Grid.Column="2" Text="{Binding SoundVolumeText}"
+                                   FontSize="12" Width="48" TextAlignment="Right"
+                                   VerticalAlignment="Center" />
+                    </Grid>
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="试听"
+                                Height="30" FontSize="12.5"
+                                IsEnabled="{Binding !IsSoundOff}"
+                                Command="{Binding PreviewSoundCommand}" />
+                        <TextBlock FontSize="11.5" Foreground="{StaticResource TextPlaceholder}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   Text="试听播放的是成功提示音（按当前音量）；实际发布时成功/失败各响各的。" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 数据与备份（单机版：数据库与本地档全在本机，丢了删除入口就没了） ═══ -->
+            <Border Background="#FAFBFC"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20"
+                    IsVisible="{Binding ShowBackup}">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="3">
+                        <TextBlock Text="数据与备份" FontSize="15" FontWeight="SemiBold" />
+                        <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap"
+                                   Text="导出会把本机数据库与账号/队列/配置档打包成一个 zip（不含浏览器档案、模型与日志）。换电脑或重装前建议导出；导入会覆盖当前数据，导入前会自动备份当前库。" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="导出数据"
+                                Height="30" FontSize="12.5"
+                                IsEnabled="{Binding !BackupBusy}"
+                                Command="{Binding ExportDataCommand}" />
+                        <Button Theme="{StaticResource SecondaryButtonTheme}" Content="导入数据"
+                                Height="30" FontSize="12.5"
+                                IsEnabled="{Binding !BackupBusy}"
+                                Command="{Binding ImportDataBeginCommand}" />
+                        <TextBlock Text="{Binding BackupStatus}"
+                                   Foreground="{Binding BackupStatusHex}"
+                                   FontSize="11.5" VerticalAlignment="Center"
+                                   IsVisible="{Binding HasBackupStatus}" />
+                    </StackPanel>
+
+                    <!-- 导入确认条：覆盖本机数据，二次确认（危险操作走红色） -->
+                    <Border Background="#FDECEA" CornerRadius="8" Padding="12,10"
+                            IsVisible="{Binding ShowImportConfirm}">
+                        <StackPanel Spacing="8">
+                            <TextBlock FontSize="12" Foreground="#C62828" TextWrapping="Wrap"
+                                       Text="导入会覆盖本机数据库与本地档（当前数据会自动备份到 backups）。导入后需要立即重启软件才能生效。确定继续？" />
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        HorizontalAlignment="Right">
+                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                        Height="28" FontSize="12"
+                                        Command="{Binding ImportDataCancelCommand}" />
+                                <Button Theme="{StaticResource DangerButtonTheme}" Content="选择备份文件并导入"
+                                        Height="28" FontSize="12"
+                                        Command="{Binding ImportDataConfirmCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 清除本机数据（单机版 · doc 11.3；危险操作） ═══ -->
+            <Border Background="#FFF7F7"
+                    BorderBrush="#FFD6D1" BorderThickness="1"
+                    CornerRadius="14" Padding="24,20"
+                    IsVisible="{Binding ShowClearData}">
+                <StackPanel Spacing="14">
+                    <StackPanel Spacing="3">
+                        <TextBlock Text="清除本机数据" FontSize="15" FontWeight="SemiBold"
+                                   Foreground="#C62828" />
+                        <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap"
+                                   Text="删除本机数据库、账号登录信息、浏览器档案与本地备份（不可恢复）。平台上的账号、作品与合集不受影响。清除成功后软件会立即退出。" />
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="12">
+                        <Button Theme="{StaticResource DangerButtonTheme}" Content="清除本机数据"
+                                Height="30" FontSize="12.5"
+                                IsEnabled="{Binding !ClearBusy}"
+                                Command="{Binding ClearDataBeginCommand}" />
+                        <TextBlock Text="{Binding ClearStatus}"
+                                   Foreground="{Binding ClearStatusHex}"
+                                   FontSize="11.5" VerticalAlignment="Center"
+                                   IsVisible="{Binding HasClearStatus}" />
+                    </StackPanel>
+
+                    <!-- 二次确认：逐字输入确认词才可执行（危险操作走红色） -->
+                    <Border Background="#FDECEA" CornerRadius="8" Padding="12,10"
+                            IsVisible="{Binding ShowClearConfirm}">
+                        <StackPanel Spacing="10">
+                            <TextBlock FontSize="12" Foreground="#C62828" TextWrapping="Wrap">
+                                <Run Text="此操作不可恢复。请输入" />
+                                <Run Text="「清除」" FontWeight="SemiBold" />
+                                <Run Text="以确认（只删本机数据，平台内容不动）。" />
+                            </TextBlock>
+
+                            <StackPanel Spacing="6">
+                                <CheckBox Content="清除前先导出备份（推荐）"
+                                          FontSize="12"
+                                          IsChecked="{Binding ClearExportBackup, Mode=TwoWay}" />
+                                <CheckBox Content="同时删除机器级模型与日志（默认保留；模型下次用时需重新下载）"
+                                          FontSize="12"
+                                          IsChecked="{Binding ClearMachineLevel, Mode=TwoWay}" />
+                            </StackPanel>
+
+                            <TextBox Text="{Binding ClearConfirmWord, Mode=TwoWay}"
+                                     Theme="{StaticResource AppInputTheme}"
+                                     Watermark="输入：清除"
+                                     Height="32" FontSize="12.5" MinWidth="220"
+                                     HorizontalAlignment="Left" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="8"
+                                        HorizontalAlignment="Right">
+                                <Button Theme="{StaticResource SecondaryButtonTheme}" Content="取消"
+                                        Height="28" FontSize="12"
+                                        Command="{Binding ClearDataCancelCommand}" />
+                                <Button Theme="{StaticResource DangerButtonTheme}" Content="确认清除并退出"
+                                        Height="28" FontSize="12"
+                                        IsEnabled="{Binding CanConfirmClear}"
+                                        Command="{Binding ClearDataConfirmCommand}" />
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </Border>
+
+            <!-- ═══ 到期提示条（过期/临期） ═══ -->
+            <Border Background="{StaticResource BgError}" CornerRadius="10"
+                    Padding="14,10" IsVisible="{Binding IsExpired}">
+                <TextBlock FontSize="13" Foreground="{StaticResource ColorError}"
+                           TextWrapping="Wrap">
+                    <Run Text="会员已过期，发布功能不可用。请前往左侧「激活会员」输入新激活码恢复使用。" />
+                </TextBlock>
+            </Border>
+            <Border Background="#FFF7E6" BorderBrush="#FFE1B3" BorderThickness="1"
+                    CornerRadius="10" Padding="14,10" IsVisible="{Binding IsUrgent}">
+                <TextBlock FontSize="13" Foreground="#D46B08" TextWrapping="Wrap">
+                    <Run Text="会员即将到期，到期后发布功能将暂停，请提前续期。" />
+                </TextBlock>
+            </Border>
+
+            <!-- ═══ 退出登录（走壳 LogoutCommand：清会话 → 回登录窗） ═══ -->
+            <Button Theme="{StaticResource DangerButtonTheme}"
+                    Content="退出登录"
+                    Height="38" FontSize="13"
+                    HorizontalAlignment="Stretch"
+                    IsVisible="{Binding ShowLogout}"
+                    Command="{Binding $parent[Window].((vm:ShellViewModel)DataContext).LogoutCommand}" />
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

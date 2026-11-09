@@ -1,0 +1,347 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.AsyncTaskView"
+             x:DataType="vm:AsyncTaskViewModel">
+
+    <!-- 异步任务页 —— 批量删除的可见面（与「上传队列」并列的独立一页）。
+         那边是「发出去」，这边是「撤回来」。
+
+         数据源 POST /api/async-tasks/list。**这一页只读**：真正执行删除的是
+         DeleteTaskConsumer（应用级单例，用户关掉这一页它照样在跑）——
+         所以这里只有「重试失败项 / 删掉任务记录」，没有「开始」。
+
+         版式与上传队列同一套（q-card + 状态胶囊 + 自绘展开箭头），
+         但行类型是各自的（DeleteTaskRow 绑的是删除语义，与 QueueTaskViewModel 不共用）。 -->
+
+    <UserControl.Resources>
+        <!-- 自绘展开箭头外壳：不套模板的话 Semi 的 ToggleButton :checked 会画出蓝色勾选框把箭头顶掉 -->
+        <ControlTemplate x:Key="AsyncChevronTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="Button.sec">
+            <Setter Property="Theme" Value="{StaticResource SecondaryButtonTheme}" />
+        </Style>
+        <Style Selector="Button.chip">
+            <Setter Property="Theme" Value="{StaticResource SecondaryButtonTheme}" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="FontSize" Value="12" />
+        </Style>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+        <Style Selector="Border.pill">
+            <Setter Property="CornerRadius" Value="7" />
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="TextBlock.pill-text">
+            <Setter Property="FontSize" Value="10.5" />
+            <Setter Property="FontWeight" Value="Bold" />
+        </Style>
+        <Style Selector="Border.q-card">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#EDEFF3" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="BoxShadow" Value="0 1 2 0 #0D000000, 0 4 12 0 #08000000" />
+        </Style>
+        <Style Selector="ToggleButton.chev">
+            <Setter Property="Template" Value="{StaticResource AsyncChevronTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.chev:pointerover">
+            <Setter Property="Background" Value="#F2F3F5" />
+        </Style>
+        <Style Selector="ToggleButton.chev Path.chev-icon">
+            <Setter Property="RenderTransformOrigin" Value="50%,50%" />
+        </Style>
+        <Style Selector="ToggleButton.chev:checked Path.chev-icon">
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <RotateTransform Angle="180" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="36,26,36,18">
+
+        <!-- ═══ 页头 ═══ -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14"
+              Margin="0,0,0,16">
+            <Border Width="42" Height="42" CornerRadius="21"
+                    Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                <Viewbox Width="20" Height="20" Stretch="Uniform"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path Data="M19,3H14.82C14.4,1.84 13.3,1 12,1C10.7,1 9.6,1.84 9.18,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5A2,2 0 0,0 19,3M12,3A1,1 0 0,1 13,4A1,1 0 0,1 12,5A1,1 0 0,1 11,4A1,1 0 0,1 12,3M7,7H17V5H19V19H5V5H7V7Z"
+                          Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="异步任务" FontSize="20" FontWeight="Bold" />
+                <TextBlock Text="批量删除按账号排队执行；关掉软件下次打开会接着跑（状态在服务端）"
+                           FontSize="12" Foreground="{StaticResource TextMuted}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center">
+                <TextBlock Text="{Binding StatusMessage}" FontSize="11"
+                           Foreground="{Binding StatusFgHex}"
+                           VerticalAlignment="Center"
+                           IsVisible="{Binding HasStatus}" />
+                <Button Classes="chip" Content="{Binding OnlyFailedText}"
+                        Command="{Binding ToggleOnlyFailedCommand}" />
+                <Button Classes="chip" Content="刷新"
+                        Command="{Binding RefreshCommand}" />
+                <Button Classes="chip" Content="清空已完成"
+                        ToolTip.Tip="已完成且没有失败项的任务会被清掉；有失败项的任务会保留（先处理失败项）"
+                        Command="{Binding ClearFinishedCommand}" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,0,6,0">
+
+                <ProgressBar Theme="{StaticResource ThinProgressTheme}" Height="2"
+                             IsIndeterminate="True"
+                             Foreground="{StaticResource BrandPrimary}"
+                             IsVisible="{Binding IsLoading}" />
+
+                <Border Background="{StaticResource BgSubtle}" CornerRadius="12" Padding="16,12">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding SummaryText}" FontSize="13" FontWeight="SemiBold"
+                                   VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" FontSize="11"
+                                   Foreground="{StaticResource TextMuted}"
+                                   VerticalAlignment="Center"
+                                   Text="删掉这里的记录不会影响平台上已删除的结果" />
+                    </Grid>
+                </Border>
+
+                <Border Background="{StaticResource BgError}" BorderBrush="#F7C6C2"
+                        BorderThickness="1" CornerRadius="10" Padding="14,10"
+                        IsVisible="{Binding HasError}">
+                    <TextBlock Text="{Binding Error}" FontSize="12"
+                               Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+                </Border>
+
+                <!-- 空态 -->
+                <Border Background="White" CornerRadius="14" Padding="40,54"
+                        IsVisible="{Binding IsEmpty}">
+                    <StackPanel Spacing="10" HorizontalAlignment="Center">
+                        <Border Width="64" Height="64" CornerRadius="32"
+                                Background="{StaticResource BrandSoft}"
+                                HorizontalAlignment="Center">
+                            <Viewbox Width="26" Height="26" Stretch="Uniform"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Path Data="M19,3H14.82C14.4,1.84 13.3,1 12,1C10.7,1 9.6,1.84 9.18,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5A2,2 0 0,0 19,3M12,3A1,1 0 0,1 13,4A1,1 0 0,1 12,5A1,1 0 0,1 11,4A1,1 0 0,1 12,3M7,7H17V5H19V19H5V5H7V7Z"
+                                      Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                            </Viewbox>
+                        </Border>
+                        <TextBlock Text="还没有删除任务" FontSize="15" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock TextWrapping="Wrap" HorizontalAlignment="Center"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}"
+                                   Text="在「视频管理」或「合集」页多选后点删除，任务会出现在这里，后台按账号排队执行" />
+                    </StackPanel>
+                </Border>
+
+                <!-- 批次列表 -->
+                <ItemsControl ItemsSource="{Binding Tasks}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:DeleteTaskRow">
+                            <Border Classes="q-card" Margin="0,0,0,12">
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12"
+                                          Margin="16,14,16,14">
+                                        <Border Width="4" CornerRadius="2"
+                                                Background="{Binding DotHex}"
+                                                VerticalAlignment="Stretch" />
+                                        <StackPanel Grid.Column="1" Spacing="4"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <StackPanel Orientation="Horizontal" Spacing="10">
+                                                <TextBlock Text="{Binding KindText}" Classes="hint" />
+                                                <TextBlock Text="{Binding DateText}" Classes="hint" />
+                                                <TextBlock Text="{Binding CountText}" Classes="hint"
+                                                           Foreground="{Binding PillFgHex}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                    Spacing="8" VerticalAlignment="Center">
+                                            <Border Classes="pill" Background="{Binding PillBgHex}">
+                                                <TextBlock Classes="pill-text"
+                                                           Text="{Binding StatusText}"
+                                                           Foreground="{Binding PillFgHex}" />
+                                            </Border>
+                                            <Button Classes="sec" Height="26" FontSize="11"
+                                                    Content="重试失败项"
+                                                    IsVisible="{Binding CanRetry}"
+                                                    IsEnabled="{Binding !IsBusy}"
+                                                    Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).RetryTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Classes="sec" Height="26" FontSize="11"
+                                                    Content="删除记录"
+                                                    IsVisible="{Binding IsSettled}"
+                                                    IsEnabled="{Binding !IsBusy}"
+                                                    ToolTip.Tip="只删掉这条任务历史，不影响平台上已删除的结果"
+                                                    Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).DeleteTaskCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <!-- 展开箭头：IsChecked **OneWay**（VM 是唯一真值来源）+ 命令显式翻。
+                                                 两种坏写法都试过，别再改回去：
+                                                   · TwoWay + 翻一次的命令 → 各翻一次互相抵消，点了没反应；
+                                                   · TwoWay 单独绑 → 控件侧的瞬时状态会写回 VM，
+                                                     偶发「展开着的一行自己合上」（6 秒冒烟里 1/12 次）。 -->
+                                            <ToggleButton Classes="chev" Width="26" Height="26"
+                                                          IsChecked="{Binding IsExpanded, Mode=OneWay}"
+                                                          Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).ToggleExpandCommand}"
+                                                          CommandParameter="{Binding}"
+                                                          ToolTip.Tip="展开明细">
+                                                <Viewbox Width="12" Height="12" Stretch="Uniform">
+                                                    <Path Classes="chev-icon"
+                                                          Data="M7.41,8.58L12,13.17L16.59,8.58L18,10L12,16L6,10L7.41,8.58Z"
+                                                          Fill="{StaticResource TextSecondary}"
+                                                          Stretch="Uniform" />
+                                                </Viewbox>
+                                            </ToggleButton>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- 子项明细（展开时才拉） -->
+                                    <StackPanel Margin="0,0,0,12"
+                                                IsVisible="{Binding IsExpanded}">
+                                        <ProgressBar Theme="{StaticResource ThinProgressTheme}"
+                                                     Height="2" IsIndeterminate="True"
+                                                     Foreground="{StaticResource BrandPrimary}"
+                                                     IsVisible="{Binding IsLoadingItems}" />
+                                        <ItemsControl ItemsSource="{Binding Items}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate x:DataType="vm:DeleteTaskItemRow">
+                                                    <Grid ColumnDefinitions="Auto,*,Auto"
+                                                          RowDefinitions="Auto,Auto"
+                                                          ColumnSpacing="10" Margin="16,6">
+                                                        <Border Width="6" Height="6" CornerRadius="3"
+                                                                Background="{Binding DotHex}"
+                                                                VerticalAlignment="Center" />
+                                                        <StackPanel Grid.Column="1" Spacing="2">
+                                                            <TextBlock Text="{Binding SubText}"
+                                                                       FontSize="12"
+                                                                       Foreground="{StaticResource TextSecondary}" />
+                                                            <TextBlock Text="{Binding StatusText}"
+                                                                       Classes="hint" />
+                                                            <TextBlock Text="{Binding ErrorMsg}"
+                                                                       FontSize="11"
+                                                                       Foreground="{StaticResource ColorError}"
+                                                                       TextWrapping="Wrap"
+                                                                       IsVisible="{Binding HasError}" />
+                                                        </StackPanel>
+                                                        <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                                    Spacing="6" VerticalAlignment="Center">
+                                                            <Button Classes="sec" Height="24"
+                                                                    FontSize="11" Content="重试"
+                                                                    IsVisible="{Binding CanRetry}"
+                                                                    IsEnabled="{Binding !IsBusy}"
+                                                                    Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).RetryItemCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <!-- 手动兜底（只对「平台删除失败」出现）：平台可能其实删掉了
+                                                                 却被误判 —— 用户核对后可自己把本地记录收尾，别让一条误判
+                                                                 把合集卡死（2026-10-14 实测：快手集合删除误报） -->
+                                                            <Button Classes="sec" Height="24"
+                                                                    FontSize="11" Content="已在平台删除"
+                                                                    IsVisible="{Binding CanConfirmGone}"
+                                                                    IsEnabled="{Binding !IsBusy}"
+                                                                    ToolTip.Tip="仅在你已亲自确认平台侧无此内容时使用"
+                                                                    Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).ConfirmGoneBeginCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                        </StackPanel>
+                                                        <!-- 确认条：把风险写清（平台侧若其实还在，本地将失去管理入口） -->
+                                                        <Border Grid.Row="1" Grid.ColumnSpan="3"
+                                                                Background="#FFF7E6" BorderBrush="#FFE3B0"
+                                                                BorderThickness="1" CornerRadius="8"
+                                                                Padding="10,8" Margin="0,6,0,2"
+                                                                IsVisible="{Binding IsConfirmingGone}">
+                                                            <StackPanel Spacing="8">
+                                                                <TextBlock FontSize="11" Foreground="#B45F06"
+                                                                           TextWrapping="Wrap"
+                                                                           Text="请先到平台上确认这条内容确实已删除。确认后只清理本地记录；若平台侧其实还在，将失去本地的管理入口。" />
+                                                                <StackPanel Orientation="Horizontal"
+                                                                            HorizontalAlignment="Right" Spacing="8">
+                                                                    <Button Classes="sec" Height="24"
+                                                                            FontSize="11" Content="取消"
+                                                                            Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).ConfirmGoneCancelCommand}"
+                                                                            CommandParameter="{Binding}" />
+                                                                    <Button Classes="sec" Height="24"
+                                                                            FontSize="11" Content="确认清理记录"
+                                                                            IsEnabled="{Binding !IsBusy}"
+                                                                            Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).ConfirmGoneCommand}"
+                                                                            CommandParameter="{Binding}" />
+                                                                </StackPanel>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </StackPanel>
+
+                                    <!-- 删记录确认条（有失败项的任务先走这一步 —— 删了会丢重试入口）：贴卡底 -->
+                                    <Border Background="{StaticResource BgError}"
+                                            CornerRadius="0,0,13,13" Padding="16,12"
+                                            IsVisible="{Binding IsConfirmingDelete}">
+                                        <StackPanel Spacing="10">
+                                            <TextBlock FontSize="11"
+                                                       Foreground="{StaticResource ColorError}"
+                                                       TextWrapping="Wrap"
+                                                       Text="{Binding DeleteConfirmText}" />
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Right" Spacing="8">
+                                                <Button Classes="sec" Height="26" FontSize="11"
+                                                        Content="取消"
+                                                        Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).CancelDeleteTaskCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Classes="sec" Height="26" FontSize="11"
+                                                        Content="仍要删除"
+                                                        IsEnabled="{Binding !IsBusy}"
+                                                        Command="{Binding $parent[UserControl].((vm:AsyncTaskViewModel)DataContext).DeleteTaskCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ═══ 底部说明：把「为什么这么慢」「关了会不会丢」讲清楚 ═══ -->
+        <Border Grid.Row="2" Margin="0,14,0,0" Padding="16,11"
+                Background="{StaticResource BgSubtle}" CornerRadius="12">
+            <StackPanel Orientation="Horizontal" Spacing="9">
+                <Border Width="6" Height="6" CornerRadius="3"
+                        Background="{StaticResource TextPlaceholder}"
+                        VerticalAlignment="Center" />
+                <TextBlock FontSize="12" Foreground="{StaticResource TextSecondary}"
+                           VerticalAlignment="Center"
+                           Text="同一账号下的删除会间隔执行（规避平台风控）· 关掉软件下次打开接着跑 · 合集要全部账号删光才清本地记录" />
+            </StackPanel>
+        </Border>
+    </Grid>
+</UserControl>

@@ -1,0 +1,508 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="760"
+             x:Class="CreatFlow.NewApp.Views.VideoManageView"
+             x:DataType="vm:VideoManageViewModel">
+
+    <!-- 视频管理页（P4）—— 已发布作品档案。
+         数据源 POST /api/publish/platforms/page（服务端状态权威，只返回已发布记录），
+         筛选/搜索/分页全在服务端做，每平台一行、按天分组。
+
+         为什么是「一行 = 一条平台记录」而不是「一张卡 = 一条视频」：
+         服务端分页单位就是平台记录 —— 按视频聚合会让同一条视频的 4 条记录被切在相邻两页，
+         卡片上显示成「只发了 2 个平台」，用户以为漏发了。
+
+         行上**不放状态胶囊**：本页只返回已发布记录，写「已发布」等于没说；
+         「已从上传队列移除」也是内部实现（软删除），用户不关心。 -->
+
+    <UserControl.Resources>
+        <!-- 纯文字/正文按钮外壳（页面级：ghost 与 ghost-danger 共用一份） -->
+        <ControlTemplate x:Key="CardButtonTemplate" TargetType="Button">
+            <Border Background="{TemplateBinding Background}" CornerRadius="6">
+                <ContentPresenter Name="CardButtonContent"
+                                  Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  Padding="{TemplateBinding Padding}"
+                                  HorizontalContentAlignment="Center"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+        <!-- 自绘勾选盒的壳（ToggleButton 的模板；与发布页 RowTemplate 同款） -->
+        <ControlTemplate x:Key="CheckToggleTemplate" TargetType="ToggleButton">
+            <Border Background="{TemplateBinding Background}" CornerRadius="8">
+                <ContentPresenter Name="CheckToggleContent"
+                                  Content="{TemplateBinding Content}"
+                                  HorizontalContentAlignment="Stretch"
+                                  VerticalContentAlignment="Center"
+                                  RecognizesAccessKey="True" />
+            </Border>
+        </ControlTemplate>
+    </UserControl.Resources>
+
+    <UserControl.Styles>
+        <Style Selector="Button.cta">
+            <Setter Property="Theme" Value="{StaticResource CtaButtonTheme}" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="FontSize" Value="13" />
+        </Style>
+        <Style Selector="Button.sec">
+            <Setter Property="Theme" Value="{StaticResource SecondaryButtonTheme}" />
+        </Style>
+        <Style Selector="Button.danger">
+            <Setter Property="Theme" Value="{StaticResource DangerButtonTheme}" />
+        </Style>
+        <Style Selector="Button.ghost">
+            <Setter Property="Template" Value="{StaticResource CardButtonTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.ghost:pointerover">
+            <Setter Property="Background" Value="#F2F3F5" />
+        </Style>
+        <Style Selector="Button.ghost-danger">
+            <Setter Property="Template" Value="{StaticResource CardButtonTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource ColorError}" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.ghost-danger:pointerover">
+            <Setter Property="Background" Value="{StaticResource DangerHover}" />
+        </Style>
+
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Foreground" Value="{StaticResource TextMuted}" />
+        </Style>
+
+        <!-- 记录行卡片：白底 + 细描边 + 双层柔和投影（与队列页同一套观感） -->
+        <Style Selector="Border.row-card">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#EDEFF3" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="14" />
+            <Setter Property="BoxShadow" Value="0 1 2 0 #0D000000, 0 4 12 0 #08000000" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+
+        <!-- 平台方块（色块 + 首字）与左侧品牌色竖条 -->
+        <Style Selector="Border.plat-badge">
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.plat-bar">
+            <Setter Property="Width" Value="3" />
+            <Setter Property="CornerRadius" Value="2" />
+            <Setter Property="VerticalAlignment" Value="Stretch" />
+        </Style>
+
+        <!-- 天头：日期 + 一条延伸到右端的细线（把「这一天」括起来） -->
+        <Style Selector="Border.day-rule">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Background" Value="{StaticResource BgDivider}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <!-- 筛选/每页芯片：配色由 VM 给（选中 = 品牌紫淡底），
+             用 Button 而非 ToggleButton —— 一组单选，不需要「再点一下取消」的语义，
+             也避免 Semi 的 ToggleButton 在 :checked 下把前景刷成白色 -->
+        <Style Selector="Button.chip">
+            <Setter Property="Template" Value="{StaticResource CardButtonTemplate}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="Button.chip:pointerover">
+            <Setter Property="Background" Value="#F4F1FE" />
+        </Style>
+
+        <!-- 自绘勾选盒（与发布页 check-row 同款） -->
+        <Style Selector="ToggleButton.check-row">
+            <Setter Property="Template" Value="{StaticResource CheckToggleTemplate}" />
+            <Setter Property="Background" Value="Transparent" />
+            <!-- ⚠️ Foreground 必须显式钉住：Semi 的 ToggleButton 在 :checked 下把前景刷成白色
+                 （为「填色胶囊」设计），本模板是透明底的勾选盒 —— 不钉住的话勾选行的文字会变白 -->
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:checked">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:pointerover">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        </Style>
+        <Style Selector="Border.tick">
+            <Setter Property="Width" Value="16" />
+            <Setter Property="Height" Value="16" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:not(:checked) Border.tick">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#C9CDD4" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:checked Border.tick">
+            <Setter Property="Background" Value="{StaticResource BrandPrimary}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BrandPrimary}" />
+        </Style>
+        <Style Selector="ToggleButton.check-row:not(:checked) Path.tick-check">
+            <Setter Property="IsVisible" Value="False" />
+        </Style>
+    </UserControl.Styles>
+
+    <Grid RowDefinitions="Auto,*,Auto" Margin="36,26,36,18">
+
+        <!-- ═══ 页头 ═══ -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="14"
+              Margin="0,0,0,16">
+            <Border Width="42" Height="42" CornerRadius="21"
+                    Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                <Viewbox Width="20" Height="20" Stretch="Uniform"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
+                          Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="视频管理" FontSize="20" FontWeight="Bold" />
+                <TextBlock TextWrapping="Wrap"
+                           Text="已发布作品档案 —— 按平台一条记录一行，删除会同时把平台上的那条视频移除"
+                           FontSize="12" Foreground="{StaticResource TextMuted}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
+                        VerticalAlignment="Center">
+                <TextBlock Text="{Binding StatusText}" FontSize="11"
+                           Foreground="{StaticResource TextMuted}"
+                           VerticalAlignment="Center"
+                           IsVisible="{Binding HasStatus}" />
+                <Button Classes="sec" Content="刷新" Height="30" FontSize="12"
+                        Command="{Binding RefreshCommand}" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Spacing="12" Margin="0,0,6,0">
+
+                <!-- ═══ 加载中：一条细进度条，不遮内容 ═══ -->
+                <ProgressBar Theme="{StaticResource ThinProgressTheme}" Height="2"
+                             IsIndeterminate="True"
+                             Foreground="{StaticResource BrandPrimary}"
+                             IsVisible="{Binding IsLoading}" />
+
+                <!-- ═══ 汇总 + 平台筛选 + 搜索 ═══ -->
+                <Border Background="{StaticResource BgSubtle}" CornerRadius="12" Padding="16,12">
+                    <StackPanel Spacing="10">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="{Binding SummaryText}" FontSize="13" FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Text="{Binding PageText}" FontSize="11"
+                                       Foreground="{StaticResource TextMuted}"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+
+                        <ItemsControl ItemsSource="{Binding PlatformFilters}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <WrapPanel />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:PlatformFilterChip">
+                                    <Button Classes="chip" Margin="0,0,8,0"
+                                            Background="{Binding BgHex}"
+                                            BorderBrush="{Binding BorderHex}"
+                                            Foreground="{Binding FgHex}"
+                                            Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).SelectPlatformCommand}"
+                                            CommandParameter="{Binding}">
+                                        <StackPanel Orientation="Horizontal" Spacing="6">
+                                            <Border Width="7" Height="7" CornerRadius="4"
+                                                    Background="{Binding BrandHex}"
+                                                    VerticalAlignment="Center" />
+                                            <TextBlock Text="{Binding Text}" FontSize="12"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                    </Button>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+
+                        <TextBox Theme="{StaticResource AppInputTheme}"
+                                 Watermark="搜索标题或文件名…"
+                                 Text="{Binding Keyword}"
+                                 Height="34" FontSize="12.5" />
+
+                        <!-- 多选工具条：全选 → 删除选中。取消全选与「删除选中」都只在有勾选时才有意义，
+                             但「全选本页」始终在 —— 它是这条流程的入口。
+                             用 HasRows 而不是 !IsEmpty：一整页都在飞时 Rows 是空的，
+                             这时不该挂一条「全选本页」在空列表上面 -->
+                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12"
+                              IsVisible="{Binding HasRows}">
+                            <Button Classes="chip" Content="{Binding SelectAllText}"
+                                    Command="{Binding SelectAllOnPageCommand}" />
+                            <TextBlock Grid.Column="1" Text="{Binding SelectionText}"
+                                       FontSize="12" Foreground="{StaticResource TextSecondary}"
+                                       VerticalAlignment="Center"
+                                       IsVisible="{Binding HasSelection}" />
+                            <Button Grid.Column="2" Classes="danger" Height="30" FontSize="12"
+                                    Content="{Binding DeleteSelectedText}"
+                                    IsVisible="{Binding HasSelection}"
+                                    Command="{Binding DeleteSelectedCommand}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- 提交中：只在 POST 这一瞬显示；行摘掉之后后台执行进度归「异步任务」页，
+                     这一页不挂常驻进度条（挂到所有子项跑完会看起来像永远不结束） -->
+                <Border Background="{StaticResource BgSubtle}" CornerRadius="12" Padding="14,10"
+                        IsVisible="{Binding ShowBackgroundWork}">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <ProgressBar Theme="{StaticResource ThinProgressTheme}"
+                                     Width="90" Height="4" IsIndeterminate="True"
+                                     VerticalAlignment="Center"
+                                     Foreground="{StaticResource BrandPrimary}" />
+                        <TextBlock Text="{Binding BackgroundWorkText}" FontSize="12"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ═══ 错误条 ═══ -->
+                <Border Background="{StaticResource BgError}"
+                        BorderBrush="#F7C6C2" BorderThickness="1"
+                        CornerRadius="10" Padding="14,10"
+                        IsVisible="{Binding HasError}">
+                    <TextBlock Text="{Binding Error}" FontSize="12"
+                               Foreground="{StaticResource ColorError}"
+                               TextWrapping="Wrap" />
+                </Border>
+
+                <!-- ═══ 空态：服务端确实一条都没有 ═══ -->
+                <Border IsVisible="{Binding IsEmpty}"
+                        Background="#FAFBFC" BorderBrush="{StaticResource LineBorder}"
+                        BorderThickness="1" CornerRadius="14" Padding="40,38">
+                    <StackPanel Spacing="12" HorizontalAlignment="Center">
+                        <Border Width="64" Height="64" CornerRadius="32"
+                                Background="{StaticResource BrandSoft}"
+                                HorizontalAlignment="Center">
+                            <Viewbox Width="26" Height="26" Stretch="Uniform"
+                                     HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Path Data="M10,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V8C22,6.89 21.1,6 20,6H12L10,4Z"
+                                      Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                            </Viewbox>
+                        </Border>
+                        <TextBlock Text="还没有已发布的作品" FontSize="15" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock TextWrapping="Wrap" HorizontalAlignment="Center"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}"
+                                   Text="在「发布视频」页提交后，平台上发出去的作品会归档到这里；「上传队列」里清空已完成的记录也仍然留在这里。" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ═══ 本页全在删除中：不能显示「还没有已发布的作品」（服务端明明还有 N 条） ═══ -->
+                <Border IsVisible="{Binding IsPageAllPending}"
+                        Background="#FAFBFC" BorderBrush="{StaticResource LineBorder}"
+                        BorderThickness="1" CornerRadius="14" Padding="40,38">
+                    <StackPanel Spacing="12" HorizontalAlignment="Center">
+                        <ProgressBar Theme="{StaticResource ThinProgressTheme}"
+                                     Width="120" Height="4" IsIndeterminate="True"
+                                     HorizontalAlignment="Center"
+                                     Foreground="{StaticResource BrandPrimary}" />
+                        <TextBlock Text="本页的记录正在删除中" FontSize="15" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center" />
+                        <TextBlock TextWrapping="Wrap" HorizontalAlignment="Center"
+                                   FontSize="12" Foreground="{StaticResource TextMuted}"
+                                   Text="平台侧删除在后台排队进行（进度见「异步任务」）；删除失败的记录会自动回到这里，可重试。" />
+                    </StackPanel>
+                </Border>
+
+                <!-- ═══ 列表：天头行 + 记录行 ═══ -->
+                <ItemsControl ItemsSource="{Binding Rows}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:VideoArchiveRow">
+                            <!-- 两种行同一个类型、同一个模板，靠 IsVisible 分叉（DataTemplate 只能有一个根） -->
+                            <Panel>
+
+                            <!-- 天头（今天 / 昨天 / 前天 / 2026-09-18） -->
+                            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="10" Margin="2,10,0,8"
+                                  IsVisible="{Binding IsDayHeader}">
+                                <TextBlock Text="{Binding DayHeaderText}" FontSize="12"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextSecondary}"
+                                           VerticalAlignment="Center" />
+                                <Border Grid.Column="1" Classes="day-rule" />
+                            </Grid>
+
+                            <!-- 记录行 -->
+                            <Border Classes="row-card" IsVisible="{Binding IsRecord}">
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="Auto,3,Auto,*,Auto" ColumnSpacing="12"
+                                          Margin="14,12,14,12">
+                                        <ToggleButton Classes="check-row" Width="20" Height="20"
+                                                      Padding="0" IsChecked="{Binding IsSelected}"
+                                                      IsVisible="{Binding ShowCheckbox}"
+                                                      VerticalAlignment="Center">
+                                            <Border Classes="tick">
+                                                <Viewbox Width="11" Height="11" Stretch="Uniform"
+                                                         HorizontalAlignment="Center"
+                                                         VerticalAlignment="Center">
+                                                    <Path Classes="tick-check"
+                                                          Data="M9,16.17L4.83,12L3.41,13.41L9,19L21,7L19.59,5.59L9,16.17Z"
+                                                          Fill="White" Stretch="Uniform" />
+                                                </Viewbox>
+                                            </Border>
+                                        </ToggleButton>
+                                        <Border Grid.Column="1" Classes="plat-bar"
+                                                Background="{Binding BrandHex}" />
+                                        <Border Grid.Column="2" Classes="plat-badge"
+                                                Background="{Binding BrandHex}">
+                                            <TextBlock Text="{Binding Initial}" FontSize="11"
+                                                       FontWeight="Bold" Foreground="White"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                        </Border>
+                                        <StackPanel Grid.Column="3" Spacing="3"
+                                                    VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding Title}" FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding SubText}" Classes="hint"
+                                                       TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="4" Orientation="Horizontal"
+                                                    Spacing="10" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding TimeText}" FontSize="12"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       VerticalAlignment="Center" />
+                                            <!-- 「全部副本」要跨页：分页单位是记录，一个视频的副本会被切在相邻两页，
+                                                 只删本页那几条的话用户会以为删干净了 -->
+                                            <Button Classes="ghost" Content="{Binding WholeVideoButtonText}"
+                                                    IsVisible="{Binding !IsDeleting}"
+                                                    Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteWholeVideoCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <Button Classes="ghost-danger" Content="删除"
+                                                    IsVisible="{Binding !IsDeleting}"
+                                                    Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteBeginCommand}"
+                                                    CommandParameter="{Binding}" />
+                                            <TextBlock Text="删除中…" FontSize="11"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       VerticalAlignment="Center"
+                                                       IsVisible="{Binding IsDeleting}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <!-- 删除确认条（贴卡底，圆角与卡对齐）：两段式，防误触 -->
+                                    <Border Background="{StaticResource BgError}"
+                                            CornerRadius="0,0,13,13" Padding="16,12"
+                                            IsVisible="{Binding ShowConfirmStrip}">
+                                        <StackPanel Spacing="10">
+                                            <TextBlock Text="{Binding ConfirmText}" FontSize="11"
+                                                       Foreground="{StaticResource ColorError}"
+                                                       TextWrapping="Wrap" />
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Right" Spacing="8">
+                                                <Button Classes="sec" Height="26" FontSize="11"
+                                                        Content="取消"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteCancelCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Classes="danger" Height="26" FontSize="11"
+                                                        Content="确认删除"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteConfirmedCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- 「删除这条视频全部副本」确认条：与上面那条互斥，同一时刻只开一个 -->
+                                    <Border Background="{StaticResource BgError}"
+                                            CornerRadius="0,0,13,13" Padding="16,12"
+                                            IsVisible="{Binding ShowWholeVideoStrip}">
+                                        <StackPanel Spacing="10">
+                                            <TextBlock Text="{Binding WholeVideoText}" FontSize="11"
+                                                       Foreground="{StaticResource ColorError}"
+                                                       TextWrapping="Wrap" />
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Right" Spacing="8">
+                                                <Button Classes="sec" Height="26" FontSize="11"
+                                                        Content="取消"
+                                                        IsEnabled="{Binding !IsCountingWholeVideo}"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteCancelCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Classes="danger" Height="26" FontSize="11"
+                                                        Content="确认删除全部"
+                                                        IsEnabled="{Binding !IsCountingWholeVideo}"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteWholeVideoConfirmedCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
+                            </Border>
+                            </Panel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ═══ 底栏：页码 + 每页条数 + 翻页 ═══ -->
+        <Border Grid.Row="2" Margin="0,14,0,0" Padding="16,10"
+                Background="{StaticResource BgSubtle}" CornerRadius="12">
+            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="18">
+                <TextBlock Text="{Binding PageText}" FontSize="12"
+                           Foreground="{StaticResource TextSecondary}"
+                           VerticalAlignment="Center" />
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                            VerticalAlignment="Center">
+                    <TextBlock Text="每页" FontSize="11"
+                               Foreground="{StaticResource TextMuted}"
+                               VerticalAlignment="Center" />
+                    <ItemsControl ItemsSource="{Binding PageSizeChips}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="6" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:PageSizeChip">
+                                <Button Classes="chip" Height="26" Padding="10,0"
+                                        FontSize="11"
+                                        Background="{Binding BgHex}"
+                                        BorderBrush="{Binding BorderHex}"
+                                        Foreground="{Binding FgHex}"
+                                        Content="{Binding Text}"
+                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).SetPageSizeCommand}"
+                                        CommandParameter="{Binding Size}" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                    <Button Classes="sec" Height="30" FontSize="12" Content="上一页"
+                            IsEnabled="{Binding HasPrev}"
+                            Command="{Binding PrevPageCommand}" />
+                    <Button Classes="sec" Height="30" FontSize="12" Content="下一页"
+                            IsEnabled="{Binding HasNext}"
+                            Command="{Binding NextPageCommand}" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</UserControl>

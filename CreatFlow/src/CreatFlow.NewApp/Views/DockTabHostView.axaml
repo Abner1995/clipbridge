@@ -1,0 +1,56 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:views="clr-namespace:CreatFlow.NewApp.Views"
+             xmlns:vm="clr-namespace:CreatFlow.NewApp.ViewModels"
+             x:Class="CreatFlow.NewApp.Views.DockTabHostView"
+             x:DataType="vm:AccountDockTabViewModel">
+
+    <!-- 单账号标签宿主:白底盖住导航页层;IsActive=false 时仅隐藏(不摘树,WebView 保活) -->
+    <Border Background="White" IsVisible="{Binding IsActive}">
+        <Grid RowDefinitions="Auto,*">
+
+            <!-- ═══ 顶部工具条:返回 + 平台色点 + 标题 + 状态 + 刷新 + 「完成登录」手动兜底 ═══
+                 返回 = 退出 WebView 叠层回平台页列表(Dock.LeaveToPage;WebView 保活不销毁) -->
+            <Border Grid.Row="0" Padding="12,5"
+                    Background="{StaticResource BgSubtle}"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="0,0,0,1">
+                <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="8">
+                    <Button Grid.Column="0" Theme="{StaticResource SecondaryButtonTheme}"
+                            Content="← 返回" Height="24" FontSize="11" Padding="10,0"
+                            ToolTip.Tip="返回平台页账号列表（浏览器会话保留，随时再点标签进入）"
+                            Click="BackToPageButton_Click" />
+                    <Border Grid.Column="1" Width="8" Height="8" CornerRadius="4"
+                            Background="{Binding BrandColorHex}"
+                            VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding Title}" FontSize="12" FontWeight="SemiBold"
+                               TextTrimming="CharacterEllipsis" VerticalAlignment="Center"
+                               Foreground="{StaticResource TextPrimary}" />
+                    <TextBlock Grid.Column="3" Text="{Binding StatusText}" FontSize="12"
+                               Foreground="{StaticResource TextSecondary}" VerticalAlignment="Center" />
+                    <!-- 刷新页面:平台侧「系统繁忙,请刷新页面重试」等瞬时错误直接点此重试,
+                         不必关标签重开;武装态刷新后自动检测随页面加载重新走 -->
+                    <Button Grid.Column="4" Classes="flat-icon"
+                            Width="22" Height="22" ToolTip.Tip="刷新页面"
+                            Click="RefreshButton_Click">
+                        <Viewbox Width="14" Height="14" Stretch="Uniform">
+                            <Path Data="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H21V3L17.65,6.35Z"
+                                  Stretch="Uniform" Fill="{StaticResource TextMuted}" />
+                        </Viewbox>
+                    </Button>
+                    <!-- 手动兜底:常驻工具条(用户拍板「一直显示,不管是否成功」),仅提取中置灰防重入 ——
+                         失败/无凭证/超时后立刻恢复可点;已同步后的浏览态点击 = 重新武装重载页面再抓一次 -->
+                    <Button Grid.Column="5" Theme="{StaticResource SecondaryButtonTheme}"
+                            Content="{Binding ManualCompleteText}" Height="24" FontSize="11" Padding="10,0"
+                            IsEnabled="{Binding CanClickManualComplete}"
+                            Click="CompleteLoginButton_Click" />
+                </Grid>
+            </Border>
+
+            <!-- ═══ WebView2 主体(独立档案:cookie/指纹与其它账号隔离) ═══
+                 SafeNativeWebView = NativeWebView + OnGotFocus 防崩兜底：
+                 窗口激活恢复焦点时，失效控制器（已关标签/已隐藏）的 MoveFocus 会抛
+                 E_INVALIDARG 且冒泡到 WndProc 直接杀进程（2026-11-04 两次实机崩溃） -->
+            <views:SafeNativeWebView x:Name="WebView" Grid.Row="1" />
+        </Grid>
+    </Border>
+</UserControl>

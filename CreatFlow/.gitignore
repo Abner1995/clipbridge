@@ -1,0 +1,71 @@
+# ==================================================
+# .NET / CreatFlow
+# ==================================================
+
+## Build artifacts
+[Dd]ebug/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.cache
+*.docstates
+
+## NuGet
+*.nupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+## Visual Studio
+.vs/
+*.sln.docstates
+*.dbmdl
+*.jfm
+
+## JetBrains Rider
+.idea/
+*.sln.iml
+
+## VS Code
+.vscode/
+
+## macOS
+.DS_Store
+Thumbs.db
+
+## Avalonia
+*.axaml.cs~
+*.axaml~
+
+# ==================================================
+# runtime/ — track scripts, ignore binaries
+# ==================================================
+!runtime/node/.gitkeep
+# bridges/kuaishou/ — keep webpack chunks for signing
+!runtime/bridges/kuaishou/
+# ffmpeg/ — 只保留 README.md，exe 由 scripts/download_ffmpeg.ps1 获取（115MB 超 gitee 单文件限制）
+runtime/ffmpeg/*.exe
+# kokoro/ — 只保留 README.md，模型由 scripts/download_kokoro.ps1 获取（147MB 超 gitee 单文件限制）
+runtime/kokoro/*
+!runtime/kokoro/README.md
+# llm/ — 只保留 README.md；引擎（llama-server.exe + dll）与模型 gguf 由 scripts/download_llama.ps1 获取
+runtime/llm/*
+!runtime/llm/README.md
+
+# ==================================================
+# OS junk
+# ==================================================
+*.swp
+*~
+*.tmp
+*.log

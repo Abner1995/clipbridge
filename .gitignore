@@ -1,0 +1,21 @@
+# .NET / CreatFlow
+bin/
+obj/
+*.user
+*.suo
+.vs/
+.idea/
+*.log
+
+# Runtime assets (fetched by CreatFlow/scripts/download_*.ps1)
+CreatFlow/runtime/ffmpeg/*.exe
+CreatFlow/runtime/ffmpeg/*.zip
+CreatFlow/runtime/kokoro/*
+!CreatFlow/runtime/kokoro/README.md
+CreatFlow/runtime/llm/*
+!CreatFlow/runtime/llm/README.md
+CreatFlow/runtime/llm/models/
+
+# Build / packaging output
+Output/
+CreatFlow/Output/

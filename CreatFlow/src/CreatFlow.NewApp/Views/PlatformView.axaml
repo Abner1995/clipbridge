@@ -1,0 +1,551 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:CreatFlow.NewApp.ViewModels"
+             xmlns:views="using:CreatFlow.NewApp.Views"
+             mc:Ignorable="d" d:DesignWidth="1100" d:DesignHeight="720"
+             x:Class="CreatFlow.NewApp.Views.PlatformView"
+             x:DataType="vm:PlatformViewModel">
+
+    <!-- 无 Design.DataContext：DI 注入 + INavigationAware 进入加载
+         两栏布局（§5.3）：左 = 平台列表；右 = 选中平台账号总览 -->
+    <Grid Background="White" RowDefinitions="Auto,*,Auto" Margin="36,26,36,18">
+
+        <!-- ═══ 页头 ═══ -->
+        <Grid Grid.Row="0" ColumnDefinitions="Auto,*" ColumnSpacing="14" Margin="0,0,0,14">
+            <Border Width="42" Height="42" CornerRadius="21"
+                    Background="{StaticResource BrandSoft}" VerticalAlignment="Center">
+                <!-- Viewbox 才能把墨迹居中（Avalonia Path 在 Stretch 下是左上对齐，见 App.axaml ⚠️）；
+                     图标框 20 而非 21：42-20 为偶数，四边整数留白 -->
+                <Viewbox Width="20" Height="20" Stretch="Uniform"
+                         HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path Data="{Binding HeaderIcon, Converter={StaticResource IconPath}}"
+                          Fill="{StaticResource BrandPrimary}" Stretch="Uniform" />
+                </Viewbox>
+            </Border>
+            <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
+                <TextBlock Text="平台账号" FontSize="20" FontWeight="Bold" />
+                <TextBlock Text="一个账号 = 一条独立浏览器档案，同平台多号互不顶号"
+                           FontSize="12" Foreground="{StaticResource TextMuted}" />
+            </StackPanel>
+        </Grid>
+
+        <!-- ═══ 左栏：平台列表 ═══ -->
+        <Grid Grid.Row="1" ColumnDefinitions="200,*" ColumnSpacing="16">
+            <Border Background="{StaticResource BgSubtle}"
+                    BorderBrush="{StaticResource LineBorder}" BorderThickness="1"
+                    CornerRadius="12" Padding="8">
+                <ListBox Classes="nav" Background="Transparent"
+                         ItemsSource="{Binding Groups}"
+                         SelectedItem="{Binding SelectedGroup, Mode=OneWay}"
+                         SelectionChanged="PlatformList_SelectionChanged">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate x:DataType="vm:PlatformGroup">
+                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                                <Border Width="9" Height="9" CornerRadius="4.5"
+                                        Background="{Binding SummaryDotHex}"
+                                        VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}"
+                                           FontSize="13" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" />
+                                <TextBlock Grid.Column="2" Text="{Binding CountText}"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextMuted}"
+                                           VerticalAlignment="Center" />
+                            </Grid>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </Border>
+
+            <!-- ═══ 右栏：选中平台账号总览 ═══ -->
+            <Grid Grid.Column="1" RowDefinitions="Auto,Auto,*">
+                <!-- ═══ 顶：账号标签行 —— 当前平台已绑定账号 = Chrome 标签（横向可滑动） ═══ -->
+                <Border Grid.Row="0" IsVisible="{Binding HasTabItems}"
+                        Background="#FAFBFC" BorderBrush="#E5E6EB"
+                        BorderThickness="0,0,0,1" Padding="8,5">
+                    <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                  VerticalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding TabItems}">
+                            <ItemsControl.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <StackPanel Orientation="Horizontal" Spacing="6" />
+                                </ItemsPanelTemplate>
+                            </ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:AccountDockTabViewModel">
+                                    <Border Background="{Binding ChipBackground}" CornerRadius="6"
+                                            Height="26" Padding="10,0" Cursor="Hand"
+                                            VerticalAlignment="Center"
+                                            PointerPressed="PlatformTab_PointerPressed">
+                                        <Grid ColumnDefinitions="Auto,Auto" ColumnSpacing="4">
+                                            <TextBlock Text="{Binding Title}" FontSize="12"
+                                                       Foreground="{Binding ChipForeground}"
+                                                       MaxWidth="180" TextTrimming="CharacterEllipsis"
+                                                       VerticalAlignment="Center" />
+                                            <Button Grid.Column="1" Classes="flat-icon"
+                                                    Width="16" Height="16" Padding="0"
+                                                    Click="PlatformTabClose_Click"
+                                                    ToolTip.Tip="关闭标签（保留登录态，随时可再打开）">
+                                                <Viewbox Width="10" Height="10" Stretch="Uniform">
+                                                    <Path Data="M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12Z"
+                                                          Stretch="Uniform"
+                                                          Fill="{Binding ChipForeground}" />
+                                                </Viewbox>
+                                            </Button>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                </Border>
+
+                <!-- ═══ 账号分组（2026-10-14 用户需求：发布页/合成页点组名一键勾选）═══
+                     常驻右栏顶部；账号 WebView 盖层时收起（不去挤宿主区——宿主结构一处不动） -->
+                <Border Grid.Row="1" IsVisible="{Binding !ActiveInPlatform}"
+                        Background="#FAFBFC" BorderBrush="{StaticResource LineBorder}"
+                        BorderThickness="1" CornerRadius="12" Padding="16,12" Margin="0,8,0,10">
+                    <StackPanel Spacing="8">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="2">
+                                <TextBlock Text="账号分组" FontSize="13" FontWeight="SemiBold" />
+                                <TextBlock FontSize="11" Foreground="{StaticResource TextMuted}"
+                                           TextWrapping="Wrap"
+                                           Text="一组 = 若干账号。发布页 / 合成页点组名 = 只勾选这一组账号；删除分组不影响账号与勾选。" />
+                            </StackPanel>
+                            <Button Grid.Column="1" Theme="{StaticResource SecondaryButtonTheme}"
+                                    Content="新建分组" Height="28" FontSize="12"
+                                    VerticalAlignment="Top"
+                                    Command="{Binding AddGroupCommand}" />
+                        </Grid>
+
+                        <Grid IsVisible="{Binding HasGroupStatus}">
+                            <TextBlock Text="{Binding GroupStatusMessage}" FontSize="11.5"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource ColorError}"
+                                       IsVisible="{Binding IsGroupStatusError}" />
+                            <TextBlock Text="{Binding GroupStatusMessage}" FontSize="11.5"
+                                       TextWrapping="Wrap"
+                                       Foreground="{StaticResource ColorSuccess}"
+                                       IsVisible="{Binding !IsGroupStatusError}" />
+                        </Grid>
+
+                        <TextBlock FontSize="11.5" Foreground="{StaticResource TextMuted}"
+                                   TextWrapping="Wrap"
+                                   Text="还没有分组 —— 建一组「宠物」「房产」这样的账号集合，发布时一键勾选。"
+                                   IsVisible="{Binding !HasGroupRows}" />
+
+                        <ItemsControl ItemsSource="{Binding GroupRows}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:AccountGroupRow">
+                                    <Border Background="White" BorderBrush="#EDEFF3"
+                                            BorderThickness="1" CornerRadius="10"
+                                            Padding="12,10" Margin="0,0,0,6">
+                                        <StackPanel Spacing="8">
+                                            <!-- 展示态：名称 + 成员摘要 + 操作 -->
+                                            <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10"
+                                                  IsVisible="{Binding !IsEditing}">
+                                                <TextBlock Text="{Binding Name}" FontSize="13"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center" />
+                                                <TextBlock Grid.Column="1" Text="{Binding Summary}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource TextMuted}"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center" />
+                                                <StackPanel Grid.Column="2" Orientation="Horizontal"
+                                                            Spacing="8">
+                                                    <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                            Content="编辑" Height="26" FontSize="11"
+                                                            Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).BeginEditGroupCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                    <Button Theme="{StaticResource DangerButtonTheme}"
+                                                            Content="删除" Height="26" FontSize="11"
+                                                            IsVisible="{Binding !IsConfirmingDelete}"
+                                                            Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).BeginDeleteGroupCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <!-- 删除两段式确认条（原地，不弹窗） -->
+                                            <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8"
+                                                  IsVisible="{Binding IsConfirmingDelete}">
+                                                <TextBlock FontSize="11.5" Foreground="#D46B08"
+                                                           TextWrapping="Wrap"
+                                                           VerticalAlignment="Center"
+                                                           Text="删除后发布页 / 合成页不再出现这个分组（账号与勾选不受影响）。确定删除？" />
+                                                <Button Grid.Column="1"
+                                                        Theme="{StaticResource SecondaryButtonTheme}"
+                                                        Content="取消" Height="26" FontSize="11"
+                                                        Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).CancelDeleteGroupCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Grid.Column="2"
+                                                        Theme="{StaticResource DangerButtonTheme}"
+                                                        Content="确认删除" Height="26" FontSize="11"
+                                                        Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).ConfirmDeleteGroupCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </Grid>
+
+                                            <!-- 编辑态：名称 + 按平台的成员复选清单 + 保存/取消 -->
+                                            <StackPanel Spacing="8" IsVisible="{Binding IsEditing}">
+                                                <StackPanel Orientation="Horizontal" Spacing="10">
+                                                    <TextBox Text="{Binding Name}"
+                                                             Theme="{StaticResource AppInputTheme}"
+                                                             FontSize="13" Height="30" Width="220"
+                                                             Watermark="分组名称（如：宠物）" />
+                                                    <TextBlock Text="{Binding Error}" FontSize="11.5"
+                                                               Foreground="{StaticResource ColorError}"
+                                                               TextWrapping="Wrap"
+                                                               VerticalAlignment="Center"
+                                                               IsVisible="{Binding HasError}" />
+                                                </StackPanel>
+
+                                                <TextBlock FontSize="11"
+                                                           Foreground="{StaticResource TextMuted}"
+                                                           Text="没有可勾选的账号 —— 先在左侧选个平台把账号登录进来"
+                                                           IsVisible="{Binding !HasBlocks}" />
+
+                                                <ItemsControl ItemsSource="{Binding Blocks}">
+                                                    <!-- 横向排列（2026-11-05 用户需求）：平台一列、账号纵向排在列内，
+                                                         6 个平台一行铺开；窗口窄时自动换行。 -->
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <WrapPanel Orientation="Horizontal" />
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate x:DataType="vm:AccountGroupPlatformBlock">
+                                                            <StackPanel Spacing="8" Margin="0,2,20,2" Width="200">
+                                                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                                                    <Border Width="8" Height="8" CornerRadius="4"
+                                                                            Background="{Binding BrandHex}"
+                                                                            VerticalAlignment="Center" />
+                                                                    <TextBlock Text="{Binding PlatformName}"
+                                                                               FontSize="11.5"
+                                                                               FontWeight="SemiBold" />
+                                                                </StackPanel>
+                                                                <ItemsControl ItemsSource="{Binding Options}">
+                                                                    <ItemsControl.ItemsPanel>
+                                                                        <ItemsPanelTemplate>
+                                                                            <StackPanel Spacing="6" />
+                                                                        </ItemsPanelTemplate>
+                                                                    </ItemsControl.ItemsPanel>
+                                                                    <ItemsControl.ItemTemplate>
+                                                                        <DataTemplate x:DataType="vm:AccountGroupMemberOption">
+                                                                            <CheckBox IsChecked="{Binding IsChecked}"
+                                                                                      Margin="4,0,0,0">
+                                                                                <StackPanel Orientation="Horizontal"
+                                                                                            Spacing="6">
+                                                                                    <TextBlock Text="{Binding Label}"
+                                                                                               FontSize="12"
+                                                                                               MaxWidth="150"
+                                                                                               TextTrimming="CharacterEllipsis"
+                                                                                               ToolTip.Tip="{Binding Label}"
+                                                                                               VerticalAlignment="Center" />
+                                                                                    <Border Background="{StaticResource BrandSoft}"
+                                                                                            CornerRadius="5"
+                                                                                            Padding="6,1"
+                                                                                            VerticalAlignment="Center"
+                                                                                            IsVisible="{Binding IsPrimary}">
+                                                                                        <TextBlock Text="默认"
+                                                                                                   FontSize="9.5"
+                                                                                                   FontWeight="Bold"
+                                                                                                   Foreground="{StaticResource BrandActive}" />
+                                                                                    </Border>
+                                                                                </StackPanel>
+                                                                            </CheckBox>
+                                                                        </DataTemplate>
+                                                                    </ItemsControl.ItemTemplate>
+                                                                </ItemsControl>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+
+                                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                                    <Button Theme="{StaticResource CtaButtonTheme}"
+                                                            Content="保存" Height="28" FontSize="12"
+                                                            Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).SaveGroupCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                    <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                            Content="取消" Height="28" FontSize="12"
+                                                            Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).CancelEditGroupCommand}"
+                                                            CommandParameter="{Binding}" />
+                                                </StackPanel>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- ═══ 底：管理列表（无活动账号） ⇄ 账号 WebView 宿主（当前平台有活动账号时盖层） ═══ -->
+                <Grid Grid.Row="2">
+                    <ScrollViewer IsVisible="{Binding !ActiveInPlatform}">
+                        <ContentControl Content="{Binding SelectedGroup}">
+                            <ContentControl.ContentTemplate>
+                        <DataTemplate x:DataType="vm:PlatformGroup">
+                            <StackPanel Spacing="12">
+                                <!-- 平台头：名称 + 汇总 + 操作 -->
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                    <StackPanel Spacing="2">
+                                        <StackPanel Orientation="Horizontal" Spacing="10">
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       FontSize="19" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding SummaryText}"
+                                                       FontSize="12"
+                                                       Foreground="{StaticResource TextMuted}"
+                                                       VerticalAlignment="Bottom"
+                                                       Margin="0,0,0,3" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                Spacing="8" VerticalAlignment="Center">
+                                        <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                Content="检测状态" Height="28" FontSize="12"
+                                                Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).ProbeCommand}" />
+                                        <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                Content="刷新" Height="28" FontSize="12"
+                                                Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).LoadCommand}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- 账号卡列表 -->
+                                <ItemsControl ItemsSource="{Binding Sessions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="vm:PlatformSession">
+                                            <Border Background="#FAFBFC"
+                                                    BorderBrush="{StaticResource LineBorder}"
+                                                    BorderThickness="1" CornerRadius="12"
+                                                    Padding="18,14" Margin="0,0,0,10">
+                                                <StackPanel Spacing="10">
+                                                    <Grid ColumnDefinitions="Auto,*,Auto"
+                                                          ColumnSpacing="12">
+                                                        <!-- 平台色头像 -->
+                                                        <Border Width="42" Height="42"
+                                                                CornerRadius="21"
+                                                                Background="{Binding BrandColorHex}"
+                                                                VerticalAlignment="Top">
+                                                            <TextBlock Text="{Binding AvatarText}"
+                                                                       FontSize="16" FontWeight="Bold"
+                                                                       Foreground="White"
+                                                                       HorizontalAlignment="Center"
+                                                                       VerticalAlignment="Center" />
+                                                        </Border>
+
+                                                        <StackPanel Grid.Column="1" Spacing="4">
+                                                            <!-- 名称行 -->
+                                                            <Grid ColumnDefinitions="Auto,*"
+                                                                  ColumnSpacing="8"
+                                                                  IsVisible="{Binding !IsRenaming}">
+                                                                <TextBlock Text="{Binding DisplayLabel}"
+                                                                           FontSize="15"
+                                                                           FontWeight="SemiBold"
+                                                                           VerticalAlignment="Center" />
+                                                                <StackPanel Grid.Column="1"
+                                                                            Orientation="Horizontal"
+                                                                            Spacing="6">
+                                                                    <Border Background="{StaticResource BrandSoft}"
+                                                                            CornerRadius="6"
+                                                                            Padding="7,2"
+                                                                            IsVisible="{Binding IsPrimary}"
+                                                                            VerticalAlignment="Center">
+                                                                        <TextBlock Text="默认" FontSize="10"
+                                                                                   FontWeight="Bold"
+                                                                                   Foreground="{StaticResource BrandActive}" />
+                                                                    </Border>
+                                                                    <Border CornerRadius="6"
+                                                                            Padding="7,2"
+                                                                            Background="{Binding StatusBadgeBg}"
+                                                                            VerticalAlignment="Center">
+                                                                        <TextBlock Text="{Binding StatusLabel}"
+                                                                                   FontSize="10"
+                                                                                   FontWeight="Bold"
+                                                                                   Foreground="{Binding StatusBadgeFg}" />
+                                                                    </Border>
+                                                                </StackPanel>
+                                                            </Grid>
+                                                            <!-- 改名输入行 -->
+                                                            <StackPanel Orientation="Horizontal"
+                                                                        Spacing="8"
+                                                                        IsVisible="{Binding IsRenaming}">
+                                                                <TextBox Text="{Binding LabelDraft}"
+                                                                         Theme="{StaticResource AppInputTheme}"
+                                                                         FontSize="13" Height="30"
+                                                                         Width="220"
+                                                                         Watermark="输入备注名" />
+                                                                <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                        Content="保存" Height="30"
+                                                                        FontSize="12"
+                                                                        Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).RenameSaveCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                                <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                        Content="取消" Height="30"
+                                                                        FontSize="12"
+                                                                        Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).RenameCancelCommand}"
+                                                                        CommandParameter="{Binding}" />
+                                                            </StackPanel>
+
+                                                            <TextBlock Text="{Binding Subtitle}"
+                                                                       FontSize="11"
+                                                                       Foreground="{StaticResource TextMuted}"
+                                                                       IsVisible="{Binding !IsRenaming}" />
+                                                        </StackPanel>
+                                                    </Grid>
+
+                                                    <!-- 元信息 + 操作条（改名/解绑确认中隐藏） -->
+                                                    <Border Height="1"
+                                                            Background="{StaticResource BgDivider}"
+                                                            IsVisible="{Binding ShowDetails}" />
+                                                    <Grid ColumnDefinitions="*,Auto"
+                                                          ColumnSpacing="12"
+                                                          IsVisible="{Binding ShowDetails}">
+                                                        <TextBlock Text="{Binding MetaText}"
+                                                                   FontSize="11"
+                                                                   Foreground="{StaticResource TextPlaceholder}"
+                                                                   VerticalAlignment="Center"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <StackPanel Grid.Column="1"
+                                                                    Orientation="Horizontal"
+                                                                    Spacing="8">
+                                                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                    Content="设为默认" Height="26"
+                                                                    FontSize="11"
+                                                                    IsVisible="{Binding !IsPrimary}"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).SetPrimaryCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                    Content="改名" Height="26"
+                                                                    FontSize="11"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).RenameBeginCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                    Content="打开" Height="26"
+                                                                    FontSize="11"
+                                                                    ToolTip.Tip="在标签坞中打开该账号（独立档案，登录态随档案恢复）"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).OpenInDockCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                    Content="重新登录" Height="26"
+                                                                    FontSize="11"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).ReLoginCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <!-- 解绑:两段式 —— 先展开卡片内确认条(见下方),「确认解绑」才走 Delete -->
+                                                            <Button Theme="{StaticResource DangerButtonTheme}"
+                                                                    Content="解绑" Height="26"
+                                                                    FontSize="11"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).UnbindBeginCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                        </StackPanel>
+                                                    </Grid>
+
+                                                    <!-- ═══ 解绑确认条(两段式防误触) ═══ -->
+                                                    <StackPanel Spacing="10"
+                                                                IsVisible="{Binding ShowUnbindConfirmStrip}">
+                                                        <Border Height="1"
+                                                                Background="{StaticResource BgDivider}" />
+                                                        <TextBlock FontSize="11"
+                                                                   Foreground="{StaticResource TextSecondary}"
+                                                                   TextWrapping="Wrap"
+                                                                   Text="{Binding UnbindConfirmText}" />
+                                                        <StackPanel Orientation="Horizontal"
+                                                                    HorizontalAlignment="Right"
+                                                                    Spacing="8">
+                                                            <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                                                    Content="取消" Height="26"
+                                                                    FontSize="11"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).UnbindCancelCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                            <Button Theme="{StaticResource DangerButtonTheme}"
+                                                                    Content="确认解绑" Height="26"
+                                                                    FontSize="11"
+                                                                    Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).DeleteCommand}"
+                                                                    CommandParameter="{Binding}" />
+                                                        </StackPanel>
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- 空态：首个账号引导（独立档案，互不顶号） -->
+                                <Grid IsVisible="{Binding IsEmpty}">
+                                    <Rectangle RadiusX="12" RadiusY="12"
+                                               Stroke="{StaticResource BrandSoftBorder}"
+                                               StrokeThickness="1"
+                                               StrokeDashArray="4,3"
+                                               IsHitTestVisible="False" />
+                                    <StackPanel Margin="26,24" Spacing="10"
+                                                HorizontalAlignment="Center">
+                                        <TextBlock Text="尚未绑定此平台账号"
+                                                   FontSize="14" FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextSecondary}"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="登录后每个账号使用独立浏览器档案，互不顶号"
+                                                   FontSize="12"
+                                                   Foreground="{StaticResource TextMuted}"
+                                                   HorizontalAlignment="Center" />
+                                        <Button Theme="{StaticResource CtaButtonTheme}"
+                                                Content="立即登录"
+                                                Height="34" FontSize="13"
+                                                Margin="0,4,0,0"
+                                                HorizontalAlignment="Center"
+                                                Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).AddAccountCommand}"
+                                                CommandParameter="{Binding}" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- 非空：底部再加号 -->
+                                <Button Theme="{StaticResource SecondaryButtonTheme}"
+                                        IsVisible="{Binding !IsEmpty}"
+                                        Height="36" FontSize="12"
+                                        HorizontalAlignment="Stretch"
+                                        Command="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).AddAccountCommand}"
+                                        CommandParameter="{Binding}">
+                                    <TextBlock Text="＋ 再添加一个此平台账号"
+                                               HorizontalAlignment="Center" />
+                                </Button>
+                            </StackPanel>
+                        </DataTemplate>
+                            </ContentControl.ContentTemplate>
+                        </ContentControl>
+                    </ScrollViewer>
+                    <!-- 账号 WebView 宿主叠层：全部账号标签常驻；当前平台有活动账号时盖在列表上 -->
+                    <views:TabDockView DataContext="{Binding Dock}"
+                                       IsVisible="{Binding $parent[UserControl].((vm:PlatformViewModel)DataContext).ActiveInPlatform}" />
+                </Grid>
+            </Grid>
+        </Grid>
+
+        <!-- ═══ 底部：错误/状态 + 本地库路径（微信式） ═══ -->
+        <StackPanel Grid.Row="2" Spacing="6" Margin="0,10,0,0">
+            <ProgressBar IsIndeterminate="True" Height="3"
+                         IsVisible="{Binding IsLoading}" />
+            <Border Background="{StaticResource BgError}" CornerRadius="10"
+                    Padding="12,8" IsVisible="{Binding HasError}">
+                <TextBlock Text="{Binding Error}" FontSize="12"
+                           Foreground="{StaticResource ColorError}" TextWrapping="Wrap" />
+            </Border>
+            <!-- 状态（错误红 / 成功绿，有文案才显示） -->
+            <Grid IsVisible="{Binding HasStatus}">
+                <Border Background="{StaticResource BgError}" CornerRadius="10"
+                        Padding="12,8" IsVisible="{Binding IsStatusError}">
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                               Foreground="{StaticResource ColorError}"
+                               TextWrapping="Wrap" />
+                </Border>
+                <Border Background="{StaticResource BgSuccess}" CornerRadius="10"
+                        Padding="12,8" IsVisible="{Binding !IsStatusError}">
+                    <TextBlock Text="{Binding StatusMessage}" FontSize="12"
+                               Foreground="{StaticResource ColorSuccess}"
+                               TextWrapping="Wrap" />
+                </Border>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</UserControl>
