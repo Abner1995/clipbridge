@@ -1,4 +1,7 @@
+using CreatFlow.Platforms.Bilibili;
+using CreatFlow.Platforms.Douyin;
 using CreatFlow.Platforms.Topics;
+using CreatFlow.Platforms.Xiaohongshu;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -188,7 +191,13 @@ public static class PublishPreflight
             issues.Add(new PreflightIssue(PreflightSeverity.Warning, $"{name}：{note}", key));
 
         // ── 声明能力空洞：不支持就置灰说明，不静默丢弃（§4.3） ──
-        if (DeclarationMapping.UnsupportedReason(key, draft.DeclarationKind) is { } reason)
+        // 头条有平台专有覆盖（A1）：只要覆盖非 null（含「不声明」），就按平台卡的选择走，
+        // 不再对全局语义报「不支持」—— 否则选了「投资观点」也会被全局营销声明提示打扰。
+        var toutiaoOverride = key == PlatformNames.Toutiao
+            ? p.Toutiao?.DeclarationOverride
+            : null;
+        if (toutiaoOverride is null
+            && DeclarationMapping.UnsupportedReason(key, draft.DeclarationKind) is { } reason)
             issues.Add(new PreflightIssue(PreflightSeverity.Warning, $"{name}：{reason}，该平台将不做声明", key));
 
         // ── 位置：抖音/小红书要求 ID 与名称同时非空，否则整个位置不发（缺陷 L10） ──
@@ -204,13 +213,13 @@ public static class PublishPreflight
         switch (key)
         {
             case PlatformNames.Douyin:
-                ValidateDouyin(draft, name, key, issues);
+                ValidateDouyin(draft, p, name, key, issues);
                 break;
             case PlatformNames.Kuaishou:
                 ValidateKuaishou(draft, p, name, key, issues);
                 break;
             case PlatformNames.WechatVideo:
-                ValidateWechatVideo(draft, name, key, issues);
+                ValidateWechatVideo(draft, p, name, key, issues);
                 break;
             case PlatformNames.Xiaohongshu:
                 ValidateXhs(draft, p, name, key, issues);
@@ -277,6 +286,42 @@ public static class PublishPreflight
             }
         }
 
+        // 原创声明（2026-11-10 复审定论）：平台侧视频原创能力不可用 —— 发布页
+        // GetPublishAuth 返回 ClaimOriginPermission=false + CanNotClaimOriginReason=原创功能已下线；
+        // 受控发布提交「原创: 是」、审核完成后回读仍是 ClaimOrigin=0 / isOriginal=false。
+        // 发布体里字段照发（无害），但用户会以为勾了就生效 —— 必须点名说清楚。
+        if (p.IsOriginal ?? draft.IsOriginal)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：视频原创声明当前不可用（平台侧「原创功能已下线」），勾选的原创不会生效", key));
+        }
+
+        // 视频生成图文=仅保存草稿（2026-11-11 真账号定论）：平台只在视频本身存草稿
+        // （PublishType=0）时才保留图文草稿；当前发布流程恒发 PublishType=1，该值被静默
+        // 忽略、图文随视频发布（可见性同视频）。这不是「效果打折」，要让用户明确知道。
+        if (p.Toutiao?.VideoTransArticleFlag is 2)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：头条「仅保存草稿」只在视频本身存草稿时生效；当前发布流程会立即发布视频，"
+                + "平台会忽略该选项，生成的图文随视频发布", key));
+        }
+
+        // 互动贴纸（A3）：页面「+添加贴纸」对竖版与 <10 秒视频置灰（2026-11-10 灰文案实测）。
+        // 贴纸是可选项、创建失败也不拦发布 —— 这里只提示，不拦提交。
+        if (p.Toutiao?.FollowSticker == true)
+        {
+            if (portrait)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：头条互动贴纸只支持横版视频（当前竖版），关注引导不会添加", key));
+            }
+            if (draft.Meta is { DurationS: < 10 })
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：视频时长不足 10 秒，头条不支持互动贴纸，关注引导不会生效", key));
+            }
+        }
+
         // 音轨（2026-11-09 实测）：无音轨视频 PublishVideo 接口成功，但审核判
         // 「视频源文件缺少音频信息」，作品不可用（两条实测均中）。Meta 未探测时不下结论。
         if (draft.Meta is { HasAudio: false })
@@ -292,9 +337,21 @@ public static class PublishPreflight
                 $"{name}：头条封面必填；未选封面时靠自动抽首帧，需要先读到视频信息", key));
         }
 
-        // 作品声明：**不在这里报** —— 能力矩阵
-        // （<see cref="DeclarationMapping.UnsupportedReason"/>）已经对每个平台统一说过一次，
-        // 这里再报就是同一条提示出现两遍（2026-11-07 用户截图实测）。
+        // 作品声明（A1）：能力空洞统一由 DeclarationMapping.UnsupportedReason 报一次
+        // （2026-11-07 用户截图实测，不要重复）；这里只补「自行拍摄」的二级信息缺失 ——
+        // 抓包 CreativeInfo 是 {City, CreativeTime(毫秒)}，缺项时不编造，只提示。
+        if (DeclarationMapping.ToutiaoComplianceType(
+                draft.DeclarationKind, p.Toutiao?.DeclarationOverride) == 1)
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(p.Toutiao?.ComplianceCity)) missing.Add("拍摄城市");
+            if (p.Toutiao?.ComplianceTime is null) missing.Add("拍摄时间");
+            if (missing.Count > 0)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：头条「自行拍摄」声明缺少{string.Join("、", missing)}，CreativeInfo 将不完整", key));
+            }
+        }
     }
 
     /// <summary>
@@ -352,7 +409,7 @@ public static class PublishPreflight
 
     /// <summary>
     /// 活动落点预检（2.6.6）：已结束的活动不会带来曝光；平台没有活动能力时明确「不会生效」；
-    /// 小红书活动只有关联话题才会生效 —— 只选活动、没有带 ID 话题等于没参加。
+    /// 小红书（A6 起）活动有独立绑定 —— 缺带 ID 话题只是少一份赛道曝光，不再等于没参加。
     /// </summary>
     private static void ValidateActivities(
         PlatformParams p, string name, string key, List<PreflightIssue> issues)
@@ -378,16 +435,18 @@ public static class PublishPreflight
                 $"{name}：活动「{string.Join("、", ended)}」已结束，发布后不会获得活动曝光", key));
         }
 
-        // 小红书没有独立活动字段：活动靠关联话题进 hash_tag。只选活动、没有带 ID 话题的
-        // 提交不会参与活动（2.6.5 只记日志，用户看不到 —— 这里提上来）。
+        // 小红书（A6，2026-11-11）：活动现在有独立落点 —— business_binds.optionRelationList
+        // 的 ACTIVITY_COMPONENT，不再「必须靠关联话题才生效」。缺带 ID 话题只是少了
+        // 活动赛道话题的曝光（活动关联话题进 hash_tag 仍是有效曝光手段，保留提示）。
         if (key == PlatformNames.Xiaohongshu)
         {
             var (refs, _) = PublishPayloadBuilder.MergeTopics(p);
             if (!refs.Any(t => t.HasPlatformId))
             {
                 issues.Add(new PreflightIssue(PreflightSeverity.Warning,
-                    $"{name}：活动必须关联话题才会生效，当前没有带平台 ID 的话题"
-                    + "（请在话题块添加，或在 params.txt 写「话题ID」）", key));
+                    $"{name}：活动已按 ACTIVITY_COMPONENT 绑定，但当前没有带平台 ID 的话题"
+                    + " —— 缺少活动赛道话题的曝光（可选：在话题块添加，或在 params.txt 写「话题ID」）",
+                    key));
             }
         }
     }
@@ -431,6 +490,149 @@ public static class PublishPreflight
             issues.Add(new PreflightIssue(PreflightSeverity.Error,
                 $"{name}：B站分区 ID 不合法（tid={tid} / human_type2={type2}）", key));
         }
+
+        // 字幕（B5，2026-11-15）：用户明确配了字幕，文件就必须真的能传 ——
+        // 只支持 .srt（页面 input accept + JS 正则双重校验），文件缺失直接拦
+        // （发布后才发现没字幕比拦截更伤人）。
+        var b = p.Bilibili;
+        if (!string.IsNullOrWhiteSpace(b?.SubtitleFile))
+        {
+            var subtitlePath = b.SubtitleFile.Trim();
+            if (!subtitlePath.EndsWith(".srt", StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：B站字幕只支持 .srt 文件（当前：{Path.GetFileName(subtitlePath)}）", key));
+            }
+            else if (!File.Exists(subtitlePath))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：B站字幕文件不存在：{subtitlePath}", key));
+            }
+        }
+
+        // 个性化卡片（B5 / B5.2）：互动引导 / 关联视频 / 投票弹幕。
+        // 非 H.264 MP4 时投稿页的按钮本身就是灰的 —— **照实提示、不硬拦**（wire §0）。
+        var guideEnabled = b?.GuideCardEnabled == true;
+        var relatedEnabled = b?.RelatedVideoEnabled == true;
+        var voteEnabled = b?.VoteEnabled == true;
+
+        if (guideEnabled || relatedEnabled || voteEnabled)
+        {
+            if (draft.Meta is { } cardMeta)
+            {
+                var formatOk = cardMeta.FormatName is null
+                    || cardMeta.FormatName.Contains("mp4", StringComparison.OrdinalIgnoreCase);
+                var codecOk = cardMeta.CodecName is null
+                    || string.Equals(cardMeta.CodecName, "h264", StringComparison.OrdinalIgnoreCase);
+                if (!formatOk || !codecOk)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                        $"{name}：B站个性化卡片只在 H.264 MP4 视频上可用"
+                        + $"（当前 {cardMeta.CodecName ?? "未知编码"} / {cardMeta.FormatName ?? "未知格式"}），"
+                        + "发布时可能不生效", key));
+                }
+            }
+        }
+
+        if (guideEnabled)
+        {
+            var followType = b!.GuideCardFollowType ?? 2;
+            if (followType is < 0 or > 2)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：B站互动引导样式只能选 关注 / 三连 / 三连+关注（当前 {followType}）", key));
+            }
+
+            if (draft.Meta is { } meta)
+            {
+                var startSeconds = b.GuideCardStartSeconds ?? 0;
+                if (startSeconds > 0 && meta.DurationS > 0 && startSeconds > meta.DurationS)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                        $"{name}：B站互动引导时间 {startSeconds} 秒超出视频时长 "
+                        + $"{meta.DurationS:0.#} 秒", key));
+                }
+            }
+        }
+
+        // 关联视频（B5.2）：开了就必须有目标 BVID（create 体的 oid）。
+        // 「仅自己」的目标稿件平台会回 79025 —— 本地无法判断目标可见性，不硬拦，
+        // 失败是非致命的（稿件照发，只是这张卡片不生效）。
+        if (relatedEnabled)
+        {
+            if (string.IsNullOrWhiteSpace(b!.RelatedVideoBvid))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：已开启B站关联视频卡片，但没填目标视频 BVID", key));
+            }
+
+            if (draft.Meta is { } meta)
+            {
+                var startSeconds = Math.Max(0, b.RelatedVideoStartSeconds ?? 0);
+                if (startSeconds > 0 && meta.DurationS > 0 && startSeconds > meta.DurationS)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                        $"{name}：B站关联视频时间 {startSeconds} 秒超出视频时长 "
+                        + $"{meta.DurationS:0.#} 秒", key));
+                }
+            }
+        }
+
+        // 投票弹幕（B5.2）：页面同款规则（问题 ≤12 字、选项 2~4 个且 ≤6 字、
+        // 不许含分号 / 重复）；选项必须从 A 开始连续（C 空不能单独填 D）。
+        if (voteEnabled)
+        {
+            if (BilibiliCardService.HasOptionGap(
+                    b!.VoteOptionA, b.VoteOptionB, b.VoteOptionC, b.VoteOptionD))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：B站投票选项必须从 A 开始连续填写（C 为空时不能只填 D）", key));
+            }
+
+            var voteOptions = BilibiliCardService.VoteOptionsFrom(
+                b.VoteOptionA, b.VoteOptionB, b.VoteOptionC, b.VoteOptionD);
+            foreach (var problem in BilibiliCardService.ValidateVote(b.VoteQuestion, voteOptions))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                    $"{name}：B站{problem}", key));
+            }
+
+            if (draft.Meta is { } meta)
+            {
+                var startSeconds = Math.Max(0, b.VoteStartSeconds ?? 0);
+                var durationSeconds = Math.Max(0, b.VoteDurationSeconds ?? 7);
+                if (startSeconds > 0 && meta.DurationS > 0 && startSeconds > meta.DurationS)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                        $"{name}：B站投票卡片时间 {startSeconds} 秒超出视频时长 "
+                        + $"{meta.DurationS:0.#} 秒", key));
+                }
+                else if (meta.DurationS > 0 && startSeconds + durationSeconds > meta.DurationS + 0.05)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Error,
+                        $"{name}：B站投票卡片的起止（{startSeconds} 秒 + {durationSeconds} 秒）"
+                        + $"超出视频时长 {meta.DurationS:0.#} 秒", key));
+                }
+            }
+        }
+
+        // 同一时间段两张卡片：页面会 toast「该时间段已配置卡片」，后建的那张可能失败。
+        // 卡片失败本来就不拦稿件，这里只提醒（不硬拦）。
+        var cardStarts = new List<(string Label, int Start)>();
+        if (guideEnabled) cardStarts.Add(("互动引导", Math.Max(0, b?.GuideCardStartSeconds ?? 0)));
+        if (relatedEnabled) cardStarts.Add(("关联视频", Math.Max(0, b?.RelatedVideoStartSeconds ?? 0)));
+        if (voteEnabled) cardStarts.Add(("投票弹幕", Math.Max(0, b?.VoteStartSeconds ?? 0)));
+        var conflicts = cardStarts
+            .GroupBy(c => c.Start)
+            .Where(g => g.Count() > 1)
+            .Select(g => $"{(g.Key == 0 ? "开头" : g.Key + " 秒")}（{string.Join(" / ", g.Select(c => c.Label))}）")
+            .ToList();
+        if (conflicts.Count > 0)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：B站多张卡片配在同一时间段 {string.Join("、", conflicts)}，"
+                + "平台会提示「该时间段已配置卡片」，后建的卡片可能不生效", key));
+        }
     }
 
     /// <summary>
@@ -441,7 +643,7 @@ public static class PublishPreflight
         => draft.Meta is { } meta && meta.Height > meta.Width;
 
     private static void ValidateDouyin(
-        PublishDraft draft, string name, string key, List<PreflightIssue> issues)
+        PublishDraft draft, PlatformParams p, string name, string key, List<PreflightIssue> issues)
     {
         // 转载选了「抖音作品」却没挑具体作品：from_item_id 为 null，这条必然发不出去
         // （PublishMapping.cs 组装 declare_user_info 时会传空）——提交前拦下
@@ -461,6 +663,53 @@ public static class PublishPreflight
         {
             issues.Add(new PreflightIssue(PreflightSeverity.Warning,
                 $"{name}：已选自定义封面图，抖音不会使用「封面帧」设置（页面同样 poster_delay=0）", key));
+        }
+
+        // 添加标签（B1 抓包 2026-11-11）：四类互斥（页面同一个 anchor 单选）。
+        // 位置仍走旧 POI 路径，与标签同时设置时按标签发布 —— 必须说清楚，不能静默丢位置。
+        if (p.Douyin?.Anchor is { } anchor)
+        {
+            var typeLabel = DouyinAnchorTypes.Label(anchor.Type);
+            if (string.IsNullOrWhiteSpace(anchor.Id) || !DouyinAnchorTypes.IsSupported(anchor.Type))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：「{typeLabel}」标签参数不完整，发布时不会带上", key));
+            }
+            else if (DouyinAnchorService.BuildAnchorJson(anchor.Type, anchor.Id, anchor.Content) is null)
+            {
+                // 游戏 / 小程序：发布体 content 只能整段透传平台返回的挂载信息，缺了就组不出来
+                var mountLabel = anchor.Type == DouyinAnchorTypes.Applet ? "小程序" : "游戏";
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：{mountLabel}标签缺少平台挂载信息，发布时不会带上（请重新选择）", key));
+            }
+            else if (p.Location is { IsUsable: true } pos)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：抖音「添加标签」与「位置」互斥，已按「{typeLabel} · {anchor.Title}」发布，"
+                    + $"位置「{pos.Name}」不会下发", key));
+            }
+        }
+
+        // 横版 4:3 封面（B1 抓包 2026-11-11）：文件被删 / 被移走时执行端会跳过
+        // （非致命、不拦发布），提前点名，别让用户以为横版槽设上了。
+        if (!string.IsNullOrWhiteSpace(p.Douyin?.CoverLandscapePath)
+            && !File.Exists(p.Douyin.CoverLandscapePath))
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：抖音横版 4:3 封面文件不存在，发布时不会单独下发横版封面", key));
+        }
+
+        // @好友（2026-11-11 补抓 discover/search）：缺 uid / 昵称的条目发布时跳过
+        // （DouyinMentionRules.Usable 同一口径），提前点名，别让用户以为带上去了。
+        if (p.Douyin?.MentionUsers is { Count: > 0 } mentions)
+        {
+            var usable = DouyinMentionRules.Usable(mentions);
+            if (usable.Count < mentions.Count)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：抖音 @好友里有 {mentions.Count - usable.Count} 条缺用户 ID / 昵称，"
+                    + "发布时不会带上", key));
+            }
         }
     }
 
@@ -491,6 +740,91 @@ public static class PublishPreflight
                 + $"超过 {PlatformLimits.KuaishouCaptionChars} 字上限，超出部分不会发送", key));
         }
 
+        // @好友（2026-11-15 submit 抓包定案）：caption 里是纯文本 token
+        // @昵称(O<userId>)，要 userId + 昵称两件套。坏条目发布端会跳过（不拦发布），
+        // 这里点名，免得用户以为 @ 挂上了。
+        var mentions = p.Kuaishou?.MentionUsers ?? new List<KuaishouMentionRef>();
+        var badMentions = mentions.Count(m => m.UserId <= 0 || string.IsNullOrWhiteSpace(m.UserName));
+        if (badMentions > 0)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：{badMentions} 个 @好友 参数不完整（缺用户 ID / 昵称），发布时不会带上", key));
+        }
+
+        // 关联小程序（2026-11-15 真页面抓包）：wire 是完整的 associateTaskId 对象，
+        // bindId 是关键标识（taskId 观测为 0 也算有效）。半截数据发布端会跳过，这里点名。
+        if (p.Kuaishou?.AssociateTask is { } associate
+            && string.IsNullOrWhiteSpace(associate.BindId))
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：关联小程序参数不完整（缺 bindId），发布时不会带上", key));
+        }
+
+        // 共创（2026-11-15 页面 bundle）：元素 {userId, userName, userHead, coPublishRole}，
+        // 坏条目（缺 ID / 昵称）发布端会跳过，这里点名。
+        var badCoPublish = (p.Kuaishou?.CoPublishUsers ?? [])
+            .Count(u => u.UserId <= 0 || string.IsNullOrWhiteSpace(u.UserName));
+        if (badCoPublish > 0)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：{badCoPublish} 个共创用户参数不完整（缺用户 ID / 昵称），发布时不会带上", key));
+        }
+
+        // 章节（B3 抓包 2026-11-11，bundle 页面规则）—— 只提示，不拦发布：
+        // 页面侧校验是否会由 submit 同样执行尚未实测（抓包缺口≠平台不支持）。
+        if (p.Chapters.Count > 0)
+        {
+            var chapters = p.Chapters.OrderBy(c => c.StartMs).ToList();
+
+            if (chapters.Count > PlatformLimits.KuaishouMaxChapters)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：快手最多 {PlatformLimits.KuaishouMaxChapters} 个章节（当前 {chapters.Count} 个），"
+                    + "超出部分可能不保存", key));
+            }
+
+            var overTitle = chapters.FirstOrDefault(
+                c => (c.Title ?? "").Trim().Length > PlatformLimits.KuaishouChapterTitleChars);
+            if (overTitle is not null)
+            {
+                var title = (overTitle.Title ?? "").Trim();
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：快手章节标题最多 {PlatformLimits.KuaishouChapterTitleChars} 字，"
+                    + $"「{title}」有 {title.Length} 字，可能被截断", key));
+            }
+
+            var tooClose = false;
+            for (var i = 1; i < chapters.Count; i++)
+            {
+                if ((chapters[i].StartMs - chapters[i - 1].StartMs) / 1000
+                    <= PlatformLimits.KuaishouChapterMinGapS)
+                {
+                    tooClose = true;
+                    break;
+                }
+            }
+            if (tooClose)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：快手相邻章节间隔需大于 {PlatformLimits.KuaishouChapterMinGapS} 秒，"
+                    + "过近的章节可能被拒", key));
+            }
+
+            if (chapters.Count == 1 && chapters[0].StartMs <= 0)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：快手不支持「一个章节包含全部视频时长」（从 0:00 开始且只有一章）", key));
+            }
+
+            if (draft.Meta is { DurationS: > 0 } meta
+                && meta.DurationS <= PlatformLimits.KuaishouChapterMinDurationS)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：视频仅 {meta.DurationS:0.#} 秒，快手页面在 ≤"
+                    + $"{PlatformLimits.KuaishouChapterMinDurationS:0} 秒时不显示章节入口，章节可能不生效", key));
+            }
+        }
+
         // 封面帧 vs 自定义封面图：上传封面图后 submit 的 coverTimeStamp 归 0
         // （页面默认组合 coverTimeStamp=0；见 KuaishouCoverService.ResolveCover）。
         // 说清楚，免得用户以为「选的那一帧」和「自己的图」都生效了。
@@ -503,8 +837,31 @@ public static class PublishPreflight
     }
 
     private static void ValidateWechatVideo(
-        PublishDraft draft, string name, string key, List<PreflightIssue> issues)
+        PublishDraft draft, PlatformParams p, string name, string key, List<PreflightIssue> issues)
     {
+        // 官方活动：提交体 objectDesc.event 是「活动 ID + 活动名 + 发起人」三件套
+        // （2026-11-11 B2），后两项只存在于活动搜索接口的选中项里。
+        // params.txt 的「官方活动」只给 ID → 组不齐，这次不挂 —— 说清楚，别让用户以为参加了。
+        var activities = PublishPayloadBuilder.EffectiveActivities(p);
+        var incomplete = activities?
+            .Where(a => string.IsNullOrWhiteSpace(a.CreatorNickname)
+                || string.IsNullOrWhiteSpace(a.Name))
+            .Select(a => a.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (incomplete is { Count: > 0 })
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：活动缺活动名/发起人（{string.Join("、", incomplete)}），视频号这次不会挂活动 —— "
+                + "到上方「官方活动」里重新选一次（活动搜索接口会带回这两项）", key));
+        }
+        else if (activities is { Count: > 1 })
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：视频号一次只能挂一个活动，实际只用第一个「{activities[0].Name}」", key));
+        }
+
         // 标题 <6 字：**不再拦截**（2026-11-06）。视频号的标题其实是「短标题」，平台要 ≥6 字；
         // builder 现在会不下发 shortTitle、把标题并入正文首行 —— 发得出去，只是短标题缺省。
         var title = (draft.Title ?? "").Trim();
@@ -573,6 +930,119 @@ public static class PublishPreflight
         {
             issues.Add(new PreflightIssue(PreflightSeverity.Warning,
                 $"{name}：已选自定义封面图，小红书不会使用「封面帧」设置", key));
+        }
+
+        // 互动投票（A4）：配了一半（缺问题 / 选项不足 2 个 / 超过 5 个）只提示、不拦发布 ——
+        // 发布端用同一份 XhsPollRules.Analyze 决定「跳过投票」，不把可选组件变成发布阻塞。
+        var poll = XhsPollRules.Analyze(p.Xhs?.PollQuestion, p.Xhs?.PollOptions);
+        if (poll.State == XhsPollState.Invalid)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：添加投票未生效 —— {poll.Error}（发布时会跳过投票）", key));
+        }
+
+        // 引用笔记（A5）/ 关联活动（A6）：坏 ID 与快照不全只提示、不拦发布 ——
+        // 发布端用同一份 XhsRelationBinds 规则跳过坏条目。
+        if (p.Xhs?.ReferencedNote is { } note
+            && !XhsRelationBinds.IsValidNoteId((note.Id ?? "").Trim()))
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：引用笔记 ID 格式不对（{(string.IsNullOrWhiteSpace(note.Id) ? "空" : note.Id)}），"
+                + "发布时会跳过引用", key));
+        }
+
+        var badActivityIds = p.Activities
+            .Select(a => (a.Id ?? "").Trim())
+            .Where(id => !XhsRelationBinds.IsValidActivityId(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (badActivityIds.Count > 0)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：活动 ID 不是数字（{string.Join("、", badActivityIds)}），发布时会跳过这些活动", key));
+        }
+
+        var incompleteActivities = p.Activities
+            .Where(a => XhsRelationBinds.IsValidActivityId((a.Id ?? "").Trim())
+                && (string.IsNullOrWhiteSpace(a.Name)
+                    || a.StartTime is null || a.EndTime is null))
+            .Select(a => a.Id.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (incompleteActivities.Count > 0)
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：活动快照缺名称或起止时间（{string.Join("、", incompleteActivities)}），"
+                + "发布体只带已有字段", key));
+        }
+
+        // 选择群聊（2026-11-15）：快照缺群 ID / 群名只提示、不拦发布 —— 发布端跳过。
+        if (p.Xhs?.GroupBind is { } group
+            && (string.IsNullOrWhiteSpace(group.GroupId)
+                || string.IsNullOrWhiteSpace(group.GroupName)))
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：群聊快照不完整（缺群 ID / 群名），发布时不会带上", key));
+        }
+
+        // PK 封面（2026-11-15）：开关开了但没有附加图 = 平台空列表（页面同款），只提示不拦。
+        if (p.Xhs?.PkCoverEnabled == true)
+        {
+            var pkImages = p.Xhs.PkCoverImages ?? [];
+            if (pkImages.Count == 0)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：PK 封面已开启但没有选附加图，平台不会生成 PK 封面", key));
+            }
+            else
+            {
+                var missingPk = pkImages.Where(x => !File.Exists(x)).ToList();
+                if (missingPk.Count > 0)
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                        $"{name}：PK 封面有 {missingPk.Count} 张图片不存在，发布时会跳过", key));
+                }
+
+                if (!string.IsNullOrWhiteSpace(p.Xhs.PkCoverBizRelations))
+                {
+                    issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                        $"{name}：PK 封面结构化附加图会覆盖开发者选项里的原始 JSON", key));
+                }
+            }
+        }
+
+        // 添加路线（2026-11-15）：快照缺 travelId / 路线名只提示、不拦发布 —— 发布端跳过。
+        if (p.Xhs?.Route is { } route
+            && (string.IsNullOrWhiteSpace(route.TravelId)
+                || string.IsNullOrWhiteSpace(route.RouteName)))
+        {
+            issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                $"{name}：路线快照不完整（缺 travelId / 路线名），发布时不会带上", key));
+        }
+
+        // 视频标记（2026-11-15）：缺 ID / 名称跳过；起止异常只提示，不拦发布。
+        foreach (var marker in p.Xhs?.Markers ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(marker.Id) || string.IsNullOrWhiteSpace(marker.Name))
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：视频标记快照不完整（缺 ID / 名称），发布时会跳过该条", key));
+                continue;
+            }
+
+            if (marker.EndSeconds < marker.StartSeconds)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：视频标记「{marker.Name}」结束时间早于开始时间，发布时按开始时间处理", key));
+            }
+
+            if (draft.Meta is { DurationS: > 0 } metaMarker
+                && marker.StartSeconds > metaMarker.DurationS)
+            {
+                issues.Add(new PreflightIssue(PreflightSeverity.Warning,
+                    $"{name}：视频标记「{marker.Name}」起始 {marker.StartSeconds} 秒超过视频时长"
+                    + $" {metaMarker.DurationS:0.#} 秒", key));
+            }
         }
     }
 }

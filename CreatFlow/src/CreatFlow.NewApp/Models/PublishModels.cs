@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace CreatFlow.NewApp.Models;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -363,6 +365,51 @@ public sealed class PlatformParams
             .Where(id => !string.IsNullOrWhiteSpace(id))
             .Select(id => new ActivityRef { Id = id.Trim(), Name = id.Trim() })];
     }
+
+    /// <summary>
+    /// 旧档一次性迁移（P3，2026-11-11）：快手章节曾只能从「开发者选项」贴原始 JSON。
+    /// B3 抓包确认 wire 后章节收敛到 <see cref="Chapters"/>；旧 JSON 若正好是新 wire 形状
+    /// <c>[{timeStart:&lt;秒&gt;, title}]</c> 就搬过来，其它形状**原样保留不猜**
+    /// （乱填的 JSON 不会被猜成错误章节）。读档时调用，幂等。
+    /// </summary>
+    public void MigrateLegacyKuaishouChapters()
+    {
+        Chapters ??= [];
+        if (Chapters.Count > 0) return;
+        if (string.IsNullOrWhiteSpace(Kuaishou?.ChaptersJson)) return;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(Kuaishou.ChaptersJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
+
+            var rows = new List<PlatformChapter>();
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object
+                    || !el.TryGetProperty("timeStart", out var ts)
+                    || ts.ValueKind != JsonValueKind.Number
+                    || !ts.TryGetInt64(out var seconds)
+                    || !el.TryGetProperty("title", out var title)
+                    || title.ValueKind != JsonValueKind.String)
+                    return;
+
+                rows.Add(new PlatformChapter(
+                    Math.Max(0, Math.Min(seconds, long.MaxValue / 1000)) * 1000,
+                    title.GetString() ?? ""));
+            }
+
+            if (rows.Count > 0)
+            {
+                Chapters = rows;
+                Kuaishou.ChaptersJson = null;   // 迁移成功 → 旧口清掉，避免两份数据打架
+            }
+        }
+        catch (JsonException)
+        {
+            // 坏 JSON：保持原样（不丢数据，也不猜）
+        }
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -375,28 +422,92 @@ public sealed class PlatformParams
 //  原样保存用户/页面给的值，builder 到 2.x 再决定形状 —— 绝不凭猜测建强类型。
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// <summary>
+/// 抖音「添加标签」选中的对象（2026-11-11 抓包）—— 发布体
+/// <c>item.anchor.anchor</c> = 字符串化 JSON <c>{"id","type","content"}</c>。
+/// <para>四类互斥（位置也是同一个 anchor）：影视演艺 / 游戏手柄 / 标记万物 / 小程序；
+/// 位置仍走 <see cref="PlatformParams.Location"/> 的旧 POI 路径，两者都设时按标签发布。</para>
+/// </summary>
+public sealed record DouyinAnchorRef
+{
+    /// <summary>anchor 类型：11 影视演艺 / 13017 游戏手柄 / 13093 标记万物 / 4 小程序</summary>
+    public int Type { get; init; }
+
+    /// <summary>平台对象 ID（影视 <c>search_list[].id</c> / 游戏 <c>unified_game_id</c> / SPU <c>spu_id</c> / 小程序 <c>anchor_list[].id</c>）</summary>
+    public string Id { get; init; } = "";
+
+    /// <summary>展示名（发布体不带；选中后卡片/摘要显示用）</summary>
+    public string Title { get; init; } = "";
+
+    /// <summary>
+    /// 发布体 <c>content</c> —— 游戏 / 小程序需要：整段透传搜索结果的挂载信息
+    /// （游戏 <c>game_info.short_video_point</c>、小程序 <c>anchor_list[].extra</c>，
+    /// 含账号相关 Token / open_url 等，不能本地重建）。
+    /// 影视固定 null，SPU 由执行端现拼 <c>{"anchor_id":"…"}</c>。
+    /// </summary>
+    public string? Content { get; init; }
+}
+
+/// <summary>
+/// 抖音 @好友 选中的对象（2026-11-11 补抓 <c>discover/search</c>）。
+/// 发布体落点：<c>item.common.mentions</c> = uid 字符串数组；正文末尾补「@昵称」；
+/// <c>item.common.text_extra</c> 追加 <c>type=0</c> 条目（<c>at_source=user_manual</c>）。
+/// </summary>
+public sealed record DouyinMentionRef
+{
+    /// <summary>用户 ID —— <c>common.mentions</c> 数组元素</summary>
+    public string Uid { get; init; } = "";
+
+    /// <summary>昵称 —— 正文补「@昵称」与 text_extra 定位（发布体不带昵称字段，靠正文）</summary>
+    public string Nickname { get; init; } = "";
+
+    /// <summary>抖音号（仅展示）</summary>
+    public string? UniqueId { get; init; }
+
+    /// <summary>头像 URL（仅展示）</summary>
+    public string? AvatarUrl { get; init; }
+}
+
 /// <summary>抖音专有参数 —— <c>create_v2 → item</c> 的长尾字段。</summary>
 public sealed class DouyinExtras
 {
+    /// <summary>添加标签（影视演艺 / 游戏手柄 / 标记万物 / 小程序，单选）—— <c>item.anchor.anchor</c></summary>
+    public DouyinAnchorRef? Anchor { get; set; }
     /// <summary>自定义封面裁剪宽（px）—— <c>cover.custom_cover_image_width</c></summary>
     public int? CoverCropWidth { get; set; }
     /// <summary>自定义封面裁剪高（px）—— <c>cover.custom_cover_image_height</c></summary>
     public int? CoverCropHeight { get; set; }
+    /// <summary>
+    /// 横版 4:3 封面（本地图片路径）—— 上传后落 <c>cover.horizontal_custom_cover_image_uri</c>
+    /// （2026-11-11 B1 抓包）。竖版 3:4 仍用全局主封面（<c>poster</c> + 裁剪宽高），
+    /// 本字段是抖音封面双槽的第二张图；空 = 不单独下发横版封面。
+    /// </summary>
+    public string? CoverLandscapePath { get; set; }
     /// <summary>封面工具信息（原始 JSON 串）—— <c>cover.cover_tools_info</c>（`cover_type`/`cut_coordinate` 等）</summary>
     public string? CoverToolsInfo { get; set; }
     /// <summary>封面工具扩展信息（原始 JSON 串）—— <c>cover.cover_tools_extend_info</c>（推荐封面列表/裁剪框）</summary>
     public string? CoverToolsExtendInfo { get; set; }
-    /// <summary>@ 用户（原始 JSON 数组串）—— <c>common.mentions</c>；抓包里是字符串 <c>"[]"</c></summary>
+    /// <summary>
+    /// @好友（结构化选择器，2026-11-11 补抓 <c>discover/search</c>）—— 发布时转
+    /// <c>common.mentions</c> + 正文「@昵称」+ <c>text_extra</c>（<c>DouyinMentionRules</c>）。
+    /// 与旧 <see cref="Mentions"/> 原始 JSON 二选一：本列表非空时以它为准。
+    /// </summary>
+    public List<DouyinMentionRef>? MentionUsers { get; set; }
+    /// <summary>@ 用户（原始 JSON 数组串）—— <c>common.mentions</c>；抓包里是字符串 <c>"[]"</c>。
+    /// 旧档 / 开发者选项口径；选择器动过会清空它（改由 <see cref="MentionUsers"/> 下发）。</summary>
     public string? Mentions { get; set; }
     /// <summary>互动贴纸（原始 JSON 数组串）—— <c>common.interaction_stickers</c>；抓包里是字符串 <c>"[]"</c></summary>
     public string? InteractionStickers { get; set; }
 
     public DouyinExtras Clone() => new()
     {
+        Anchor = Anchor,   // record 不可变，直接复制引用
         CoverCropWidth = CoverCropWidth,
         CoverCropHeight = CoverCropHeight,
+        CoverLandscapePath = CoverLandscapePath,
         CoverToolsInfo = CoverToolsInfo,
         CoverToolsExtendInfo = CoverToolsExtendInfo,
+        MentionUsers = MentionUsers?.ToList(),   // record 不可变，列表按元素复制
         Mentions = Mentions,
         InteractionStickers = InteractionStickers,
     };
@@ -438,18 +549,48 @@ public sealed class KuaishouExtras
     /// <summary>项目 ID —— <c>projectId</c></summary>
     public string? ProjectId { get; set; }
     /// <summary>
-    /// 章节（**原始 JSON 数组串**）—— <c>chapters</c>。
-    /// ⚠️ 2026-11-05 抓包里 `chapters` 恒为 `[]`，元素结构没有抓到 —— 先按原始 JSON 透传，
-    /// 不猜字段名（猜错会让整个 submit 被拒）；结构确认后收敛成 <see cref="PlatformChapter"/>。
+    /// 关联热点 ID（B3 抓包 2026-11-11）—— <c>hotspotId</c> + <c>hotspotConnectType: 1</c>；
+    /// null / ≤0 = 不参与热点（两个键都不下发）。候选来自 <c>hotspot/list</c>。
+    /// </summary>
+    public long? HotspotId { get; set; }
+    /// <summary>
+    /// 热点文案快照（仅界面展示，**不下发** —— wire 只有数字 ID）。
+    /// 存下来是为了重开软件/切预设后，卡片上还显示用户当初选的是哪条热点。
+    /// </summary>
+    public string? HotspotContent { get; set; }
+    /// <summary>
+    /// 作者服务 · 关联小程序（2026-11-15 真页面抓包）—— submit 的 <c>associateTasks</c>
+    /// 数组元素（整个 <c>associateTaskId</c> 对象）。null = 不关联（**不带这个键**）。
+    /// 五字段原样来自 <c>relation/list</c>；<see cref="KuaishouAssociateRef.Title"/> /
+    /// <see cref="KuaishouAssociateRef.Link"/> 只是展示快照（不下发）。
+    /// </summary>
+    public KuaishouAssociateRef? AssociateTask { get; set; }
+    /// <summary>
+    /// （旧数据兼容）章节原始 JSON 透传口 —— B3 抓包（2026-11-11）已确认 wire 形状，
+    /// 章节改走公共字段 <see cref="PlatformParams.Chapters"/>（UI 与下发都只认它）；
+    /// 本属性只为旧预设反序列化保留，**不再下发**。
     /// </summary>
     public string? ChaptersJson { get; set; }
     /// <summary>
-    /// 共创用户（**原始 JSON 数组串**）—— <c>coPublishUser</c>。
-    /// 元素结构未抓到（抓包为空数组），先透传；纯 UI 侧的概念见 <see cref="PlatformParams.CoPublishUsers"/>。
+    /// 共创用户（**结构化**）—— <c>coPublishUser</c> 数组（2026-11-15 页面 bundle 定案）：
+    /// 每个元素 <c>{userId, userName, userHead, coPublishRole}</c>。
+    /// UI 选择器搜索复用 <c>at/search</c>（与 @好友同一接口，页面 bundle 证实）。
+    /// </summary>
+    public List<KuaishouCoPublishRef> CoPublishUsers { get; set; } = [];
+    /// <summary>
+    /// （旧数据兼容）共创用户**原始 JSON 数组串** —— 结构化列表为空时才透传。
+    /// 抓包/元素结构已从页面 bundle 拿到，新数据一律走 <see cref="CoPublishUsers"/>。
     /// </summary>
     public string? CoPublishUsersJson { get; set; }
-    /// <summary>共创角色 —— <c>coPublishRole</c>（抓包默认 0）</summary>
+    /// <summary>共创角色（**自己**的角色）—— <c>coPublishRole</c>（抓包默认 0）</summary>
     public int? CoPublishRole { get; set; }
+
+    /// <summary>
+    /// @好友（2026-11-15 submit 抓包）—— 落点是 <c>caption</c> 里的纯文本 token
+    /// <c>@昵称(O&lt;userId&gt;)</c>（不是独立字段；编辑器 HTML 只用于 autosave）。
+    /// 发布前要对每个用户调一次 <c>at/choose</c>（会话级登记），再由 <c>KuaishouMentionText</c> 落 token。
+    /// </summary>
+    public List<KuaishouMentionRef> MentionUsers { get; set; } = [];
 
     public KuaishouExtras Clone() => new()
     {
@@ -469,11 +610,130 @@ public sealed class KuaishouExtras
         SecondDomain = SecondDomain,
         MovieId = MovieId,
         ProjectId = ProjectId,
+        HotspotId = HotspotId,
+        HotspotContent = HotspotContent,
+        AssociateTask = AssociateTask,
         ChaptersJson = ChaptersJson,
+        CoPublishUsers = [.. CoPublishUsers],
         CoPublishUsersJson = CoPublishUsersJson,
         CoPublishRole = CoPublishRole,
+        MentionUsers = [.. MentionUsers],
     };
 }
+
+/// <summary>
+/// 快手已选 @好友（<see cref="KuaishouExtras.MentionUsers"/> 的元素）。
+/// 抓包：submit 的 caption token <c>@昵称(O&lt;userId&gt;)</c> 与候选接口的 <c>userId</c> 同源；
+/// <c>at/choose.contactId</c> 也用它（编辑器 HTML 的 data-user-id 值相同，仅 autosave 用）。
+/// </summary>
+public sealed record KuaishouMentionRef(long UserId, string UserName);
+
+/// <summary>
+/// 快手已选「作者服务 · 关联小程序」（<see cref="KuaishouExtras.AssociateTask"/>）。
+/// 前五个字段是 <c>relation/list</c> 的 <c>associateTaskId</c> 原样（submit 的 <c>associateTasks[0]</c>）；
+/// <see cref="Title"/> / <see cref="Link"/> 只作界面显示与重开软件后的快照，**不下发**。
+/// </summary>
+/// <param name="TaskId">平台任务 ID（2026-11-15 观测为 0，**不是**有效性判据）</param>
+/// <param name="BindId">绑定 ID（如 <c>plc669066023879745919</c>，关联的真正标识）</param>
+/// <param name="EntranceType">入口类型（关联小程序 = 9，与 relation/list 的 type 同值）</param>
+/// <param name="BindType">绑定类型（观测 <c>"25"</c>，字符串）</param>
+/// <param name="TaskType">任务类型（观测 <c>"PLC"</c>）</param>
+public sealed record KuaishouAssociateRef(
+    long TaskId,
+    string BindId,
+    int EntranceType,
+    string BindType,
+    string TaskType,
+    string? Title = null,
+    string? Link = null);
+
+/// <summary>
+/// 快手共同创作的一名用户（<see cref="KuaishouExtras.CoPublishUsers"/> 的元素）。
+/// 元素形状来自 2026-11-15 发布页 bundle：
+/// <c>{userId, userName, userHead, coPublishRole}</c>；选人搜索复用 <c>at/search</c>。
+/// 角色枚举（bundle 逐字）：<c>-1 默认 / 0 作者 / 1 共创 / 2 出镜</c>。
+/// </summary>
+public sealed record KuaishouCoPublishRef(
+    long UserId,
+    string UserName,
+    string? UserHead,
+    int Role = -1)
+{
+    public static readonly string[] RoleNames = ["默认", "作者", "共创", "出镜"];
+
+    /// <summary>bundle 的 <c>Ti</c> 枚举：-1 / 0 / 1 / 2（未知值回落 -1）。</summary>
+    public static int NormalizeRole(int role) => role is >= -1 and <= 2 ? role : -1;
+}
+
+/// <summary>
+/// 引用笔记快照（A5，2026-11-11）—— 发布体 <c>optionRelationList</c> 追加
+/// <c>REF_POST</c> 时只用到 <see cref="Id"/>；<see cref="Title"/> / <see cref="Cover"/>
+/// 存快照供界面显示（笔记删了也不至于显示成空行）。
+/// </summary>
+public sealed record XhsNoteRef
+{
+    /// <summary>24 位十六进制笔记 ID（<c>REF_POST.bizId</c>）</summary>
+    public string Id { get; init; } = "";
+
+    /// <summary>标题（平台 <c>display_title</c>；空 = 只显示 ID）</summary>
+    public string Title { get; init; } = "";
+
+    /// <summary>封面 URL（<c>images_list[0].url</c>，仅展示用）</summary>
+    public string? Cover { get; init; }
+}
+
+/// <summary>
+/// 小红书视频标记（2026-11-15，页面「标记地点或标记朋友」）——
+/// 发布体 <c>video_info.markers</c> 的元素来源。页面 bundle 的构造：
+/// <code>
+/// {type:"video_marks_v2", start:1000*startTime, end:1000*endTime,
+///  detail:{id:markId, style:1, type:"user"|"location",
+///          event:{value:{id,name}}, container_size:"{H, W}",
+///          unit_center:"{0.5, 0.5}", anchor_center:null, markY:0.5}}
+/// </code>
+/// </summary>
+public sealed class XhsVideoMarker
+{
+    /// <summary>标记对象 ID（user_id / poiId）</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>标记对象名称（昵称 / 地点名）</summary>
+    public string Name { get; set; } = "";
+
+    /// <summary><c>user</c>（标记朋友）/ <c>location</c>（标记地点）</summary>
+    public string Type { get; set; } = "user";
+
+    /// <summary>出现时间（秒；wire 是毫秒）</summary>
+    public long StartSeconds { get; set; }
+
+    /// <summary>结束时间（秒；wire 是毫秒）</summary>
+    public long EndSeconds { get; set; }
+
+    /// <summary>头像 / 地点图标（仅展示）</summary>
+    public string? Avatar { get; set; }
+}
+
+/// <summary>
+/// 小红书群聊绑定快照（选择群聊，2026-11-15）—— 发布体
+/// <c>business_binds.groupBind</c> 的四个字段。页面 bundle 逐字：
+/// <c>{groupId, groupName, desc, avatar}</c>。
+/// </summary>
+public sealed record XhsGroupRef(
+    string GroupId,
+    string GroupName,
+    string? Desc = null,
+    string? Avatar = null);
+
+/// <summary>
+/// 小红书添加路线快照（2026-11-15）—— 已建路线（<c>save/travel</c>）的返回值。
+/// 发布体两处：<c>hash_tag</c> 的 <c>{id,name,type:"map_traver"}</c>；
+/// <c>common.biz_relations</c> 的 <c>POI_MAP_TRAVEL</c>。
+/// </summary>
+public sealed record XhsRouteRef(
+    string TravelId,
+    string RouteName,
+    string TravelType = "singleRoute",
+    int PlanAmount = 1);
 
 /// <summary>小红书专有参数 —— <c>note/update</c> 的长尾字段。</summary>
 public sealed class XhsExtras
@@ -494,6 +754,55 @@ public sealed class XhsExtras
     /// <summary>PK 封面业务关联（原始 JSON 数组串）—— <c>video_info.pk_cover_biz_relations</c></summary>
     public string? PkCoverBizRelations { get; set; }
 
+    // ═══ 选择群聊（2026-11-15）═══
+
+    /// <summary>
+    /// 群聊绑定 —— <c>business_binds.groupBind</c> = <c>{groupId,groupName,desc,avatar}</c>。
+    /// null = 不关联（发布体不带该键）。
+    /// </summary>
+    public XhsGroupRef? GroupBind { get; set; }
+
+    // ═══ PK 封面（2026-11-15）═══
+
+    /// <summary>
+    /// PK 封面开关（页面「设置封面 → PK 封面」）。账号需 <c>features.isPkCover</c>；
+    /// 开启后发布时把 <see cref="PkCoverImages"/> 逐张上传，组进
+    /// <c>video_info.pk_cover_biz_relations</c>（外加主封面一条 index=0）。
+    /// </summary>
+    public bool? PkCoverEnabled { get; set; }
+
+    /// <summary>
+    /// PK 封面的附加图片（本地路径）。主封面自动用发布封面/视频首帧，不进这里。
+    /// null/空 = 没有 PK 封面（即使开关打开，平台页面也是空列表）。
+    /// </summary>
+    public List<string>? PkCoverImages { get; set; }
+
+    // ═══ 视频标记（2026-11-15）═══
+
+    /// <summary>标记地点 / 标记朋友 —— <c>video_info.markers</c></summary>
+    public List<XhsVideoMarker> Markers { get; set; } = [];
+
+    // ═══ 添加路线（2026-11-15）═══
+
+    /// <summary>已建路线的快照（null = 不关联）。发布体 hash_tag + biz_relations 两处。</summary>
+    public XhsRouteRef? Route { get; set; }
+
+    // ═══ 互动组件（A4，2026-11-11）═══
+
+    /// <summary>投票问题 —— 发布前 create_interact 建 widget（null/空 = 不投投票）</summary>
+    public string? PollQuestion { get; set; }
+
+    /// <summary>投票选项（2~5 条；UI 里允许空行，发布端由 XhsPollRules.Analyze 清洗）</summary>
+    public List<string>? PollOptions { get; set; }
+
+    // ═══ 引用笔记（A5，2026-11-11）═══
+
+    /// <summary>
+    /// 引用笔记 —— <c>optionRelationList</c> 追加 <c>REF_POST</c>（null = 不引用）。
+    /// 平台页面同一时间只允许引用一条，这里也存单条。
+    /// </summary>
+    public XhsNoteRef? ReferencedNote { get; set; }
+
     public XhsExtras Clone() => new()
     {
         Ats = Ats,
@@ -503,6 +812,23 @@ public sealed class XhsExtras
         OrderBind = OrderBind,
         ChapterSyncText = ChapterSyncText,
         PkCoverBizRelations = PkCoverBizRelations,
+        GroupBind = GroupBind,
+        PkCoverEnabled = PkCoverEnabled,
+        PkCoverImages = PkCoverImages is null ? null : [.. PkCoverImages],
+        Markers = [.. Markers.Select(m => new XhsVideoMarker
+        {
+            Id = m.Id,
+            Name = m.Name,
+            Type = m.Type,
+            StartSeconds = m.StartSeconds,
+            EndSeconds = m.EndSeconds,
+            Avatar = m.Avatar,
+        })],
+        Route = Route,
+        PollQuestion = PollQuestion,
+        PollOptions = PollOptions is null ? null : [.. PollOptions],
+        // record 不可变，直接复制引用即可
+        ReferencedNote = ReferencedNote,
     };
 }
 
@@ -516,16 +842,32 @@ public sealed class WechatVideoExtras
     /// <summary>链接卡片标题 —— <c>objectDesc.extReading.title</c>（选填；页面输入链接后自动解析）</summary>
     public string? ExtReadingTitle { get; set; }
 
-    /// <summary>链接类型 —— <c>objectDesc.extReading.type</c>（1 公众号 / 2 游戏 / 3 红包）</summary>
+    /// <summary>链接类型 —— <c>objectDesc.extReading.urlType</c>（1 公众号文章 / 2 红包封面；
+    /// 2026-11-11 B2 §3）</summary>
     public int? ExtReadingType { get; set; }
+
+    /// <summary>
+    /// @好友（2026-11-11 B2 §5）—— 提交体
+    /// <c>objectDesc.mentionedUser = [{nickname}]</c> + 正文末尾补 <c>@昵称 </c>。
+    /// 平台只认昵称（username 仅展示 / 去重），所以这里只存昵称 + 展示用头像。
+    /// </summary>
+    public List<WechatVideoMentionRef> MentionUsers { get; set; } = [];
 
     public WechatVideoExtras Clone() => new()
     {
         CardShowStyle = CardShowStyle,
         ExtReadingTitle = ExtReadingTitle,
         ExtReadingType = ExtReadingType,
+        MentionUsers = [.. MentionUsers],
     };
 }
+
+/// <summary>视频号已选 @好友（<see cref="WechatVideoExtras.MentionUsers"/> 的元素）。
+/// 抓包实证提交体只带 <c>nickname</c>；username / 头像只用于界面辨认。</summary>
+public sealed record WechatVideoMentionRef(
+    string Nickname,
+    string? Username = null,
+    string? AvatarUrl = null);
 
 /// <summary>B站专有参数 —— <c>add/v3</c> 的长尾字段。
 /// 允许评论/弹幕走公共 <see cref="PlatformParams.AllowComment"/>/<see cref="PlatformParams.AllowDanmaku"/>；
@@ -544,8 +886,64 @@ public sealed class BilibiliExtras
     public bool? Watermark { get; set; }
     /// <summary>开启字幕 —— <c>subtitle.open</c>（wire 0/1）</summary>
     public bool? SubtitleOpen { get; set; }
-    /// <summary>字幕语言 —— <c>subtitle.lan</c></summary>
+    /// <summary>字幕语言 —— <c>subtitle.lan</c>（页面恒下发占位，真正生效靠 pre_subtitle）</summary>
     public string? SubtitleLan { get; set; }
+
+    // ── 字幕上传 / 互动引导卡片（2026-11-15 B5 抓包）──
+
+    /// <summary>
+    /// 字幕文件（本地 <c>.srt</c> 绝对路径）—— 投稿前两步上传后挂到 cid，
+    /// 发布体落 <c>videos[0].pre_subtitle</c>。null = 不传字幕。
+    /// </summary>
+    public string? SubtitleFile { get; set; }
+
+    /// <summary>
+    /// 字幕语言代码（<c>zh</c> / <c>en</c> / <c>ja</c>…，平台 subtitle_lan_v3.json）。
+    /// 落到 preSave 的 <c>files[].lan</c>；留空 = <c>zh</c>。
+    /// </summary>
+    public string? SubtitleFileLan { get; set; }
+
+    /// <summary>
+    /// 互动引导卡片（个性化卡片 v1）—— 发布前在 cid 上建卡片，
+    /// 发布体落 <c>videos[0].pre_command</c>。前置条件 = 视频为 H.264 MP4。
+    /// </summary>
+    public bool? GuideCardEnabled { get; set; }
+
+    /// <summary>互动引导样式：2 = 三连+关注 / 1 = 仅三连 / 0 = 仅关注（留空 = 2）</summary>
+    public int? GuideCardFollowType { get; set; }
+
+    /// <summary>卡片起始时间（秒；0 = 视频开头）</summary>
+    public int? GuideCardStartSeconds { get; set; }
+
+    // ── 卡片 v2：关联视频 / 投票弹幕（2026-11-15 B5.2 补抓，wire §4）──
+
+    /// <summary>关联视频卡片开关 —— 开时发布前在 cid 上建 type=2 卡片</summary>
+    public bool? RelatedVideoEnabled { get; set; }
+    /// <summary>关联视频目标 BVID（create 体字段名是 <c>oid</c>）——
+    /// 目标稿件「仅自己」时平台回 79025（wire §4.3）</summary>
+    public string? RelatedVideoBvid { get; set; }
+    /// <summary>关联视频描述（<c>msg</c>）</summary>
+    public string? RelatedVideoMsg { get; set; }
+    /// <summary>关联视频卡片起始时间（秒）</summary>
+    public int? RelatedVideoStartSeconds { get; set; }
+
+    /// <summary>投票弹幕开关 —— 开时发布前在 cid 上建 type=9 卡片</summary>
+    public bool? VoteEnabled { get; set; }
+    /// <summary>投票问题（≤12 字）</summary>
+    public string? VoteQuestion { get; set; }
+    /// <summary>投票选项 A（必填，≤6 字）</summary>
+    public string? VoteOptionA { get; set; }
+    /// <summary>投票选项 B（必填，≤6 字）</summary>
+    public string? VoteOptionB { get; set; }
+    /// <summary>投票选项 C（可选）</summary>
+    public string? VoteOptionC { get; set; }
+    /// <summary>投票选项 D（可选；C 空时不能单独填 D）</summary>
+    public string? VoteOptionD { get; set; }
+    /// <summary>投票卡片起始时间（秒）</summary>
+    public int? VoteStartSeconds { get; set; }
+    /// <summary>投票弹幕持续时间（秒；= 时间轴选区长度，默认 7）</summary>
+    public int? VoteDurationSeconds { get; set; }
+
     /// <summary>精选评论 —— <c>up_selection_reply</c>（允许评论/弹幕是公共字段）</summary>
     public bool? UpSelectionReply { get; set; }
     /// <summary>预约 —— <c>act_reserve_create</c>（wire 0/1）</summary>
@@ -576,6 +974,23 @@ public sealed class BilibiliExtras
         Watermark = Watermark,
         SubtitleOpen = SubtitleOpen,
         SubtitleLan = SubtitleLan,
+        SubtitleFile = SubtitleFile,
+        SubtitleFileLan = SubtitleFileLan,
+        GuideCardEnabled = GuideCardEnabled,
+        GuideCardFollowType = GuideCardFollowType,
+        GuideCardStartSeconds = GuideCardStartSeconds,
+        RelatedVideoEnabled = RelatedVideoEnabled,
+        RelatedVideoBvid = RelatedVideoBvid,
+        RelatedVideoMsg = RelatedVideoMsg,
+        RelatedVideoStartSeconds = RelatedVideoStartSeconds,
+        VoteEnabled = VoteEnabled,
+        VoteQuestion = VoteQuestion,
+        VoteOptionA = VoteOptionA,
+        VoteOptionB = VoteOptionB,
+        VoteOptionC = VoteOptionC,
+        VoteOptionD = VoteOptionD,
+        VoteStartSeconds = VoteStartSeconds,
+        VoteDurationSeconds = VoteDurationSeconds,
         UpSelectionReply = UpSelectionReply,
         ActReserve = ActReserve,
         ActReserveTitle = ActReserveTitle,
@@ -606,6 +1021,41 @@ public sealed class ToutiaoExtras
     /// <summary>埋点扩展（原始 JSON 对象串）—— <c>etData</c></summary>
     public string? EtData { get; set; }
 
+    // ── 视频生成图文（A2，2026-11-10 抓包）──
+
+    /// <summary>
+    /// 视频生成图文 —— <c>VideoTransArticleFlag</c>：
+    /// null / 0 = 不生成（字段不下发）；1 = 与视频同时发布；2 = 仅保存草稿。
+    /// 页面偏好接口 <c>/ugc/publish/preference/set/v1/</c> 只是 UI 记忆，**不下发**。
+    /// </summary>
+    public int? VideoTransArticleFlag { get; set; }
+
+    // ── 互动贴纸（A3，2026-11-10 抓包）—— v1 只做「关注引导」──
+
+    /// <summary>
+    /// 互动贴纸 · 关注引导 —— true 时发布前调 <c>/ixigua/api/int/sticker/create</c>
+    /// 现建贴纸，并把 ID 并入发布体。创建失败不拦发布（贴纸是可选项）。
+    /// </summary>
+    public bool FollowSticker { get; set; }
+    /// <summary>贴纸开始秒 —— null = 默认 0</summary>
+    public int? StickerStartSec { get; set; }
+    /// <summary>贴纸持续秒 —— null = 默认 5</summary>
+    public int? StickerDurationSec { get; set; }
+
+    // ── 作品声明（A1，2026-11-10 抓包）──
+    //  头条页面上的 7 个复选实际是单选组，发布体只能出现一个 ComplianceType。
+
+    /// <summary>
+    /// 平台专有覆盖（null = 跟随全局 <see cref="PublishDraft.DeclarationKind"/>）：
+    /// 0 = 不声明；1 自行拍摄 / 2 取自站外 / 3 AI / 5 个人观点 / 6 虚构 / 7 投资观点 / 8 健康医疗。
+    /// 「引用站内」（type 2 + MaterialSource 1）v1 不开放（<c>Position</c> 键名未抓全）。
+    /// </summary>
+    public int? DeclarationOverride { get; set; }
+    /// <summary>自行拍摄 · 城市 —— <c>CreativeInfo.City</c></summary>
+    public string? ComplianceCity { get; set; }
+    /// <summary>自行拍摄 · 拍摄时间 —— <c>CreativeInfo.CreativeTime</c>（下发时转毫秒）</summary>
+    public DateTime? ComplianceTime { get; set; }
+
     public ToutiaoExtras Clone() => new()
     {
         TemplateName = TemplateName,
@@ -614,6 +1064,13 @@ public sealed class ToutiaoExtras
         CompassVideo = CompassVideo,
         AttrsValueMap = AttrsValueMap,
         EtData = EtData,
+        VideoTransArticleFlag = VideoTransArticleFlag,
+        FollowSticker = FollowSticker,
+        StickerStartSec = StickerStartSec,
+        StickerDurationSec = StickerDurationSec,
+        DeclarationOverride = DeclarationOverride,
+        ComplianceCity = ComplianceCity,
+        ComplianceTime = ComplianceTime,
     };
 }
 
@@ -682,8 +1139,9 @@ public sealed record TopicRef
 /// 选中的官方活动（2.6）—— **快照**，不是实时引用：名称/封面/截止时间一起存，
 /// 活动下架后旧草稿仍能显示「你选过这个活动」。
 ///
-/// 发布时各平台落点不同（2.6.5）：抖音 <c>activity</c> JSON 字符串数组 / 快手
-/// <c>activityIds</c> / 小红书只下发关联话题 / B站下发话题的 <c>mission_id</c>。
+/// 发布时各平台落点不同：抖音 <c>activity</c> JSON 字符串数组 / 快手
+/// <c>activityIds</c> / 小红书 <c>optionRelationList.ACTIVITY_COMPONENT</c>（A6；关联话题另进
+/// <c>hash_tag</c>）/ B站下发话题的 <c>mission_id</c>。
 /// <see cref="Topics"/> 是**活动关联话题的快照** —— 选活动时自动并进目标的话题列表，
 /// 避免「选了活动却忘带话题」导致实际不参与。
 /// </summary>
@@ -698,11 +1156,18 @@ public sealed record ActivityRef
     /// <summary>活动封面 URL</summary>
     public string? Cover { get; init; }
 
+    /// <summary>开始时间（null = 平台没给/未知；A6 小红书 <c>ACTIVITY_COMPONENT.extraInfo.start_time</c> 要它）</summary>
+    public DateTimeOffset? StartTime { get; init; }
+
     /// <summary>截止时间（null = 平台没给/未知 —— 不判已结束）</summary>
     public DateTimeOffset? EndTime { get; init; }
 
     /// <summary>奖励文案（快手 topGain / 抖音「有奖活动」/ 小红书活动名等）</summary>
     public string? Reward { get; init; }
+
+    /// <summary>活动发起人昵称（视频号 <c>eventCreatorNickname</c>）—— 视频号提交体需要它，
+    /// 只有从平台活动列表选中的活动才带；params.txt 的「官方活动」只有 ID，因此为空</summary>
+    public string? CreatorNickname { get; init; }
 
     /// <summary>活动关联话题（选中活动时自动带进话题块）</summary>
     public IReadOnlyList<TopicRef> Topics { get; init; } = [];
@@ -710,6 +1175,17 @@ public sealed record ActivityRef
     /// <summary>按当前时间判断是否已结束（UI 灰显、不默认选中）</summary>
     public bool IsEnded => EndTime is { } end && end <= DateTimeOffset.Now;
 }
+
+/// <summary>
+/// 视频号官方活动 —— 提交体 <c>objectDesc.event</c> 的三件套
+/// <c>{eventTopicId, eventName, eventCreatorNickname}</c>（2026-11-11 B2 抓包）。
+/// 三项都来自 <c>post/post_search_event</c> 的选中项：平台不按活动 ID 二次查询，
+/// 所以只有「从活动列表里选」才组得出来；直接用 ID 拼会缺活动名/发起人。
+/// </summary>
+public sealed record WechatVideoEventRef(
+    string EventTopicId,
+    string? EventName = null,
+    string? EventCreatorNickname = null);
 
 /// <summary>
 /// 一条已解析的话题（联邦解析结果的一格）。
@@ -762,6 +1238,19 @@ public sealed record VideoMeta(
     /// 预检靠它提示。
     /// </summary>
     public bool? HasAudio { get; init; }
+
+    /// <summary>
+    /// 视频编码（ffprobe <c>codec_name</c>，如 <c>h264</c> / <c>hevc</c>）。
+    /// <c>null</c> = 未知（加这个字段之前写的老缓存 / 探测失败）。
+    /// B站互动卡片的前置条件就是 H.264（2026-11-15 B5 实测），预检靠它提示。
+    /// </summary>
+    public string? CodecName { get; init; }
+
+    /// <summary>
+    /// 容器格式（ffprobe <c>format_name</c>，如 <c>mov,mp4,m4a,3gp,3g2,mj2</c>）。
+    /// <c>null</c> = 未知（同 <see cref="CodecName"/>）。
+    /// </summary>
+    public string? FormatName { get; init; }
 
     /// <summary>展示用时长 mm:ss</summary>
     public string DurationText => TimeSpan.FromSeconds(DurationS) is var t

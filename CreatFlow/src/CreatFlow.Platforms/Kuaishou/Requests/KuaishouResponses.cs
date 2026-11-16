@@ -398,6 +398,148 @@ internal sealed class KuaishouUserHeadItem
 }
 
 
+// ═══ 关联热点（B3 抓包 2026-11-11）═══
+
+/// <summary><c>hotspot/list</c> 的 <c>data</c>：候选列表 + 下一页游标（-2147483648 = 无更多）。</summary>
+internal sealed class KuaishouHotspotListResponse
+{
+    [JsonPropertyName("list")]
+    public List<KuaishouHotspotItemDto>? List { get; set; }
+
+    [JsonPropertyName("nextCursor")]
+    public long NextCursor { get; set; }
+}
+
+internal sealed class KuaishouHotspotItemDto
+{
+    [JsonPropertyName("hotspotId")]
+    public long HotspotId { get; set; }
+    [JsonPropertyName("hotspotContent")]
+    public string? HotspotContent { get; set; }
+    [JsonPropertyName("hotValue")]
+    public string? HotValue { get; set; }
+    [JsonPropertyName("feedCount")]
+    public long FeedCount { get; set; }
+    [JsonPropertyName("rising")]
+    public bool Rising { get; set; }
+}
+
+// ═══ @好友（B3 抓包 2026-11-11）═══
+
+/// <summary>
+/// <c>at/search</c> 的 <c>data</c>：候选用户 + 是否还有下一页 + 会话号。
+/// 抓包：<c>{"hasMore":true,"sessionId":"…","list":[{"userName":"房","userId":2210679639,
+/// "fansCount":4272,"headUrl":"https://…"}]}</c>。
+/// </summary>
+internal sealed class KuaishouAtSearchResponse
+{
+    [JsonPropertyName("list")]
+    public List<KuaishouAtUserDto>? List { get; set; }
+    [JsonPropertyName("hasMore")]
+    public bool HasMore { get; set; }
+    [JsonPropertyName("sessionId")]
+    public string? SessionId { get; set; }
+}
+
+internal sealed class KuaishouAtUserDto
+{
+    [JsonPropertyName("userName")]
+    public string? UserName { get; set; }
+    [JsonPropertyName("userId")]
+    public long UserId { get; set; }
+    [JsonPropertyName("fansCount")]
+    public long FansCount { get; set; }
+    [JsonPropertyName("headUrl")]
+    public string? HeadUrl { get; set; }
+}
+
+/// <summary>
+/// <c>at/choose</c> 的响应外壳 —— 抓包是 <c>{"result":1,"data":null}</c>：
+/// <c>data</c> 恒为 null，所以不能走 <see cref="KuaishouApiClient.PostAsync{T}"/>（它会把 null data 当错误抛）。
+/// </summary>
+internal sealed class KuaishouAtChooseResponse
+{
+    [JsonPropertyName("result")]
+    public int Result { get; set; }
+    [JsonPropertyName("message")]
+    public string? Message { get; set; }
+}
+
+// ═══ 作者服务 · 关联小程序（2026-11-15 真页面抓包）═══
+
+/// <summary>
+/// <c>relation/list</c> 的响应外壳 —— <c>{result, data:{list, cursor}}</c>。
+/// cursor 在响应里是**字符串**（<c>"0"</c>），请求里也是字符串（首屏 <c>""</c>）。
+/// </summary>
+internal sealed class KuaishouRelationListResponse
+{
+    [JsonPropertyName("result")]
+    public int Result { get; set; }
+    [JsonPropertyName("data")]
+    public KuaishouRelationListData? Data { get; set; }
+}
+
+internal sealed class KuaishouRelationListData
+{
+    [JsonPropertyName("list")]
+    public List<KuaishouRelationItemDto>? List { get; set; }
+    [JsonPropertyName("cursor")]
+    public string? Cursor { get; set; }
+}
+
+internal sealed class KuaishouRelationItemDto
+{
+    [JsonPropertyName("title")]
+    public string? Title { get; set; }
+    [JsonPropertyName("url")]
+    public string? Url { get; set; }
+    [JsonPropertyName("desc")]
+    public string? Desc { get; set; }
+    [JsonPropertyName("associateTaskId")]
+    public KuaishouAssociateTaskDto? AssociateTaskId { get; set; }
+    [JsonPropertyName("validMessage")]
+    public string? ValidMessage { get; set; }
+}
+
+/// <summary>
+/// <c>associateTaskId</c> —— 关联小程序的 wire 元素（2026-11-15 提交抓包逐字）：
+/// <c>{"taskId":0,"bindId":"plc…","entranceType":9,"bindType":"25","taskType":"PLC"}</c>。
+/// 页面选中后把**整个对象**放进 submit 的 <c>associateTasks</c> 数组。
+/// <c>taskId</c> 观测为 0（不是 ID>0 才能用）；<c>bindId</c> 才是真正标识。
+/// </summary>
+public sealed class KuaishouAssociateTaskDto
+{
+    [JsonPropertyName("taskId")]
+    public long TaskId { get; set; }
+    [JsonPropertyName("bindId")]
+    public string BindId { get; set; } = "";
+    [JsonPropertyName("entranceType")]
+    public int EntranceType { get; set; }
+    [JsonPropertyName("bindType")]
+    public string BindType { get; set; } = "";
+    [JsonPropertyName("taskType")]
+    public string TaskType { get; set; } = "";
+}
+
+// ═══ 共同创作（2026-11-15 发布页 bundle 定案）═══
+
+/// <summary>
+/// submit <c>coPublishUser</c> 数组的元素 —— 发布页 bundle 逐字：
+/// <c>{userId, userName, userHead, coPublishRole}</c>。
+/// 角色枚举（bundle <c>Ti</c>）：<c>-1 默认 / 0 作者 / 1 共创 / 2 出镜</c>。
+/// </summary>
+public sealed class KuaishouCoPublishUserDto
+{
+    [JsonPropertyName("userId")]
+    public long UserId { get; set; }
+    [JsonPropertyName("userName")]
+    public string UserName { get; set; } = "";
+    [JsonPropertyName("userHead")]
+    public string UserHead { get; set; } = "";
+    [JsonPropertyName("coPublishRole")]
+    public int CoPublishRole { get; set; } = -1;
+}
+
 // ═══ 变现入口 ═══
 
 internal sealed class KuaishouEntranceResponse
@@ -444,6 +586,14 @@ public sealed class KuaishouSubmitRequest
 
     [JsonPropertyName("coverTitle")]
     public string CoverTitle { get; set; } = "";
+
+    /// <summary>
+    /// 封面文字样式 —— <c>coverTitleStyle</c>。**取值未验证**（只在作品编辑提交里观测到，
+    /// 恒为空串；2026-11-15 发布页 submit 不带该键）。null = 不下发（保持页面行为）。
+    /// </summary>
+    [JsonPropertyName("coverTitleStyle")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CoverTitleStyle { get; set; }
 
     [JsonPropertyName("photoType")]
     public int PhotoType { get; set; }
@@ -509,6 +659,19 @@ public sealed class KuaishouSubmitRequest
     /// <summary>章节 —— 元素结构未抓到（抓包恒 []），允许原始 JSON 透传</summary>
     [JsonPropertyName("chapters")]
     public object Chapters { get; set; } = Array.Empty<object>();
+
+    /// <summary>
+    /// 关联热点 ID（B3 抓包 2026-11-11）—— <c>hotspotId</c>，数字。
+    /// 未选热点时**两个键都不出现**（页面清除时把它们加进 <c>needDeleteKey</c>）。
+    /// </summary>
+    [JsonPropertyName("hotspotId")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? HotspotId { get; set; }
+
+    /// <summary>关联热点类型 —— <c>hotspotConnectType</c>，恒为 1（热点）。</summary>
+    [JsonPropertyName("hotspotConnectType")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HotspotConnectType { get; set; }
 
     [JsonPropertyName("useAiCaptionCover")]
     public bool UseAiCaptionCover { get; set; }
@@ -579,6 +742,14 @@ public sealed class KuaishouSubmitRequest
 
     [JsonPropertyName("photoIdStr")]
     public string PhotoIdStr { get; set; } = "";
+
+    /// <summary>
+    /// 作者服务 · 关联小程序（2026-11-15 受控发布抓包）—— 整个 <c>associateTaskId</c> 对象数组。
+    /// 未关联时页面 submit **不带这个键**（2026-11-05 抓包无此键），所以 null 即省略。
+    /// </summary>
+    [JsonPropertyName("associateTasks")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<KuaishouAssociateTaskDto>? AssociateTasks { get; set; }
 
     [JsonPropertyName("kuaishou.web.cp.api_ph")]
     public string ApiPh { get; set; } = "";

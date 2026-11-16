@@ -22,11 +22,14 @@ namespace CreatFlow.NewApp.Services;
 /// </summary>
 public static class ToutiaoItemProbe
 {
-    public static async Task<int> RunAsync(string itemId, Guid? sessionId)
+    public static async Task<int> RunAsync(
+        string itemId, Guid? sessionId, string? deleteDraftsSpec = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"═══ 头条作品详情探针 {DateTime.Now:yyyy-MM-dd HH:mm:ss} ═══");
-        sb.AppendLine($"item_id={itemId}  session={sessionId?.ToString() ?? "-"}");
+        sb.AppendLine($"item_id={itemId}  session={sessionId?.ToString() ?? "-"}"
+                      + (string.IsNullOrWhiteSpace(deleteDraftsSpec)
+                          ? "" : $"  delete-drafts={deleteDraftsSpec}"));
 
         var ctx = new SessionContext();
         if (ctx.MemberId == Guid.Empty)
@@ -96,7 +99,8 @@ public static class ToutiaoItemProbe
             sb.AppendLine($"  Abstract={Str(data, "Abstract") ?? "(空)"}");
             sb.AppendLine($"  VideoType={Num(data, "VideoType")}  IsLandscape={Str(data, "IsLandscape")}  "
                           + $"TimerStatus={Num(data, "TimerStatus")}  TimerTime={Num(data, "TimerTime")}  "
-                          + $"ClaimOrigin={Num(data, "ClaimOrigin")}  Praise={Num(data, "Praise")}");
+                          + $"ClaimOrigin={Num(data, "ClaimOrigin")}  Praise={Num(data, "Praise")}  "
+                          + $"VideoTransArticleFlag={Num(data, "VideoTransArticleFlag")}");
             if (data.TryGetProperty("VideoInfo", out var vi) && vi.ValueKind == JsonValueKind.Object)
                 sb.AppendLine($"  VideoInfo.Vid={Str(vi, "Vid")}  VName={Str(vi, "VName")}");
 
@@ -176,6 +180,250 @@ public static class ToutiaoItemProbe
                 Log.Warning(ex, "[ToutiaoItemProbe] 作品列表回查失败");
             }
 
+            // ── 草稿列表：视频生成图文=2（仅保存草稿）是否真的生成了一篇图文草稿 ──
+            //  type：0 全部 / 1 图文 / 2 视频 / 3 微头条（页面 hN 枚举），逐个试。
+            for (var draftType = 0; draftType <= 3; draftType++)
+            {
+                try
+                {
+                    var draftRaw = await svc.GetDraftListRawAsync(
+                        creds.Cookie, csrfToken, draftType);
+                    var draftPath = Path.Combine(
+                        Path.GetTempPath(), $"toutiao_draft_list_probe_t{draftType}.json");
+                    try { File.WriteAllText(draftPath, draftRaw); } catch { /* 落盘失败不影响报告 */ }
+
+                    using var draftDoc = JsonDocument.Parse(draftRaw);
+                    var draftRoot = draftDoc.RootElement;
+                    if (draftRoot.TryGetProperty("draft_list", out var drafts)
+                        && drafts.ValueKind == JsonValueKind.Array)
+                    {
+                        sb.AppendLine($"  [草稿列表 type={draftType}] {drafts.GetArrayLength()} 条：");
+                        foreach (var draft in drafts.EnumerateArray().Take(20))
+                        {
+                            if (draft.ValueKind != JsonValueKind.Object) continue;
+                            sb.AppendLine($"    · gid={Str(draft, "gid") ?? NumText(draft, "gid")}  "
+                                          + $"title={Str(draft, "title") ?? "(空)"}  "
+                                          + $"draft_type={NumText(draft, "draft_type")}  "
+                                          + $"update_time={NumText(draft, "update_time")}");
+                        }
+                    }
+                    else
+                    {
+                        sb.AppendLine($"  [草稿列表 type={draftType}] 响应里没有 draft_list；顶层键："
+                            + string.Join(", ", draftRoot.EnumerateObject().Select(p => p.Name)));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  [草稿列表 type={draftType} 失败] {ex.Message}");
+                }
+            }
+
+            // ── 文章（图文）列表：视频生成图文=1（同时发布）是否真的生成了一篇图文 ──
+            //  /mp/agw/article/list 的 query 形状页面 Xl 序列化，抓包没有实请求；
+            //  探针依次试几个常见形状，打印响应键/预览，拿到非空/非错误形状即可收窄。
+            try
+            {
+                var articleUserId = await svc.GetUserIdAsync(creds.Cookie, csrfToken);
+                if (string.IsNullOrWhiteSpace(articleUserId))
+                {
+                    sb.AppendLine("  [文章列表] 拿不到 user_id，跳过");
+                }
+                else
+                {
+                    var uid = Uri.EscapeDataString(articleUserId);
+                    var variants = new[]
+                    {
+                        $"user_id={uid}&offset=0&count=20&status=0&app_id=1231",
+                        $"user_id={uid}&page=1&count=20&status=0&app_id=1231",
+                        $"user_id={uid}&count=20&app_id=1231",
+                        $"user_id={uid}&is_draft=1&count=20&app_id=1231",
+                        $"user_id={uid}&type=1&count=20&app_id=1231",
+                        $"user_id={uid}&type=2&count=20&app_id=1231",
+                    };
+                    for (var i = 0; i < variants.Length; i++)
+                    {
+                        try
+                        {
+                            var articleRaw = await svc.GetArticleListRawAsync(
+                                creds.Cookie, csrfToken, variants[i]);
+                            var articlePath = Path.Combine(
+                                Path.GetTempPath(), $"toutiao_article_list_probe_v{i}.json");
+                            try { File.WriteAllText(articlePath, articleRaw); } catch { }
+
+                            using var articleDoc = JsonDocument.Parse(articleRaw);
+                            var articleRoot = articleDoc.RootElement;
+                            var topKeys = articleRoot.ValueKind == JsonValueKind.Object
+                                ? string.Join(",", articleRoot.EnumerateObject().Select(p => p.Name))
+                                : articleRoot.ValueKind.ToString();
+                            sb.AppendLine($"  [文章列表 v{i}] 顶层键：{topKeys}");
+
+                            var arrays = new List<(string Name, JsonElement Arr)>();
+                            void AddArray(string label, string name, JsonElement parent)
+                            {
+                                if (parent.TryGetProperty(name, out var arr)
+                                    && arr.ValueKind == JsonValueKind.Array)
+                                    arrays.Add((label, arr));
+                            }
+                            AddArray("article_list", "article_list", articleRoot);
+                            AddArray("articles", "articles", articleRoot);
+                            AddArray("list", "list", articleRoot);
+                            if (articleRoot.TryGetProperty("data", out var dataEl)
+                                && dataEl.ValueKind == JsonValueKind.Object)
+                            {
+                                AddArray("data.article_list", "article_list", dataEl);
+                                AddArray("data.articles", "articles", dataEl);
+                                AddArray("data.list", "list", dataEl);
+                            }
+
+                            if (arrays.Count == 0)
+                            {
+                                sb.AppendLine($"  [文章列表 v{i}] 没有数组字段");
+                            }
+                            foreach (var (name, arr) in arrays)
+                            {
+                                sb.AppendLine($"  [文章列表 v{i}] {name} {arr.GetArrayLength()} 条：");
+                                foreach (var row in arr.EnumerateArray().Take(10))
+                                {
+                                    if (row.ValueKind != JsonValueKind.Object) continue;
+                                    sb.AppendLine("    · "
+                                        + $"gid={Str(row, "gid") ?? NumText(row, "gid")}  "
+                                        + $"title={Str(row, "title") ?? Str(row, "articleBase", "title") ?? "(空)"}  "
+                                        + $"status={NumText(row, "status")}  "
+                                        + $"status_desc={Str(row, "status_desc") ?? "-"}  "
+                                        + $"is_draft={NumText(row, "is_draft")}  "
+                                        + $"visibility={NumText(row, "visibility_level")}  "
+                                        + $"words={NumText(row, "content_word_cnt")}  "
+                                        + $"type={NumText(row, "article_type")}");
+                                }
+                            }
+                            sb.AppendLine($"  [文章列表 v{i}] 原始响应：{articlePath}");
+                        }
+                        catch (Exception ex)
+                        {
+                            sb.AppendLine($"  [文章列表 v{i} 失败] {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  [文章列表失败] {ex.Message}");
+                Log.Warning(ex, "[ToutiaoItemProbe] 文章列表回查失败");
+            }
+
+            // ── 文章（图文）详情：直接看生成图文的 status / is_draft / 可见性 ──
+            try
+            {
+                var previewVariants = new[]
+                {
+                    $"pgc_id={Uri.EscapeDataString(itemId)}&app_id=1231",
+                    $"item_id={Uri.EscapeDataString(itemId)}&app_id=1231",
+                    $"pgc_id={Uri.EscapeDataString(itemId)}",
+                };
+                for (var i = 0; i < previewVariants.Length; i++)
+                {
+                    try
+                    {
+                        var previewRaw = await svc.GetArticlePreviewRawAsync(
+                            creds.Cookie, csrfToken, previewVariants[i]);
+                        var previewPath = Path.Combine(
+                            Path.GetTempPath(), $"toutiao_article_preview_probe_v{i}.json");
+                        try { File.WriteAllText(previewPath, previewRaw); } catch { }
+
+                        using var previewDoc = JsonDocument.Parse(previewRaw);
+                        var previewRoot = previewDoc.RootElement;
+                        var topKeys = previewRoot.ValueKind == JsonValueKind.Object
+                            ? string.Join(",", previewRoot.EnumerateObject().Select(p => p.Name))
+                            : previewRoot.ValueKind.ToString();
+                        sb.AppendLine($"  [图文详情 v{i}] 顶层键：{topKeys}");
+
+                        var node = previewRoot;
+                        if (node.TryGetProperty("data", out var pdata)
+                            && pdata.ValueKind == JsonValueKind.Object) node = pdata;
+                        if (node.TryGetProperty("article", out var article)
+                            && article.ValueKind == JsonValueKind.Object) node = article;
+                        sb.AppendLine($"  [图文详情 v{i}] "
+                            + $"title={Str(node, "title") ?? Str(node, "articleBase", "title") ?? "(空)"}  "
+                            + $"status={NumText(node, "status")}  "
+                            + $"status_desc={Str(node, "status_desc") ?? "-"}  "
+                            + $"is_draft={NumText(node, "is_draft")}  "
+                            + $"visibility={NumText(node, "visibility_level")}  "
+                            + $"words={NumText(node, "content_word_cnt")}");
+                        sb.AppendLine($"  [图文详情 v{i}] 原始响应：{previewPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"  [图文详情 v{i} 失败] {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  [图文详情失败] {ex.Message}");
+                Log.Warning(ex, "[ToutiaoItemProbe] 图文详情回查失败");
+            }
+
+            // ── 发布权限（诊断：原创开关是否对这条账号可用）──
+            // 发布页初始化时自己拉的接口；ClaimOriginPermission=false 时页面根本不显示原创开关，
+            // PublishVideo 里的 ClaimOrigin=true 会被静默忽略（2026-11-10 复查）。
+            try
+            {
+                var authRaw = await svc.GetPublishAuthRawAsync(creds.Cookie, csrfToken);
+                var authPath = Path.Combine(Path.GetTempPath(), "toutiao_publish_auth_probe.json");
+                try { File.WriteAllText(authPath, authRaw); } catch { /* 落盘失败不影响报告 */ }
+
+                using var authDoc = JsonDocument.Parse(authRaw);
+                if (authDoc.RootElement.TryGetProperty("data", out var authData)
+                    && authData.ValueKind == JsonValueKind.Object
+                    && authData.TryGetProperty("authorPermission", out var perm)
+                    && perm.ValueKind == JsonValueKind.Object)
+                {
+                    sb.AppendLine("  [发布权限] "
+                        + $"ClaimOriginPermission={Num(perm, "ClaimOriginPermission")}  "
+                        + $"CanNotClaimOriginReason={(Str(perm, "CanNotClaimOriginReason") is { Length: > 0 } r ? r : "(空)")}");
+                    sb.AppendLine("  [发布权限] "
+                        + $"HasPraisePermission={Num(perm, "HasPraisePermission")}  "
+                        + $"DisablePublish={Num(perm, "DisablePublish")}  "
+                        + $"ShowAllowDownload={Num(perm, "ShowAllowDownload")}");
+                }
+                else
+                {
+                    sb.AppendLine("  [发布权限] 响应里没有 data.authorPermission："
+                                  + Truncate(authRaw, 300));
+                }
+                sb.AppendLine($"  [发布权限] 原始响应：{authPath}");
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"  [发布权限失败] {ex.Message}");
+                Log.Warning(ex, "[ToutiaoItemProbe] GetPublishAuth 失败");
+            }
+
+            // ── 诊断清理：删除指定草稿（-delete-drafts 3:gid,3:gid）──
+            if (!string.IsNullOrWhiteSpace(deleteDraftsSpec))
+            {
+                try
+                {
+                    var drafts = ParseDraftSpec(deleteDraftsSpec);
+                    if (drafts.Count == 0)
+                    {
+                        sb.AppendLine("  [删除草稿] 规格为空（应为 draft_type:gid[,draft_type:gid]）");
+                    }
+                    else
+                    {
+                        var deleteRaw = await svc.DeleteDraftsRawAsync(creds.Cookie, csrfToken, drafts);
+                        sb.AppendLine($"  [删除草稿] {string.Join(" / ", drafts.Select(d => $"{d.DraftType}:{d.Gid}"))}");
+                        sb.AppendLine($"  [删除草稿] 响应：{Truncate(deleteRaw, 800)}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  [删除草稿失败] {ex.Message}");
+                    Log.Warning(ex, "[ToutiaoItemProbe] 删除草稿失败");
+                }
+            }
+
             return Write(sb, 0);
         }
         catch (Exception ex)
@@ -184,6 +432,21 @@ public static class ToutiaoItemProbe
             Log.Warning(ex, "[ToutiaoItemProbe] 拉取作品详情失败");
             return Write(sb, 1);
         }
+    }
+
+    /// <summary>解析 <c>draft_type:gid[,draft_type:gid]</c>（诊断清理用）。</summary>
+    private static List<(int DraftType, string Gid)> ParseDraftSpec(string spec)
+    {
+        var result = new List<(int, string)>();
+        foreach (var part in spec.Split(',', StringSplitOptions.RemoveEmptyEntries
+                                             | StringSplitOptions.TrimEntries))
+        {
+            var colon = part.IndexOf(':');
+            if (colon <= 0 || colon == part.Length - 1) continue;
+            if (!int.TryParse(part[..colon], out var draftType)) continue;
+            result.Add((draftType, part[(colon + 1)..]));
+        }
+        return result;
     }
 
     /// <summary>递归收集名字含 hashtag 的字段（顶层 + data 任意层级），原样输出值。</summary>

@@ -152,6 +152,7 @@ public sealed class VideoMetaProbe
     {
         double duration = 0;
         int width = 0, height = 0;
+        string? codecName = null, formatName = null;
 
         try
         {
@@ -162,7 +163,9 @@ public sealed class VideoMetaProbe
             [
                 "-v", "error",
                 "-select_streams", "v:0",
-                "-show_entries", "format=duration:stream=width,height,duration",
+                // codec_name / format_name 是 2026-11-15 B5 起加的（B站互动卡片
+                // 只在 H.264 MP4 上可用，预检要能照实提示）；老缓存条目没有这两项。
+                "-show_entries", "format=duration,format_name:stream=width,height,duration,codec_name",
                 "-print_format", "json",
                 videoPath,
             ], cts.Token);
@@ -181,9 +184,13 @@ public sealed class VideoMetaProbe
                     height = ReadInt(s, "height");
                     // 流级 duration 可能缺（部分 mp4），缺了退到 format.duration
                     duration = ReadDouble(s, "duration");
+                    codecName = ReadString(s, "codec_name");
                 }
-                if (duration <= 0 && root.TryGetProperty("format", out var fmt))
-                    duration = ReadDouble(fmt, "duration");
+                if (root.TryGetProperty("format", out var fmt))
+                {
+                    if (duration <= 0) duration = ReadDouble(fmt, "duration");
+                    formatName = ReadString(fmt, "format_name");
+                }
             }
             else if (code != 0)
             {
@@ -206,6 +213,8 @@ public sealed class VideoMetaProbe
         return new VideoMeta(videoPath, fi.Length, duration, width, height, thumb)
         {
             HasAudio = hasAudio,
+            CodecName = codecName,
+            FormatName = formatName,
         };
     }
 
@@ -498,6 +507,11 @@ public sealed class VideoMetaProbe
     private static int ReadInt(JsonElement el, string name) =>
         el.TryGetProperty(name, out var v) && v.TryGetInt32(out var i) ? i : 0;
 
+    private static string? ReadString(JsonElement el, string name) =>
+        el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
     private static double ReadDouble(JsonElement el, string name) =>
         el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
             && double.TryParse(v.GetString(), System.Globalization.NumberStyles.Float,
@@ -515,6 +529,10 @@ public sealed class VideoMetaProbe
         public string? ThumbPath { get; set; }
         /// <summary>是否有音轨；null = 老缓存（加该字段之前写的）或探测失败</summary>
         public bool? HasAudio { get; set; }
+        /// <summary>视频编码 / 容器格式（B5 起）；null = 老缓存或探测失败</summary>
+        public string? CodecName { get; set; }
+        /// <inheritdoc cref="CodecName"/>
+        public string? FormatName { get; set; }
         /// <summary>最后访问时间（LRU 淘汰依据）</summary>
         public DateTime At { get; set; }
 
@@ -526,6 +544,8 @@ public sealed class VideoMetaProbe
             Height = m.Height,
             ThumbPath = m.ThumbPath,
             HasAudio = m.HasAudio,
+            CodecName = m.CodecName,
+            FormatName = m.FormatName,
             At = DateTime.UtcNow,
         };
 
@@ -535,6 +555,8 @@ public sealed class VideoMetaProbe
             return new VideoMeta(path, size, Duration, Width, Height, ThumbPath)
             {
                 HasAudio = HasAudio,
+                CodecName = CodecName,
+                FormatName = FormatName,
             };
         }
     }

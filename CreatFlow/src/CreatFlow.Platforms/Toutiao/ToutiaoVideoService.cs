@@ -126,6 +126,26 @@ public sealed class ToutiaoVideoService
         return await client.GetStringAsync(BuildEditItemUrl(_options.ToutiaoHost, itemId), ct);
     }
 
+    /// <summary>
+    /// 发布权限（发布页初始化时页面自己拉的接口，抓包
+    /// <c>xigua/api/upload/GetPublishAuth?params={}</c>）。**诊断用，不进业务路径** ——
+    /// 回答「提交了字段但平台不回显」到底是账号没权限还是字段名不对：
+    /// <c>data.authorPermission.ClaimOriginPermission</c> 为 false 时原创开关根本不显示，
+    /// PublishVideo 里的 <c>ClaimOrigin=true</c> 会被平台静默忽略。
+    /// </summary>
+    public const string PublishAuthPath = "/xigua/api/upload/GetPublishAuth/";
+
+    /// <summary>只读回查：发布权限（原始 JSON）。</summary>
+    public async Task<string> GetPublishAuthRawAsync(
+        string cookie, string? csrfToken, CancellationToken ct = default)
+    {
+        using var client = new ToutiaoApiClient(
+            cookie, _options, csrfToken,
+            "https://mp.toutiao.com/profile_v4/xigua/upload-video?index=2");
+        return await client.GetStringAsync(
+            _options.ToutiaoHost + PublishAuthPath + "?params=" + Uri.EscapeDataString("{}"), ct);
+    }
+
     // ═══ 作品列表（内容管理）—— HashtagList 只在列表里回显 ═══
 
     /// <summary>
@@ -189,6 +209,82 @@ public sealed class ToutiaoVideoService
             cookie, _options, csrfToken, "https://mp.toutiao.com/profile_v4/index");
         return await client.GetStringAsync(
             BuildMpFeedUrl(_options.ToutiaoHost, userId, category, keyword, offset, count, status), ct);
+    }
+
+    /// <summary>
+    /// 草稿列表原始 JSON（内容管理 → 草稿；抓包 <c>/mp/agw/creator_center/draft_list?type=0&amp;count=20&amp;app_id=1231</c>）。
+    /// 用于回读「视频生成图文 = 仅保存草稿」是否真的生成了一篇图文草稿。
+    /// </summary>
+    public async Task<string> GetDraftListRawAsync(
+        string cookie, string? csrfToken, int type = 0, int count = 20,
+        CancellationToken ct = default)
+    {
+        using var client = new ToutiaoApiClient(
+            cookie, _options, csrfToken, "https://mp.toutiao.com/profile_v4/manage/draft");
+        return await client.GetStringAsync(
+            _options.ToutiaoHost.TrimEnd('/')
+            + $"/mp/agw/creator_center/draft_list?type={type}&count={count}&app_id=1231", ct);
+    }
+
+    /// <summary>
+    /// 文章（图文）列表原始 JSON —— 内容管理页图文列表（抓包端点 <c>/mp/agw/article/list</c>）。
+    /// 查询参数由页面 <c>Xl</c> 序列化，形状未完全确定；调用方传入候选 query，探针逐个试。
+    /// </summary>
+    public async Task<string> GetArticleListRawAsync(
+        string cookie, string? csrfToken, string query, CancellationToken ct = default)
+    {
+        using var client = new ToutiaoApiClient(
+            cookie, _options, csrfToken,
+            "https://mp.toutiao.com/profile_v4/manage/content/article");
+        return await client.GetStringAsync(
+            _options.ToutiaoHost.TrimEnd('/') + "/mp/agw/article/list?" + query, ct);
+    }
+
+    /// <summary>
+    /// 文章（图文）预览/详情原始 JSON —— <c>/mp/agw/article/preview</c>。
+    /// 用于回读生成图文的草稿/可见状态；query 形状由页面 <c>Xl</c> 序列化，探针逐个试。
+    /// </summary>
+    public async Task<string> GetArticlePreviewRawAsync(
+        string cookie, string? csrfToken, string query, CancellationToken ct = default)
+    {
+        using var client = new ToutiaoApiClient(
+            cookie, _options, csrfToken,
+            "https://mp.toutiao.com/profile_v4/manage/content/article");
+        return await client.GetStringAsync(
+            _options.ToutiaoHost.TrimEnd('/') + "/mp/agw/article/preview?" + query, ct);
+    }
+
+    // ═══ 草稿管理（诊断：清理「视频生成图文=仅保存草稿」的测试草稿） ═══
+
+    /// <summary>
+    /// 删除草稿 —— 抓包 <c>POST /mp/agw/creator_center/delete_draft?app_id=1231</c>，
+    /// 请求体 <c>{"drafts":[{"draft_type":3,"gid":"…"}]}</c>。
+    /// <c>draft_type</c>：1 图文 / 2 视频 / 3 微头条？**实际以草稿列表回读的值为准**
+    /// （2026-11-11 实测视频草稿是 3；接口枚举与页面 type 参数不是一套）。
+    /// </summary>
+    public const string DeleteDraftPath = "/mp/agw/creator_center/delete_draft";
+
+    /// <summary>草稿删除请求体（纯函数，自检可钉 wire 形体）。</summary>
+    public static Dictionary<string, object?> BuildDeleteDraftBody(
+        IEnumerable<(int DraftType, string Gid)> drafts) => new()
+    {
+        ["drafts"] = drafts.Select(d => new Dictionary<string, object?>
+        {
+            ["draft_type"] = d.DraftType,
+            ["gid"] = d.Gid,
+        }).ToList(),
+    };
+
+    /// <summary>删除草稿（原始响应文本；诊断用）。</summary>
+    public async Task<string> DeleteDraftsRawAsync(
+        string cookie, string? csrfToken,
+        IReadOnlyList<(int DraftType, string Gid)> drafts, CancellationToken ct = default)
+    {
+        using var client = new ToutiaoApiClient(
+            cookie, _options, csrfToken, "https://mp.toutiao.com/profile_v4/manage/draft");
+        return await client.PostJsonRawAsync(
+            _options.ToutiaoHost.TrimEnd('/') + DeleteDraftPath + "?app_id=1231",
+            BuildDeleteDraftBody(drafts), ct);
     }
 
     // ═══ 纯函数（自检直接喂抓包响应） ═══

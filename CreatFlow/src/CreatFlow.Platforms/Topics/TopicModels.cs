@@ -166,8 +166,9 @@ public sealed record TopicCapability(
 /// <summary>
 /// 一个官方活动（关联活动增加曝光）。
 ///
-/// 存的是**快照**（名称/封面/截止时间一起存）—— 活动下架后旧草稿仍能显示；
-/// 发布时只下发 Id（小红书下发关联话题），不依赖活动接口实时可用。
+/// 存的是**快照**（名称/封面/起止时间一起存）—— 活动下架后旧草稿仍能显示；
+/// 发布时只下发 ID（小红书 A6 起走 <c>optionRelationList.ACTIVITY_COMPONENT</c>，
+/// 关联话题仍会另带），不依赖活动接口实时可用。
 /// </summary>
 public sealed record PlatformActivity
 {
@@ -194,6 +195,13 @@ public sealed record PlatformActivity
 
     /// <summary>平台自定义标签（快手 customTag）</summary>
     public string? CustomTag { get; init; }
+
+    /// <summary>
+    /// 活动发起人昵称（视频号 <c>eventCreatorNickname</c>）—— 视频号提交体
+    /// <c>objectDesc.event</c> 要求 <c>{eventTopicId, eventName, eventCreatorNickname}</c> 三件套，
+    /// 三者都来自搜索接口的选中项（2026-11-11 B2）。
+    /// </summary>
+    public string? CreatorNickname { get; init; }
 
     /// <summary>活动关联话题 —— **选中活动自动带这些话题**（抖音 challenge_ids / 小红书 topic_infos / B站同 mission 的 topics）</summary>
     public IReadOnlyList<TopicSuggestion> Topics { get; init; } = [];

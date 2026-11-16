@@ -13,6 +13,7 @@ namespace CreatFlow.NewApp.Services;
 /// 快手私密作品没有分享页、发布接口也不回 ID（2.6.10 遗留），本探针从**创作中心作品列表**
 /// （<c>/rest/cp/works/v2/video/pc/photo/list</c>）回读：
 ///   · 行的 <c>hotspotActivity</c> / <c>hotspot</c> —— 官方活动是否挂上（模型未建模，走 ExtraFields）；
+///   · 行的 <c>domain</c> / <c>secondDomain</c> —— 专属领域 / 二级领域是否回传（V3）；
 ///   · 行的 <c>title</c> —— 正文里的 <c>#话题</c> 文本；
 ///   · <c>workId</c> —— 公开作品可拼 <c>m.gifshow.com/fw/photo/{id}</c> 分享页，进一步看 SSR 里的
 ///     <c>INIT_STATE</c>（<c>--photo</c> 显式传入或由行里的 workId 自动尝试）。
@@ -21,6 +22,7 @@ namespace CreatFlow.NewApp.Services;
 ///   <c>--probe-kuaishou-work --publish-id 3710051890</c>
 ///   <c>--probe-kuaishou-work --keyword 家居</c>
 ///   <c>--probe-kuaishou-work --photo &lt;photoId&gt;</c>（只拉分享页）
+///   <c>--probe-kuaishou-domains</c>（只拉「专属领域 / 二级领域」列表 —— 发布页领域选择器的数据源）
 /// 可选 <c>--session &lt;guid&gt;</c>；缺省取本地镜像里快手的第一个账号。
 /// 报告写 <c>%TEMP%\kuaishou_work_probe.txt</c>。
 /// </summary>
@@ -31,7 +33,8 @@ public static class KuaishouWorkProbe
         "(KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1";
 
     public static async Task<int> RunAsync(
-        string? keyword, long? publishId, string? photoId, Guid? sessionId)
+        string? keyword, long? publishId, string? photoId, Guid? sessionId,
+        bool domainsOnly = false, string? mentionKeyword = null)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"═══ 快手作品回查探针 {DateTime.Now:yyyy-MM-dd HH:mm:ss} ═══");
@@ -116,6 +119,71 @@ public static class KuaishouWorkProbe
 
         sb.AppendLine($"  会话 {id}  账号 {creds.PlatformName ?? creds.PlatformUid ?? "?"}");
 
+        // @好友候选搜索（B3 抓包 2026-11-11：at/search）—— 只读。
+        // 返回的 userId 就是 caption HTML 的 data-user-id / at/choose.contactId。
+        if (!string.IsNullOrWhiteSpace(mentionKeyword))
+        {
+            try
+            {
+                var page = await new KuaishouMentionService(options)
+                    .SearchAsync(creds.Cookie, mentionKeyword.Trim());
+                sb.AppendLine($"  @好友候选「{mentionKeyword}」：{page.Items.Count} 人"
+                              + $"  hasMore={page.HasMore}");
+                foreach (var user in page.Items)
+                {
+                    sb.AppendLine($"    · userId={user.UserId}  昵称={user.UserName}"
+                                  + $"  粉丝={user.FansCount}  头像={(string.IsNullOrEmpty(user.HeadUrl) ? "-" : "有")}");
+                }
+                if (page.Items.Count == 0)
+                    sb.AppendLine("  ⚠ 没有候选 —— 换个昵称再试（快手号不一定能被昵称搜索命中）");
+            }
+            catch (KuaishouApiException ex)
+            {
+                sb.AppendLine($"[@好友搜索失败] result={ex.ResultCode} {ex.Message}");
+                var hint = KuaishouVideoService.CredentialHint(ex.ResultCode);
+                if (hint is not null) sb.AppendLine("  → " + hint);
+                Log.Warning(ex, "[KuaishouWorkProbe] @好友搜索失败 result={Code}", ex.ResultCode);
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"[@好友搜索失败] {ex.Message}");
+                Log.Warning(ex, "[KuaishouWorkProbe] @好友搜索失败");
+            }
+            return Write(sb, 0);
+        }
+
+        // 只拉领域列表：发布页「专属领域 / 二级领域」选择器的数据源（POST upload/domain/list）。
+        if (domainsOnly)
+        {
+            try
+            {
+                var domains = await new KuaishouDomainService(options).GetDomainsAsync(creds.Cookie);
+                sb.AppendLine($"  领域列表：{domains.Count} 个专属领域"
+                              + $"（共 {domains.Sum(d => d.SecondCount)} 个二级领域）");
+                foreach (var d in domains)
+                {
+                    sb.AppendLine($"    · {d.Name} → " + (d.SecondCount > 0
+                        ? string.Join("、", d.SecondDomains)
+                        : "(无二级)"));
+                }
+                if (domains.Count == 0)
+                    sb.AppendLine("  ⚠ 平台返回了空列表（result=1、data 为空）—— 该账号可能没有领域配置");
+            }
+            catch (KuaishouApiException ex)
+            {
+                sb.AppendLine($"[领域列表失败] result={ex.ResultCode} {ex.Message}");
+                var hint = KuaishouVideoService.CredentialHint(ex.ResultCode);
+                if (hint is not null) sb.AppendLine("  → " + hint);
+                Log.Warning(ex, "[KuaishouWorkProbe] 领域列表请求失败 result={Code}", ex.ResultCode);
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"[领域列表失败] {ex.Message}");
+                Log.Warning(ex, "[KuaishouWorkProbe] 领域列表请求失败");
+            }
+            return Write(sb, 0);
+        }
+
         var autoPhoto = new List<string>();
 
         // 没给 --photo（或还给了别的条件）就先拉列表；只给 --photo 时直奔分享页。
@@ -155,6 +223,28 @@ public static class KuaishouWorkProbe
                                   + $"collection={r.CollectionId}/{r.CollectionTitle ?? "-"}");
                     sb.AppendLine($"     title={r.Title ?? "(空)"}");
                     if (!string.IsNullOrWhiteSpace(r.WorkId)) autoPhoto.Add(r.WorkId!);
+
+                    // P5 回读锚点（2026-11-15）：发布时下发过的可选字段在作品列表里到底回不回。
+                    // 列表没建模的字段都落在 ExtraFields；有就并成一行，方便逐条核对。
+                    var anchors = new List<string> { $"coPublish={r.CoPublish}" };
+                    if (r.ExtraFields is { Count: > 0 })
+                    {
+                        foreach (var key in new[]
+                                 {
+                                     "chapters", "hotspot", "hotspotActivity", "hotspotId",
+                                     "hotspotConnectType", "associateTasks", "associateTask",
+                                     "coPublishUser", "coPublishRole", "coverTitleStyle",
+                                     // 专属领域 / 二级领域（V3）：提交体 domain / secondDomain，
+                                     // 列表里是否回传看这两项 —— 空值 / 缺失都要能一眼看到
+                                     "domain", "secondDomain",
+                                 })
+                        {
+                            if (r.ExtraFields.TryGetValue(key, out var v))
+                                anchors.Add($"{key}={Truncate(v.GetRawText(), 400)}");
+                        }
+                    }
+                    sb.AppendLine("     P5 回读：" + string.Join("  ", anchors));
+
                     if (r.ExtraFields is { Count: > 0 })
                     {
                         foreach (var (k, v) in r.ExtraFields.OrderBy(x => x.Key))

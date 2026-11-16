@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using CreatFlow.Platforms.Bilibili;
 using CreatFlow.Platforms.Douyin;
+using CreatFlow.Platforms.Xiaohongshu;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -62,6 +64,15 @@ public static partial class PublishPayloadBuilder
                 BuildToutiao(draft, p, title, ttCaption, topics, plainTopicNames));
         }
 
+        (string Title, string Description, string? ExtraJson) BuildXhsBranch()
+        {
+            // 正文必须带「@昵称」（页面把正文里的 @ 节点序列化成这行文本）——
+            // 补写口径收在 XhsCaption，预检按同一份数 1000 字上限，
+            // 避免「预检刚好、实际补完 @ 超限」。
+            var xhsCaption = XhsCaption(draft, p);
+            return (title, xhsCaption, BuildXhs(draft, p, title, xhsCaption, flatTopics));
+        }
+
         (string Title, string Description, string? ExtraJson) BuildWechatBranch()
         {
             // 视频号没有标题字段，只有短标题（页面实测 ≥6 字，5 字整条被拒）。
@@ -83,8 +94,7 @@ public static partial class PublishPayloadBuilder
             PlatformNames.Douyin => (title, douyinCaption,
                 BuildDouyin(draft, p, title, douyinCaption, flatTopics)),
             PlatformNames.Kuaishou => BuildKuaishouBranch(),
-            PlatformNames.Xiaohongshu => (title, caption,
-                BuildXhs(draft, p, title, caption, flatTopics)),
+            PlatformNames.Xiaohongshu => BuildXhsBranch(),
             // 视频号自己会做同一件事（WechatVideoContentService 里再追加一次，幂等），
             // 正文要先合成好 —— 它与 DTO 的 Description 是同一份，别让两边不一样
             PlatformNames.WechatVideo => BuildWechatBranch(),
@@ -110,11 +120,26 @@ public static partial class PublishPayloadBuilder
     private static string BuildDouyin(PublishDraft d, PlatformParams p, string title, string caption,
         List<ResolvedTopic> flatTopics)
     {
+        // @好友（2026-11-11 B1 抓包）：正文末尾补「@昵称」，再按补过的正文算 text_extra。
+        // 页面是两者一起发（mentions 数组 + 正文 @ 文本 + text_extra type=0 条目），
+        // 只有数组落不下去；口径收在 DouyinMentionRules（预检同源）。
+        var mentionUsers = DouyinMentionRules.Usable(p.Douyin?.MentionUsers);
+        if (mentionUsers.Count > 0)
+            caption = DouyinMentionRules.AppendMentionText(caption, mentionUsers);
+
         // 话题：两个 API 参数都是「只含有 ID 的那些」，格式由 SDK 的 BuildCreateItem 消费。
         // text 的坐标必须与 BuildCreateItem 里拼的 item.common.text 完全一致（标题 + 空格 + 简介），
         // 因为 text_extra 的 start/end 是以那条正文为坐标系校验的
         var douyinText = title + " " + (string.IsNullOrEmpty(caption) ? title : caption);
         var (textExtra, challenges) = BuildDouyinTopics(flatTopics, douyinText, caption);
+
+        // @ 条目与话题条目共用一个 text_extra 数组（话题在前，@ 追加在后）
+        if (mentionUsers.Count > 0)
+        {
+            var mentionExtras = DouyinMentionRules.BuildMentionExtras(
+                douyinText, caption, mentionUsers);
+            textExtra = DouyinMentionRules.MergeMentionExtras(textExtra, mentionExtras);
+        }
 
         return PublishPayload.Serialize(new DouyinPayload
         {
@@ -129,16 +154,23 @@ public static partial class PublishPayloadBuilder
             CollectionOrder = p.CollectionOrder,
             Location = p.Location,
             HotSentence = p.HotspotSentence,
+            Anchor = p.Douyin?.Anchor,
             TextExtra = textExtra,
             Challenges = challenges,
             // 封面（1.0 / 2.5.1）：帧时间来自草稿，裁剪与工具信息走抖音专有分组
             CoverFrameMs = d.CoverFrameMs,
             CoverCropWidth = p.Douyin?.CoverCropWidth,
             CoverCropHeight = p.Douyin?.CoverCropHeight,
+            // 横版 4:3 封面（B1 抓包）：本地图路径由执行端上传后再落 horizontal_custom_cover_image_uri
+            CoverLandscapePath = p.Douyin?.CoverLandscapePath,
             CoverToolsInfo = p.Douyin?.CoverToolsInfo,
             CoverToolsExtendInfo = p.Douyin?.CoverToolsExtendInfo,
             // 长尾（1.3 抖音表）
-            Mentions = p.Douyin?.Mentions,
+            // @好友：选择器列表非空 → 用它生成的 mentions JSON；否则沿用旧原始串
+            MentionUsers = mentionUsers.Count > 0 ? mentionUsers : null,
+            Mentions = mentionUsers.Count > 0
+                ? DouyinMentionRules.BuildMentionsJson(mentionUsers)
+                : p.Douyin?.Mentions,
             InteractionStickers = p.Douyin?.InteractionStickers,
             MusicId = p.MusicId,
             Chapters = NonEmpty(p.Chapters),
@@ -223,12 +255,29 @@ public static partial class PublishPayloadBuilder
             SecondDomain = p.Kuaishou?.SecondDomain,
             MovieId = p.Kuaishou?.MovieId,
             ProjectId = p.Kuaishou?.ProjectId,
-            // 章节 / 共创：快手抓包这两个数组恒为空，元素结构未知 —— 原始 JSON 透传，不猜字段名
-            ChaptersJson = p.Kuaishou?.ChaptersJson,
-            CoPublishUsersJson = p.Kuaishou?.CoPublishUsersJson,
+            // 章节：B3 抓包（2026-11-11）确认 wire = { timeStart: 秒, title } —— 走公共字段。
+            // 热点：同一轮抓包确认 wire = hotspotId（数字）+ hotspotConnectType:1 —— 只带 ID，
+            // 文案快照（HotspotContent）留在界面层，不进载荷。
+            Chapters = NonEmpty(p.Chapters),
+            HotspotId = p.Kuaishou?.HotspotId is > 0 ? p.Kuaishou.HotspotId : null,
+            // 关联小程序（2026-11-15 真页面抓包）：整个 associateTaskId 对象进 submit 数组；
+            // 展示快照（Title/Link）随对象走，wire 端只取五字段。
+            AssociateTask = p.Kuaishou?.AssociateTask is { BindId.Length: > 0 } ksAssociate
+                ? ksAssociate : null,
+            // 共创（2026-11-15 页面 bundle）：结构化列表优先；旧档的原始 JSON 只在列表为空时透传。
+            CoPublishUsers = p.Kuaishou?.CoPublishUsers is { Count: > 0 } ksCoPublish
+                ? [.. ksCoPublish] : null,
+            CoPublishUsersJson = p.Kuaishou?.CoPublishUsers is { Count: > 0 }
+                ? null
+                : p.Kuaishou?.CoPublishUsersJson,
             CoPublishRole = p.Kuaishou?.CoPublishRole,
             // 2.6.5 活动落点：结构化 Activities 优先，空表才回落旧 ActivityIds
             ActivityIds = EffectiveActivityIds(p),
+            // @好友（B3 抓包 2026-11-11）：坏条目在这里先滤掉；执行端还会再滤一道，
+            // 并在提交前逐个 at/choose。caption 的 HTML 片段在**执行时**追加
+            // （KuaishouMentionText.Append）—— 不能进载荷 Caption，否则发布端二次裁剪会切坏 token。
+            MentionUsers = KuaishouMentionText.Usable(p.Kuaishou?.MentionUsers) is { Count: > 0 } ksMentions
+                ? [.. ksMentions] : null,
         });
     }
 
@@ -244,13 +293,13 @@ public static partial class PublishPayloadBuilder
             .Select(t => new XhsTopicRef(t.PlatformId!, t.PlatformName ?? t.Name))
             .ToList();
 
-        // 活动落点：小红书没有独立的活动字段 —— 活动 = 关联话题进 hash_tag。
-        // 只写「官方活动」没写任何带 ID 的话题时活动不会生效，这里明说一句（不拦发布）。
+        // 活动落点（A6）：business_binds.optionRelationList 的 ACTIVITY_COMPONENT。
+        // 活动关联话题仍会自动进 hash_tag（选活动时并入 TopicRefs）—— 没有话题只是少一份曝光，
+        // 不再等于「不参与活动」（2026-11-11 起活动有独立绑定；旧实现只靠话题）。
         if (p.Activities.Count > 0 && !topics.Any())
         {
-            Log.Warning("[Publish] 小红书：活动 {Ids} 没有可下发的话题，发布后不会参与活动"
-                + "（请在 params.txt 的「话题ID」补该平台话题）",
-                string.Join(",", p.Activities.Select(a => a.Id)));
+            Log.Debug("[Publish] 小红书：活动 {Ids} 未带任何话题 —— 活动仍会绑定，"
+                + "但缺少活动赛道话题的曝光", string.Join(",", p.Activities.Select(a => a.Id)));
         }
 
         return PublishPayload.Serialize(new XhsPayload
@@ -283,6 +332,42 @@ public static partial class PublishPayloadBuilder
             OrderBind = p.Xhs?.OrderBind,
             ChapterSyncText = p.Xhs?.ChapterSyncText,
             PkCoverBizRelations = p.Xhs?.PkCoverBizRelations,
+            // 选择群聊（2026-11-15）：坏快照（缺 ID）不透传，预检出 Warning
+            GroupBind = p.Xhs?.GroupBind is { GroupId.Length: > 0 } group
+                ? group : null,
+            // PK 封面（2026-11-15）：结构化优先；空图列表 = 不开（页面空列表同款）
+            PkCoverEnabled = p.Xhs?.PkCoverEnabled == true && p.Xhs.PkCoverImages is { Count: > 0 },
+            PkCoverImages = p.Xhs?.PkCoverImages is { Count: > 0 } pkImages
+                ? [.. pkImages] : null,
+            // 视频标记（2026-11-15）：逐条深拷贝（预设与载荷不能共享可变元素）
+            Markers = p.Xhs?.Markers is { Count: > 0 } markers
+                ? [.. markers.Select(m => new XhsVideoMarker
+                {
+                    Id = m.Id,
+                    Name = m.Name,
+                    Type = m.Type,
+                    StartSeconds = m.StartSeconds,
+                    EndSeconds = m.EndSeconds,
+                    Avatar = m.Avatar,
+                })]
+                : null,
+            // 添加路线（2026-11-15）：坏快照（缺 travelId）不透传，预检出 Warning
+            Route = p.Xhs?.Route is { TravelId.Length: > 0 } route ? route : null,
+            // 互动投票（A4）：原样带过去，校验/清洗在发布端 XhsPollRules.Analyze
+            PollQuestion = p.Xhs?.PollQuestion,
+            PollOptions = p.Xhs?.PollOptions is { Count: > 0 } pollOptions
+                ? [.. pollOptions] : null,
+            // 引用笔记（A5）：坏 ID 不透传（发布端同一份 IsValidNoteId 兜底），预检出 Warning
+            ReferencedNote = p.Xhs?.ReferencedNote is { } note
+                && XhsRelationBinds.IsValidNoteId((note.Id ?? "").Trim())
+                    ? note : null,
+            // 关联活动（A6）：快照转成 wire 需要的四项；起止时间换成 Unix 毫秒
+            Activities = EffectiveActivities(p) is { } activities
+                ? [.. activities.Select(a => new XhsActivityRef(
+                    a.Id, a.Name,
+                    a.StartTime?.ToUnixTimeMilliseconds(),
+                    a.EndTime?.ToUnixTimeMilliseconds()))]
+                : null,
         });
     }
 
@@ -297,6 +382,8 @@ public static partial class PublishPayloadBuilder
             Title = title,
             Caption = caption,
             ShortTitle = shortTitle,
+            // 声明原创 → postFlag bit0（2026-11-11 B2 实测；全局开关 + 账号预设覆盖）
+            IsOriginal = p.IsOriginal ?? d.IsOriginal,
             // ⚠️ 视频号的 ScheduledAt 约定是 **UTC 墙上时间**：SDK 那边
             // （WechatVideoContentService，老版也用它）拿它 `SpecifyKind(Utc)` 换算秒数，
             // 而草稿里存的是本地墙上时间 —— 直接传过去会**晚 8 小时**（老版是先转 epoch
@@ -317,6 +404,15 @@ public static partial class PublishPayloadBuilder
             // 不消费平台 ID —— 平台卡里带 ID 的话题也只取名字，由执行端写进正文 +
             // finderTopicInfo（WechatVideoContentService.BuildPostBody）。
             Topics = topicNames.Count > 0 ? topicNames : null,
+            // 官方活动 → objectDesc.event（2026-11-11 B2：{eventTopicId,eventName,eventCreatorNickname}）
+            Event = BuildWechatEvent(p),
+            // @好友 → objectDesc.mentionedUser（2026-11-11 B2 §5：平台只认昵称）
+            MentionUsers = p.WechatVideo?.MentionUsers is { Count: > 0 } mentions
+                ? [.. mentions
+                    .Select(m => (m.Nickname ?? "").Trim())
+                    .Where(n => n.Length > 0)
+                    .Distinct(StringComparer.Ordinal)]
+                : null,
             // 长尾（1.3 视频号表）
             CollectionOrder = p.CollectionOrder,
             ExternalLink = p.ExternalLink,
@@ -326,6 +422,26 @@ public static partial class PublishPayloadBuilder
             // 封面（2.5.7）：没选封面图时按这个时间点抽帧当封面（留空 = 0.5 秒）
             CoverFrameMs = d.CoverFrameMs,
         });
+    }
+
+    /// <summary>
+    /// 视频号官方活动 → <c>objectDesc.event</c> 三件套（2026-11-11 B2 抓包）。
+    /// 只有从平台活动列表选中的活动才同时有 <c>eventName</c> 与
+    /// <c>eventCreatorNickname</c>（都来自 <c>post/post_search_event</c> 的选中项）；
+    /// params.txt 的「官方活动」只有 ID，组不出合法三件套 → 返回 null，
+    /// 预检会点名提示重新在活动列表里选，**绝不带半截活动**。
+    /// </summary>
+    private static WechatVideoEventRef? BuildWechatEvent(PlatformParams p)
+    {
+        var activity = EffectiveActivities(p)?.FirstOrDefault();
+        if (activity is null) return null;
+
+        var id = (activity.Id ?? "").Trim();
+        var name = (activity.Name ?? "").Trim();
+        var creator = (activity.CreatorNickname ?? "").Trim();
+        if (id.Length == 0 || name.Length == 0 || creator.Length == 0) return null;
+
+        return new WechatVideoEventRef(id, name, creator);
     }
 
     /// <summary>标题并入正文首行 —— 正文已以标题开头时不重复（短标题 &lt;6 字的下沉路径）。</summary>
@@ -386,6 +502,34 @@ public static partial class PublishPayloadBuilder
             Watermark = b?.Watermark ?? true,
             SubtitleOpen = b?.SubtitleOpen ?? false,
             SubtitleLan = b?.SubtitleLan,
+            // 字幕上传 / 互动引导卡片（2026-11-15 B5）：文件路径与卡片样式进载荷，
+            // 执行端拿到 cid 后先建，再在 add/v3 的 videos[0] 上打 pre_subtitle / pre_command。
+            SubtitleFile = string.IsNullOrWhiteSpace(b?.SubtitleFile) ? null : b.SubtitleFile,
+            SubtitleFileLan = b?.SubtitleFileLan,
+            GuideCardFollowType = b is { GuideCardEnabled: true }
+                ? b.GuideCardFollowType ?? 2
+                : null,
+            GuideCardStartSeconds = Math.Max(0, b?.GuideCardStartSeconds ?? 0),
+            // 卡片 v2（2026-11-15 B5.2）：关联视频 / 投票弹幕 —— 开关在、值也齐才进载荷；
+            // 值缺失由预检 Error 拦下（这里不替用户猜目标）。
+            RelatedVideoBvid = b is { RelatedVideoEnabled: true }
+                               && !string.IsNullOrWhiteSpace(b.RelatedVideoBvid)
+                ? b.RelatedVideoBvid.Trim()
+                : null,
+            RelatedVideoMsg = string.IsNullOrWhiteSpace(b?.RelatedVideoMsg)
+                ? null
+                : b.RelatedVideoMsg.Trim(),
+            RelatedVideoStartSeconds = Math.Max(0, b?.RelatedVideoStartSeconds ?? 0),
+            VoteQuestion = b is { VoteEnabled: true }
+                           && !string.IsNullOrWhiteSpace(b.VoteQuestion)
+                ? b.VoteQuestion.Trim()
+                : null,
+            VoteOptions = b is { VoteEnabled: true }
+                ? BilibiliCardService.VoteOptionsFrom(
+                    b.VoteOptionA, b.VoteOptionB, b.VoteOptionC, b.VoteOptionD)
+                : null,
+            VoteStartSeconds = Math.Max(0, b?.VoteStartSeconds ?? 0),
+            VoteDurationSeconds = Math.Max(0, b?.VoteDurationSeconds ?? 7),
             AllowComment = p.AllowComment,
             AllowDanmaku = p.AllowDanmaku,
             UpSelectionReply = b?.UpSelectionReply ?? false,
@@ -421,6 +565,11 @@ public static partial class PublishPayloadBuilder
             .Select(tp => new ToutiaoHashtagRef(tp.Id!, tp.Name))
             .ToList();
 
+        // 作品声明（A1）：平台卡覆盖优先，否则跟随全局；营销/不声明 → null（不传字段）。
+        // 自行拍摄的 CreativeInfo 只在 type=1 时随载荷走，其余类型执行端会忽略。
+        var complianceType = DeclarationMapping.ToutiaoComplianceType(
+            d.DeclarationKind, t?.DeclarationOverride);
+
         return PublishPayload.Serialize(new ToutiaoPayload
         {
             Title = title,
@@ -428,7 +577,20 @@ public static partial class PublishPayloadBuilder
             Caption = horizontal ? caption : null,
             // 竖版不支持定时；横版才带 TimerTime
             ScheduledAt = horizontal && d.IsScheduled ? d.ScheduledAt : null,
-            // 作品声明提交字段名未抓 → v1 不下发；载荷仍带语义供阶段 5 接字段
+            ComplianceType = complianceType,
+            ComplianceCity = complianceType == 1 ? t?.ComplianceCity : null,
+            ComplianceTimeMs = complianceType == 1 && t?.ComplianceTime is { } complianceTime
+                ? new DateTimeOffset(complianceTime).ToUnixTimeMilliseconds()
+                : null,
+            // 视频生成图文（A2）：0 / 未选 = 不下发；只有 1（同时发）/ 2（仅草稿）进载荷
+            VideoTransArticleFlag = t?.VideoTransArticleFlag is 1 or 2
+                ? t.VideoTransArticleFlag
+                : null,
+            // 互动贴纸（A3）：只带「关注引导」开关与两个时间参数；时间缺省由执行端按 0 / 5 兜底
+            FollowSticker = t?.FollowSticker ?? false,
+            StickerStartSec = t?.FollowSticker == true ? t.StickerStartSec : null,
+            StickerDurationSec = t?.FollowSticker == true ? t.StickerDurationSec : null,
+            // 语义仍保留在基类（排障 / 旧记录兼容）—— 执行端只认 ComplianceType
             Declaration = d.DeclarationKind,
             DeclarationDetail = d.Declaration.Clone(),
             Visibility = EffectiveVisibility(d, p),
@@ -549,17 +711,34 @@ public static partial class PublishPayloadBuilder
     /// 空表才回落旧 <see cref="PlatformParams.ActivityIds"/>（1.4 透传口 / 升级前旧档）。
     /// **只回退不合并** —— UI 与 params.txt 都只写 Activities，旧 ID 只是存量兼容。
     /// </summary>
-    internal static List<string>? EffectiveActivityIds(PlatformParams p)
+    internal static List<string>? EffectiveActivityIds(PlatformParams p) =>
+        EffectiveActivities(p)?.Select(a => a.Id).ToList();
+
+    /// <summary>
+    /// 该目标要下发的官方活动（结构化列表）：<see cref="PlatformParams.Activities"/> 优先，
+    /// 空表才回落旧 <see cref="PlatformParams.ActivityIds"/>（ID 升格成只有 ID 的快照）。
+    /// 去空白 / 去重 / 丢空 ID；返回 null = 不关联任何活动。
+    /// </summary>
+    internal static List<ActivityRef>? EffectiveActivities(PlatformParams p)
     {
         var source = p.Activities.Count > 0
-            ? p.Activities.Select(a => a.Id)
-            : p.ActivityIds.AsEnumerable();
-        var ids = source
-            .Select(id => id?.Trim() ?? "")
-            .Where(id => id.Length > 0)
-            .Distinct(StringComparer.Ordinal)
-            .ToList();
-        return ids.Count > 0 ? ids : null;
+            ? p.Activities
+            : p.ActivityIds.Select(id => new ActivityRef
+            {
+                Id = (id ?? "").Trim(),
+                // 旧档 / params.txt 只有 ID —— 名字先按 ID 显示（迁移口径同 MigrateLegacyActivities）
+                Name = (id ?? "").Trim(),
+            });
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var list = new List<ActivityRef>();
+        foreach (var activity in source)
+        {
+            var id = (activity.Id ?? "").Trim();
+            if (id.Length == 0 || !seen.Add(id)) continue;
+            list.Add(activity.Id == id ? activity : activity with { Id = id });
+        }
+        return list.Count > 0 ? list : null;
     }
 
     /// <summary>
@@ -730,7 +909,31 @@ public static partial class PublishPayloadBuilder
     internal static string XhsCaption(PublishDraft draft, PlatformParams p)
     {
         var (_, flat) = MergeTopics(p);
-        return ComposeCaption(SanitizeText(draft.Description), flat, stripUnresolved: false);
+        var caption = ComposeCaption(SanitizeText(draft.Description), flat, stripUnresolved: false);
+        return AppendMentionNames(caption, p.Xhs?.Ats);
+    }
+
+    /// <summary>
+    /// 小红书正文补「@昵称」（2026-11-10）：发布体里的 @用户 走 <c>common.ats</c>，
+    /// 而页面正文里同时会有一行「@昵称」（编辑器把 @ 节点序列化成这段文本）。
+    /// 用户没在正文里写到的，统一追加到末尾（幂等：已含「@昵称」的不重复加）。
+    /// **坏 JSON / 缺字段一律安静跳过** —— 正文组装不能因开发选项里的坏 JSON 炸掉预检；
+    /// 真正的格式错误由发布执行端 <c>XhsPublishService.ParseJsonValue</c> 报给用户。
+    /// </summary>
+    internal static string AppendMentionNames(string caption, string? atsJson)
+    {
+        var users = XhsMentionService.ParseAts(atsJson);
+        if (users.Count == 0) return caption;
+
+        var text = caption;
+        foreach (var user in users)
+        {
+            var token = "@" + user.Nickname;
+            if (text.Contains(token, StringComparison.Ordinal)) continue;
+            text = text.Length == 0 ? token : text + " " + token;
+        }
+
+        return text;
     }
 
     /// <summary>

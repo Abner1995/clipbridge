@@ -12,9 +12,13 @@ namespace CreatFlow.NewApp.Services;
 /// 把 <c>topic_id / topic_name / mission_id / dtime / tag / creation_statement /
 /// is_only_self</c> 写进 <c>%TEMP%\bilibili_probe.txt</c>，回答「add/v3 下发的字段
 /// 是否真的落到了稿件上」（2.6.10 / 4.7 的回显通道）。
+/// 2026-11-15 补：同时回读 <c>data.videos[0].cid</c> 与 <c>data.subtitle</c>
+/// （字幕是否挂上）、再按 cid 拉 <c>dm/command/creative/list</c>（卡片是否挂上），
+/// 原始响应另存 <c>%TEMP%\bilibili_archive_raw.json</c>。
 ///
 /// 前提：服务端在跑（会话 Cookie 在服务端库里），本机已登录会员、且该平台至少绑定过一个账号。
 /// 可选 <c>--session &lt;guid&gt;</c> 指定账号；缺省取本地镜像里 B站 的第一个账号。
+/// <c>bvid</c> 传 <c>partitions</c> 时改列分区树 + 二级分区类型（发布页「分区」下拉的数据源）。
 /// </summary>
 public static class BilibiliArchiveProbe
 {
@@ -70,17 +74,85 @@ public static class BilibiliArchiveProbe
             SessionId = id,
         };
 
+        // bvid 传 "partitions" → 列分区树 + 二级分区类型（发布页「分区」下拉的数据源）
+        if (string.Equals(bvid, "partitions", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var svc = new BilibiliPartitionService(options);
+                var tree = await svc.GetTreeAsync(creds.Cookie);
+                sb.AppendLine($"  分区树：{tree.Groups.Count} 个父分区 "
+                              + $"(code={tree.Code} {tree.Message})；"
+                              + $"typelist 原始 {tree.RawEntryCount} 条 / 有效 {tree.EntryCount} 条，"
+                              + $"其中子分区 {tree.ChildEntryCount}");
+                foreach (var g in tree.Groups)
+                {
+                    sb.AppendLine($"    · {g.Parent.Name}（{g.Parent.Id}）→ "
+                                  + string.Join("、", g.Children.Select(c => $"{c.Name}({c.Id})")));
+                }
+                if (tree.ChildEntryCount == 0)
+                    sb.AppendLine($"  ⚠ typelist 没有子分区条目，响应前缀：{tree.RawJson}");
+
+
+                var types = await svc.GetHumanTypesAsync(creds.Cookie);
+                sb.AppendLine($"  二级分区类型 {types.Count} 个："
+                              + string.Join("、", types.Select(t => $"{t.Name}({t.Id})")));
+                return Write(sb, 0);
+            }
+            catch (Exception ex)
+            {
+                sb.AppendLine($"[失败] {ex.Message}");
+                Log.Warning(ex, "[BilibiliArchiveProbe] 拉取分区列表失败");
+                return Write(sb, 1);
+            }
+        }
+
         try
         {
-            var info = await new BilibiliArchiveService(options).GetAsync(creds.Cookie, bvid);
+            var svc = new BilibiliArchiveService(options);
+            var raw = await svc.GetRawAsync(creds.Cookie, bvid);
+            var rawPath = Path.Combine(Path.GetTempPath(), "bilibili_archive_raw.json");
+            try { File.WriteAllText(rawPath, raw); } catch { /* 原始响应落盘失败不影响报告 */ }
+
+            var info = BilibiliArchiveService.Parse(raw);
             sb.AppendLine($"  title={info.Title}");
-            sb.AppendLine($"  aid={info.Aid}  bvid={info.Bvid}  tid={info.Tid}");
+            sb.AppendLine($"  aid={info.Aid}  bvid={info.Bvid}  cid={info.Cid}  tid={info.Tid}");
             sb.AppendLine($"  topic_id={info.TopicId}  topic_name={info.TopicName ?? "(空)"}");
             sb.AppendLine($"  mission_id={info.MissionId}  mission_name={info.MissionName ?? "(空)"}");
             sb.AppendLine($"  dtime={info.Dtime}（0=立即发布）  tag={info.Tag ?? "(空)"}");
             sb.AppendLine($"  is_only_self={info.IsOnlySelf}  "
                           + $"creation_statement={info.CreationStatementId?.ToString() ?? "(无)"} "
                           + $"{info.CreationStatementContent ?? ""}");
+            sb.AppendLine($"  subtitle：allow={info.SubtitleAllow}  "
+                          + $"lan={info.SubtitleLan ?? "(空)"}  lan_doc={info.SubtitleLanDoc ?? "(空)"}  "
+                          + $"draft_list={info.SubtitleDraftCount} 条");
+
+            // 卡片回读：dm/command/creative/list（2026-11-15 B5 抓包里创建前后各一次，
+            // 创建前 data:null、创建后是数组）。按 cid 查，草稿态也有效。
+            if (info.Cid > 0)
+            {
+                try
+                {
+                    var cards = await new BilibiliCardService(options)
+                        .ListAsync(creds.Cookie, info.Cid);
+                    sb.AppendLine(cards.Count == 0
+                        ? "  卡片：无（creative/list → data:null）"
+                        : $"  卡片：{cards.Count} 条");
+                    foreach (var card in cards)
+                    {
+                        sb.AppendLine($"    · type={card.Type}  id={card.Id}  "
+                                      + $"progress={card.Progress}ms  "
+                                      + $"command={card.Command ?? "-"}  "
+                                      + $"content={card.Content ?? "-"}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    sb.AppendLine($"  卡片回读失败：{ex.Message}");
+                }
+            }
+
+            sb.AppendLine($"  原始响应：{rawPath}");
             return Write(sb, 0);
         }
         catch (Exception ex)

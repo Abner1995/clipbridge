@@ -128,6 +128,119 @@ public sealed class DouyinHotspotService
         return new HotspotSearchResult { Items = items };
     }
 
+    /// <summary>
+    /// **推荐热点 · 本地签名版**（2026-11-10）：<c>/aweme/v1/hotspot/recommend/</c>。
+    /// 这是 creator 发布页真正用来出「热门热点」列表的端点（抓包
+    /// <c>capture-2026-11-05T01-40-33.jsonl</c>）：响应字段是 <c>all_sentences</c>
+    /// （54 条样本），**不是** <c>sentences</c>。
+    /// <para>
+    /// 注意：`hotspot/search` 不传关键词会回 <c>status_code=0</c> 但 `sentences` 为空
+    /// （2026-11-10 真账号实测）—— 「热门列表」必须走这个端点。
+    /// </para>
+    /// </summary>
+    public async Task<HotspotSearchResult> QueryTrendingSignedAsync(
+        string cookie,
+        int count = 30,
+        CancellationToken ct = default)
+    {
+        using var client = BuildClient(cookie);
+
+        // 抓包原文参数：zip_uri 空串 + aweme_name=aweme；aid=1128 由指纹默认值带上
+        var extra = new Dictionary<string, string>
+        {
+            ["zip_uri"] = "",
+            ["aweme_name"] = "aweme",
+        };
+
+        var env = _options.Environment;
+        var userAgent = env?.UserAgent ?? _options.UserAgent;
+        var baseParams = PlatformHttpClient.BuildQueryString(extra, env: env);
+        var msToken = MsTokenGenerator.Generate();
+        var aBogus = ABogusGenerator.Generate(baseParams, userAgent, aid: 1128);
+        var qs = PlatformHttpClient.BuildQueryString(extra, msToken, aBogus, env);
+
+        var url = $"{_options.DouyinCreatorHost}/aweme/v1/hotspot/recommend/?{qs}";
+
+        var response = await client.GetJsonAsync<HotspotRecommendResponse>(url, ct);
+        if (response == null || response.StatusCode != 0)
+        {
+            Serilog.Log.Warning(
+                "[DouyinHotspot] hotspot/recommend 非 0：status={Status}", response?.StatusCode);
+            return new HotspotSearchResult { Items = [] };
+        }
+
+        // 抓包：all_sentences = 全量热门；rec_sentences = 推荐子集。优先 all_sentences。
+        var sentences = response.AllSentences ?? response.RecSentences ?? [];
+        var items = sentences
+            .Where(s => !string.IsNullOrWhiteSpace(s.Word))
+            .Take(count)
+            .Select(s => new HotspotItem(s.Word!, s.HotValue, s.VideoCount))
+            .ToList();
+
+        Serilog.Log.Information("[DouyinHotspot] hotspot/recommend 返回 {Count} 条", items.Count);
+        return new HotspotSearchResult { Items = items };
+    }
+
+    /// <summary>
+    /// **关键词搜索 · 本地签名版**（新 App 用，2026-11-10）：msToken 本地生成、
+    /// a_bogus 本地计算（aid=1128，与 creator 发布页 / Topics 的 DouyinTopicApi 同一条签名路），
+    /// 不需要页面抓来的 token。**必须传 <paramref name="query"/>** —— 空 query 平台回空列表。
+    ///
+    /// 老 App 的 <see cref="SearchAsync"/> / <see cref="GetTrendingAsync"/> 保持原样
+    /// （生产在用，签名参数由页面快照提供）。
+    /// </summary>
+    public async Task<HotspotSearchResult> QuerySignedAsync(
+        string cookie,
+        string? query,
+        int count = 30,
+        CancellationToken ct = default)
+    {
+        using var client = BuildClient(cookie);
+
+        var extra = new Dictionary<string, string> { ["count"] = count.ToString() };
+        if (!string.IsNullOrWhiteSpace(query)) extra["query"] = query;
+
+        // 指纹参数（aid=1128 / support_h265=1 等）由 BuildQueryString 统一带上；
+        // 签名用的 base 串与最终 URL 必须是同一份参数（msToken/a_bogus 自身不进 base）。
+        var env = _options.Environment;
+        var userAgent = env?.UserAgent ?? _options.UserAgent;
+        var baseParams = PlatformHttpClient.BuildQueryString(extra, env: env);
+        var msToken = MsTokenGenerator.Generate();
+        var aBogus = ABogusGenerator.Generate(baseParams, userAgent, aid: 1128);
+        var qs = PlatformHttpClient.BuildQueryString(extra, msToken, aBogus, env);
+
+        var url = $"{_options.DouyinCreatorHost}/aweme/v1/hotspot/search/?{qs}";
+
+        _logger?.LogDebug("[DouyinHotspot] QuerySigned → query={Query} count={Count}", query, count);
+
+        var response = await client.GetJsonAsync<HotspotSearchResponse>(url, ct);
+        if (response == null || response.StatusCode != 0)
+        {
+            // 桌面端构造服务时不传 ILogger（_logger 为 null），走 Serilog 兜底 ——
+            // 返回空时用户能在客户端日志里看到真实原因，不用瞎猜。
+            Serilog.Log.Warning(
+                "[DouyinHotspot] hotspot/search 非 0：status={Status} query={Query}",
+                response?.StatusCode, query ?? "(推荐)");
+            return new HotspotSearchResult { Items = [] };
+        }
+
+        // 局部函数里可以用 file 本地 DTO（类成员签名里不行，CS9051）
+        static HotspotSearchResult Map(HotspotSearchResponse response) => new()
+        {
+            Items = response.Sentences?.Select(s => new HotspotItem(
+                s.Word ?? "",
+                s.HotValue,
+                s.VideoCount
+            )).ToList() ?? [],
+        };
+
+        var result = Map(response);
+        Serilog.Log.Information(
+            "[DouyinHotspot] hotspot/search 返回 {Count} 条（query={Query}）",
+            result.Items.Count, query ?? "(推荐)");
+        return result;
+    }
+
     // ── HTTP client builder ──
 
     private PlatformHttpClient BuildClient(string cookie)
@@ -149,6 +262,24 @@ file sealed class HotspotSearchResponse
 
     [JsonPropertyName("sentences")]
     public List<HotspotSentence>? Sentences { get; init; }
+}
+
+/// <summary>
+/// `hotspot/recommend` 的响应（抓包原文：
+/// <c>{"all_sentences":[…54 条…],"rec_sentences":[…],"status_code":0}</c>）。
+/// </summary>
+file sealed class HotspotRecommendResponse
+{
+    [JsonPropertyName("status_code")]
+    public int StatusCode { get; init; }
+
+    /// <summary>全量热门（creator 页面「热门热点」列表用它）</summary>
+    [JsonPropertyName("all_sentences")]
+    public List<HotspotSentence>? AllSentences { get; init; }
+
+    /// <summary>推荐子集（可能为空；all_sentences 缺失时兜底）</summary>
+    [JsonPropertyName("rec_sentences")]
+    public List<HotspotSentence>? RecSentences { get; init; }
 }
 
 file sealed class HotspotSentence

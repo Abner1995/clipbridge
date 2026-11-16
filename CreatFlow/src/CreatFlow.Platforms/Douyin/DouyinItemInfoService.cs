@@ -100,15 +100,24 @@ public sealed class DouyinItemInfoService
             var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             CollectActivityFields(root, "", fields);
 
+            // P5 回读（2026-11-11）：封面双槽 / anchor 标签 / @好友 / 可见性 / 话题等字段
+            // 此前没有回读通道 —— 把顶层与 aweme 的**全部**字段原样带出（由探针按需截断打印），
+            // 避免为每个待验字段再改一次服务。
+            var allFields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            CollectAllFields(root, "", allFields);
+
             if (root.TryGetProperty("aweme", out var aweme) && aweme.ValueKind == JsonValueKind.Object)
+            {
                 CollectActivityFields(aweme, "aweme.", fields);
+                CollectAllFields(aweme, "aweme.", allFields);
+            }
 
             var desc = aweme.ValueKind == JsonValueKind.Object && aweme.TryGetProperty("desc", out var d)
                        && d.ValueKind == JsonValueKind.String
                 ? d.GetString()
                 : null;
 
-            return new DouyinItemInfoResult(itemId, desc, fields);
+            return new DouyinItemInfoResult(itemId, desc, fields, allFields);
         }
     }
 
@@ -124,12 +133,25 @@ public sealed class DouyinItemInfoService
         }
     }
 
+    /// <summary>原样收集对象里的全部字段（P5 回读；大字段由调用方按需截断）。</summary>
+    private static void CollectAllFields(
+        JsonElement obj, string prefix, Dictionary<string, string> sink)
+    {
+        if (obj.ValueKind != JsonValueKind.Object) return;
+        foreach (var prop in obj.EnumerateObject())
+            sink[prefix + prop.Name] = prop.Value.GetRawText();
+    }
+
     private static string Snippet(string text) =>
         text.Length > 300 ? text[..300] + "…" : text;
 }
 
-/// <summary>作品详情回显：desc + 所有 activity 相关字段（原样 JSON）。</summary>
+/// <summary>
+/// 作品详情回显：desc + 所有 activity 相关字段（原样 JSON）+ 全部字段原样快照
+/// （P5 回读：封面双槽 / anchor / mentions / 可见性等）。
+/// </summary>
 public sealed record DouyinItemInfoResult(
     string ItemId,
     string? Desc,
-    IReadOnlyDictionary<string, string> ActivityFields);
+    IReadOnlyDictionary<string, string> ActivityFields,
+    IReadOnlyDictionary<string, string> AllFields);

@@ -26,12 +26,19 @@ public sealed class BilibiliArchiveService
     /// <summary>按 BV 号拉一次稿件详情。平台 <c>code≠0</c> / 缺 <c>data.archive</c> → <see cref="BilibiliApiException"/>。</summary>
     public async Task<BilibiliArchiveInfo> GetAsync(
         string cookie, string bvid, CancellationToken ct = default)
+        => Parse(await GetRawAsync(cookie, bvid, ct));
+
+    /// <summary>
+    /// 原始响应文本（探针落盘用 —— 响应里还有未解析字段时，先存原文再对照）；
+    /// 与 <see cref="GetAsync"/> 同一条 GET。
+    /// </summary>
+    public async Task<string> GetRawAsync(
+        string cookie, string bvid, CancellationToken ct = default)
     {
         var url = BuildArchiveViewUrl(
             bvid, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), _options.BilibiliHost);
         using var client = new BilibiliApiClient(cookie, _options);
-        var body = await client.GetStringAsync(url, BilibiliUploadService.VideoReferer, ct);
-        return Parse(body);
+        return await client.GetStringAsync(url, BilibiliUploadService.VideoReferer, ct);
     }
 
     // ═══ 纯函数（自检可直接验 wire 形体） ═══
@@ -109,6 +116,33 @@ public sealed class BilibiliArchiveService
                 csContent = TryGetString(cs, "content");
             }
 
+            // 第一个分片的 cid（2026-11-15 补）—— 卡片/字幕的回读都以 cid 为准
+            long cid = 0;
+            if (data.TryGetProperty("videos", out var videos)
+                && videos.ValueKind == JsonValueKind.Array
+                && videos.GetArrayLength() > 0
+                && videos[0].ValueKind == JsonValueKind.Object)
+            {
+                cid = TryGetLong(videos[0], "cid") ?? 0;
+            }
+
+            // 字幕回读（2026-11-15 补）：data.subtitle = {allow, lan, lan_doc, draft_list}
+            // 未发布/没挂字幕时 draft_list 为 null；挂了草稿字幕时按数组回显（2026-11-15 实测）。
+            var subAllow = false;
+            string? subLan = null, subLanDoc = null;
+            var subDraftCount = 0;
+            if (data.TryGetProperty("subtitle", out var sub) && sub.ValueKind == JsonValueKind.Object)
+            {
+                subAllow = IsTruthy(sub, "allow");
+                subLan = TryGetString(sub, "lan");
+                subLanDoc = TryGetString(sub, "lan_doc");
+                if (sub.TryGetProperty("draft_list", out var drafts)
+                    && drafts.ValueKind == JsonValueKind.Array)
+                {
+                    subDraftCount = drafts.GetArrayLength();
+                }
+            }
+
             return new BilibiliArchiveInfo(
                 Aid: TryGetLong(archive, "aid") ?? 0,
                 Bvid: TryGetString(archive, "bvid") ?? "",
@@ -122,7 +156,12 @@ public sealed class BilibiliArchiveService
                 Tag: TryGetString(archive, "tag"),
                 IsOnlySelf: IsTruthy(archive, "is_only_self"),
                 CreationStatementId: csId,
-                CreationStatementContent: csContent);
+                CreationStatementContent: csContent,
+                Cid: cid,
+                SubtitleAllow: subAllow,
+                SubtitleLan: subLan,
+                SubtitleLanDoc: subLanDoc,
+                SubtitleDraftCount: subDraftCount);
         }
     }
 
@@ -170,4 +209,9 @@ public sealed record BilibiliArchiveInfo(
     string? Tag,
     bool IsOnlySelf,
     long? CreationStatementId,
-    string? CreationStatementContent);
+    string? CreationStatementContent,
+    long Cid,
+    bool SubtitleAllow,
+    string? SubtitleLan,
+    string? SubtitleLanDoc,
+    int SubtitleDraftCount);

@@ -80,6 +80,25 @@ internal sealed class BilibiliApiClient : IDisposable
         return body;
     }
 
+    /// <summary>
+    /// POST 一个 <c>application/x-www-form-urlencoded</c> 请求并返回原始响应文本
+    /// （非 2xx 抛 <see cref="BilibiliApiException"/>）。
+    /// 卡片配置 <c>dm/command/post</c> 用的就是表单（2026-11-15 抓包逐字）。
+    /// </summary>
+    public async Task<string> PostFormAsync(
+        string url, HttpContent content, string referer, CancellationToken ct)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Post, url) { Content = content };
+        req.Headers.TryAddWithoutValidation("Referer", referer);
+
+        using var resp = await _http.SendAsync(req, ct);
+        var body = Encoding.UTF8.GetString(await resp.Content.ReadAsByteArrayAsync(ct));
+        if (!resp.IsSuccessStatusCode)
+            throw new BilibiliApiException(
+                $"B站 API HTTP {(int)resp.StatusCode}：{Snippet(body)}", (int)resp.StatusCode, body);
+        return body;
+    }
+
     /// <summary>POST 一个 multipart 请求并返回原始响应文本（非 2xx 抛 <see cref="BilibiliApiException"/>）。</summary>
     public async Task<string> PostMultipartAsync(
         string url, HttpContent content, string referer, CancellationToken ct)

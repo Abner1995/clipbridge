@@ -197,6 +197,44 @@ public sealed class XhsPublishService
                 });
         }
 
+        // ── 互动投票（A4）──
+        // 发布体把 widget 挂进 common.hash_tag：末尾追加
+        // {"id":<widget_id>,"name":"问题","type":"INTERACT_VOTE"}。
+        // 页面 hashTag 合并函数是「先过滤同类型、再 concat」—— 同类型条目只能有一个，
+        // 否则平台可能重复挂/拒掉（bundle 逐字，2026-11-10 抓包）。
+        if (!string.IsNullOrWhiteSpace(req.PollWidgetId)
+            && !string.IsNullOrWhiteSpace(req.PollQuestion))
+        {
+            hashTag.RemoveAll(t => t is Dictionary<string, object?> d
+                && d.TryGetValue("type", out var type)
+                && type is string typeText
+                && typeText == XhsPollRules.HashTagType);
+
+            hashTag.Add(new Dictionary<string, object?>
+            {
+                ["id"] = req.PollWidgetId,
+                ["name"] = req.PollQuestion,
+                ["type"] = XhsPollRules.HashTagType,
+            });
+        }
+
+        // ── 添加路线（2026-11-15）──
+        // 页面 travelSaved → hash_tag 追加 {id:travelId, name:routeName, type:"map_traver"}。
+        // 没有路线时不带该条目；同类型条目先滤再加（页面 merge 同款）。
+        if (req.RouteBind is { TravelId.Length: > 0, RouteName.Length: > 0 } routeTag)
+        {
+            hashTag.RemoveAll(t => t is Dictionary<string, object?> d
+                && d.TryGetValue("type", out var type)
+                && type is string typeText
+                && typeText == "map_traver");
+            hashTag.Add(new Dictionary<string, object?>
+            {
+                ["id"] = routeTag.TravelId,
+                ["name"] = routeTag.RouteName,
+                ["type"] = "map_traver",
+            });
+        }
+
         // ── desc 话题标记 ──
         // 对标 add.py: desc 里的话题必须写成 "#话题名[话题]#" 格式才会被小红书标记，
         // 纯 "#话题名" 会被当成普通文本。只转换 hash_tag 里有 ID 的话题。
@@ -213,6 +251,25 @@ public sealed class XhsPublishService
                     + @"(?!\w|\[话题\])";
                 desc = System.Text.RegularExpressions.Regex.Replace(desc, pattern,
                     "#" + t.Name + "[话题]#");
+            }
+        }
+
+        // ── desc 路线标记 ──
+        // 页面把路线做成编辑器节点，正文里是 "#路线名[map_traver]#"（隐藏 span 带后缀）。
+        // 正文没有就补在末尾 —— 保证正文与 hash_tag 对得上（与页面插入节点同义）。
+        if (req.RouteBind is { TravelId.Length: > 0, RouteName.Length: > 0 } routeDesc)
+        {
+            var routeToken = $"#{routeDesc.RouteName}[map_traver]#";
+            if (!desc.Contains(routeToken, StringComparison.Ordinal))
+            {
+                var routePattern = @"(?<!\w)#"
+                    + System.Text.RegularExpressions.Regex.Escape(routeDesc.RouteName)
+                    + @"(?!\w|\[map_traver\])";
+                desc = System.Text.RegularExpressions.Regex.IsMatch(desc, routePattern)
+                    ? System.Text.RegularExpressions.Regex.Replace(desc, routePattern, routeToken)
+                    : string.IsNullOrWhiteSpace(desc)
+                        ? routeToken
+                        : desc.TrimEnd() + "\n" + routeToken;
             }
         }
 
@@ -297,14 +354,28 @@ public sealed class XhsPublishService
             },
         };
 
-        // 合并声明
-        if (optionRelationList != null)
-            businessBinds["optionRelationList"] = optionRelationList;
-        else
-            businessBinds["optionRelationList"] = new List<object>();
+        // 合并声明 + 引用笔记 + 关联活动（A5/A6）——
+        // 三者共用同一个 optionRelationList 数组；同一类型先过滤再追加（页面同款 merge）。
+        businessBinds["optionRelationList"] = XhsRelationBinds.Merge(
+            optionRelationList as IEnumerable<object>,
+            req.ReferencedNoteId,
+            req.Activities);
 
         if (userDeclarationBind != null)
             businessBinds["userDeclarationBind"] = userDeclarationBind;
+
+        // 选择群聊（2026-11-15）：页面 bundle 的 wire 是 {groupId,groupName,desc,avatar}；
+        // 未选 = 不带该键（与旧发布体逐字一致，平台已验证可接受）。
+        if (req.GroupBind is { GroupId.Length: > 0 } groupBind)
+        {
+            businessBinds["groupBind"] = new Dictionary<string, object?>
+            {
+                ["groupId"] = groupBind.GroupId,
+                ["groupName"] = groupBind.GroupName,
+                ["desc"] = groupBind.Desc ?? "",
+                ["avatar"] = groupBind.Avatar ?? "",
+            };
+        }
 
         // ── post_loc ──
         object? postLoc = null;
@@ -363,7 +434,12 @@ public sealed class XhsPublishService
             ["business_binds"] = JsonSerializer.Serialize(businessBinds),
             ["privacy_info"] = privacyInfo,
             ["goods_info"] = goodsInfo,
-            ["biz_relations"] = bizRelations,
+            // PK 封面条目并入 common.biz_relations（线上 bundle 2026-11-15：
+            // `bizRelations: (bizRelation||[]).filter(!AI_VIDEO_COVER).concat(pkCoverBizRelations)`）；
+            // 添加路线追加 POI_MAP_TRAVEL（页面 travelSaved 同款）。video_info.pk_cover_biz_relations
+            // 同时保留（页面两处都发）。
+            ["biz_relations"] = MergeBizRelations(
+                bizRelations, pkCoverBizRelations, BuildRouteBizRelation(req.RouteBind)),
             ["capa_trace_info"] = new Dictionary<string, object?>
             {
                 ["contextJson"] = JsonSerializer.Serialize(new
@@ -408,7 +484,6 @@ public sealed class XhsPublishService
                         ["sampling_rate"] = 48000,
                     },
                 },
-                ["timelines"] = new List<object>(),
                 ["cover"] = new Dictionary<string, object?>
                 {
                     ["fileid"] = coverFileId,
@@ -428,6 +503,9 @@ public sealed class XhsPublishService
                 ["chapters"] = chapters,
                 ["summary"] = req.Summary ?? "",
                 ["chapter_sync_text"] = req.ChapterSyncText ?? false,
+                // 视频标记的 wire 字段是 **timelines**（线上 bundle `timelines: U()`，
+                // 2026-11-15 实测 `video_info.markers` 被平台静默忽略）
+                ["timelines"] = BuildMarkers(req.Markers, w, h),
                 ["segments"] = new Dictionary<string, object?>
                 {
                     ["count"] = 1,
@@ -455,6 +533,213 @@ public sealed class XhsPublishService
             },
         };
     }
+
+    /// <summary>
+    /// 组装视频标记 —— <c>video_info.markers</c>（2026-11-15）。
+    ///
+    /// 线上 bundle（<c>project-publish-vue.d001adc9.js</c>）逐字：
+    /// <code>
+    ///   新建标记（选朋友）：{visibility:true, type:"USER", startTime:0, endTime:0,
+    ///     config:{style:1, type:"user", event:{value:{id:userId, name:nick}}},
+    ///     markId:userId, key:Date.now().toString(), active:true}
+    ///   地点：type:"LOCATION" / config.type:"location"，markId/event.value.id = poiId
+    ///   定位补全：config.container_size = `{${img.height}, ${img.width}}`
+    ///             config.unit_center = "{0.5, 0.5}" / anchor_center=null / markY=0.5
+    ///   发布：{type:"video_marks_v2", start:1000*startTime, end:1000*endTime,
+    ///          detail:{id:markId, ...config}}
+    /// </code>
+    /// 只认 <c>user</c> / <c>location</c>（页面其它类型是商品标记，本产品不做）；
+    /// 缺 ID / 名称的条目跳过。空表返回空数组（旧发布体同款）。
+    /// </summary>
+    public static List<object> BuildMarkers(
+        IReadOnlyList<XhsMarkerInput>? markers, int videoWidth, int videoHeight)
+    {
+        var list = new List<object>();
+        if (markers is not { Count: > 0 }) return list;
+
+        foreach (var m in markers)
+        {
+            var id = (m.Id ?? "").Trim();
+            var name = (m.Name ?? "").Trim();
+            var type = (m.Type ?? "").Trim().ToLowerInvariant();
+            if (id.Length == 0 || name.Length == 0) continue;
+            if (type is not ("user" or "location")) continue;
+
+            var startSec = Math.Max(0, m.StartSeconds);
+            var endSec = Math.Max(startSec, m.EndSeconds);
+
+            list.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "video_marks_v2",
+                ["start"] = startSec * 1000,
+                ["end"] = endSec * 1000,
+                ["detail"] = new Dictionary<string, object?>
+                {
+                    ["id"] = id,
+                    ["style"] = 1,
+                    ["type"] = type,
+                    ["event"] = new Dictionary<string, object?>
+                    {
+                        ["value"] = new Dictionary<string, object?>
+                        {
+                            ["id"] = id,
+                            ["name"] = name,
+                        },
+                    },
+                    // 页面口径：**高在前、宽在后**，逗号后带空格
+                    ["container_size"] = $"{{{videoHeight}, {videoWidth}}}",
+                    ["unit_center"] = "{0.5, 0.5}",
+                    ["anchor_center"] = null,
+                    ["markY"] = 0.5,
+                },
+            });
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// 组装 PK 封面业务关联 —— <c>video_info.pk_cover_biz_relations</c>（2026-11-15）。
+    ///
+    /// 页面 bundle 的构造函数（2026-11-15 线上版 <c>project-publish-vue.d001adc9.js</c> 逐字，
+    /// 仓内旧版 <c>1428a0fb</c> 形状相同）：
+    /// <code>
+    ///   if (!pkCoverEnabled || pkCoverList.length === 0) return [];
+    ///   主封面：{bizId: cover.fileid, bizType:"PK_COVER",
+    ///            extraInfo: JSON.stringify({audit_status:0, final_cover:false,
+    ///                width, height, type:"system", url:"", index:0})}
+    ///   附加图：{bizId: e.fileId, bizType:"PK_COVER",
+    ///            extraInfo: JSON.stringify({audit_status:0, final_cover:false,
+    ///                width, height, type:"system"|"user", url:"", index:i+1})}
+    /// </code>
+    /// **没有附加图就返回 <c>[]</c>**（主封面单独一条不构成 PK 封面，与页面同口径）。
+    /// <para>
+    /// ⚠️ 状态（2026-11-15 收口）：**已接线、落位待验**。真账号受控发布
+    /// （note <c>6af92d000000000023013ebb</c>，仅自己）用 snake_case 发布体**被平台接受**，
+    /// 但 <c>note/detail</c> 回读 <c>extra_info.have_pk_cover=false</c>；候选原因（账号
+    /// <c>features.isPkCover</c> 权限 / 主封面来源类型 / 审核后才回写）均未定论，
+    /// **不得据此写「平台不支持」**。证据见 docs/xiaohongshu/wire-2026-11-15.md §2 / §4。
+    /// </para>
+    /// </summary>
+    public static string BuildPkCoverRelationsJson(
+        string? mainCoverFileId,
+        int mainWidth,
+        int mainHeight,
+        IReadOnlyList<XhsPkCoverEntry>? extras,
+        string mainType = "user")
+    {
+        if (extras is not { Count: > 0 }) return "[]";
+
+        var list = new List<object>();
+        if (!string.IsNullOrWhiteSpace(mainCoverFileId))
+            list.Add(PkCoverEntry(mainCoverFileId, mainWidth, mainHeight, mainType, 0));
+
+        for (var i = 0; i < extras.Count; i++)
+        {
+            var e = extras[i];
+            if (string.IsNullOrWhiteSpace(e.FileId)) continue;
+            list.Add(PkCoverEntry(e.FileId, e.Width, e.Height,
+                e.IsSystem ? "system" : "user", i + 1));
+        }
+
+        return JsonSerializer.Serialize(list);
+    }
+
+    private static Dictionary<string, object?> PkCoverEntry(
+        string fileId, int width, int height, string type, int index) => new()
+    {
+        // ⚠️ 发布体是**递归 camelCase → snake_case** 转换后的结果（线上 bundle 的
+        // constructData 写的是 bizId/bizType/extraInfo，抓包落到 wire 是
+        // biz_id/biz_type/extra_info）。这里直接产出 snake_case，避免 2026-11-15
+        // 第一轮用 camelCase 被平台 `result:-1` 拒收。
+        ["biz_id"] = fileId,
+        ["biz_type"] = "PK_COVER",
+        ["extra_info"] = JsonSerializer.Serialize(new
+        {
+            audit_status = 0,
+            final_cover = false,
+            width,
+            height,
+            type,
+            url = "",
+            index,
+        }),
+    };
+
+    /// <summary>
+    /// Publish 体的 <c>common.biz_relations</c>：现有业务关系（滤掉 <c>AI_VIDEO_COVER</c>）
+    /// 后**追加 PK 封面条目** —— 线上 bundle 2026-11-15 逐字：
+    /// <code>
+    /// bizRelations: (bizRelation||[])
+    ///   .filter(e =&gt; "AI_VIDEO_COVER" !== e.bizType)
+    ///   .concat(s.pkCoverBizRelations)
+    /// </code>
+    /// </summary>
+    private static List<object> MergeBizRelations(
+        object bizRelations, object pkCoverRelations, object? routeRelation = null)
+    {
+        var list = new List<object>();
+        if (bizRelations is JsonElement biz && biz.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in biz.EnumerateArray())
+            {
+                // 结构化字段会覆盖同名类型的原始 JSON（页面 insertBizRelation 先删后插同款）。
+                // POI_MAP_TRAVEL 只在本次真带路线时覆盖；没带路线时保留用户原始 JSON。
+                if (e.ValueKind == JsonValueKind.Object
+                    && (TryString(e, "bizType") ?? TryString(e, "biz_type")) is { } bizType
+                    && (bizType is "AI_VIDEO_COVER" or "PK_COVER" or "RED_CIRCLE"
+                        || (routeRelation is not null && bizType == "POI_MAP_TRAVEL")))
+                    continue;
+                list.Add(e.Clone());
+            }
+        }
+
+        if (pkCoverRelations is JsonElement pk && pk.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in pk.EnumerateArray()) list.Add(e.Clone());
+        }
+
+        if (routeRelation is Dictionary<string, object?> route) list.Add(route);
+
+        return list;
+    }
+
+    /// <summary>
+    /// 添加路线 → <c>common.biz_relations</c> 的 <c>POI_MAP_TRAVEL</c> 条目（2026-11-15）。
+    /// 页面 <c>travelSaved</c> 逐字：外层 wire 是 snake_case，<c>extra_info</c> 字符串里层
+    /// 保持 camelCase（字符串不参与 HTTP 层转换）。
+    /// </summary>
+    public static Dictionary<string, object?>? BuildRouteBizRelation(XhsRouteBind? route)
+    {
+        if (route is not { TravelId.Length: > 0 }) return null;
+
+        return new Dictionary<string, object?>
+        {
+            ["biz_type"] = "POI_MAP_TRAVEL",
+            ["biz_id"] = route.TravelId,
+            ["extra_info"] = JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["travelId"] = route.TravelId,
+                ["travelType"] = route.TravelType,
+                ["title"] = $"{route.RouteName} 包含{route.PlanAmount}条路线",
+                ["icon"] = "",
+                ["link"] = "xhsdiscover://rn/poi/map?pageMode=travel_publish",
+                ["mapTravels"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["travelId"] = route.TravelId,
+                        ["travelType"] = route.TravelType,
+                    },
+                },
+                ["capaPoiRich"] = 0,
+            }),
+        };
+    }
+
+    private static string? TryString(JsonElement obj, string key) =>
+        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString() : null;
 
     /// <summary>
     /// 原始 JSON 透传字段 → 可序列化节点。空/未填按 <paramref name="expected"/> 返回空数组或空对象。

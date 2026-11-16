@@ -68,6 +68,49 @@ public sealed class PlatformHttpClient : IDisposable
         return body;
     }
 
+    /// <summary>
+    /// 发送 GET 请求并附带额外请求头（2026-11-10：抖音 tsearch 音乐搜索要
+    /// <c>Agw-Auth</c> / <c>Openapi-Omit-Shark</c>，这两个头不在默认头里）。
+    /// </summary>
+    public async Task<string> GetStringAsync(
+        string url, IReadOnlyDictionary<string, string>? headers, CancellationToken ct = default)
+    {
+        _logger?.LogDebug("GET {Url} (extra headers: {Headers})", url,
+            headers is null ? "" : string.Join(",", headers.Keys));
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        if (headers is not null)
+        {
+            foreach (var (k, v) in headers)
+                req.Headers.TryAddWithoutValidation(k, v);
+        }
+
+        var resp = await _http.SendAsync(req, ct);
+        var bytes = await resp.Content.ReadAsByteArrayAsync(ct);
+        var body = Encoding.UTF8.GetString(bytes);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var snippet = body.Length > 500 ? body[..500] : body;
+            _logger?.LogError("GET {Url} → HTTP {Code}: {Body}",
+                url, (int)resp.StatusCode, snippet);
+            throw new HttpRequestException(
+                $"Response status code {(int)resp.StatusCode}: {snippet}");
+        }
+        return body;
+    }
+
+    /// <summary>发送带额外请求头的 GET 请求并反序列化为 JSON。</summary>
+    public async Task<T?> GetJsonAsync<T>(
+        string url, IReadOnlyDictionary<string, string>? headers, CancellationToken ct = default)
+    {
+        var json = await GetStringAsync(url, headers, ct);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            _logger?.LogDebug("GetJsonAsync<{Type}> → empty body, returning null", typeof(T).Name);
+            return default;
+        }
+        return JsonSerializer.Deserialize<T>(json, JsonOptions);
+    }
+
     /// <summary>发送 GET 请求并反序列化为 JSON。</summary>
     public async Task<T?> GetJsonAsync<T>(string url, CancellationToken ct = default)
     {

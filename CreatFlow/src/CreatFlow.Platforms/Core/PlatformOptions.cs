@@ -77,6 +77,13 @@ public sealed class PlatformOptions
     /// <summary>B站创作中心 API 域名（投稿 / 封面上传 / 分区 / 标签等）</summary>
     public string BilibiliHost { get; init; } = "https://member.bilibili.com";
 
+    /// <summary>
+    /// B站 API 域名 —— 字幕上传 / 卡片配置走 <c>api.bilibili.com</c>
+    /// （2026-11-15 B5 抓包：<c>x/upload/web/image</c>、<c>x/v2/dm/subtitle/draft/preSave</c>、
+    /// <c>x/v2/dm/command/post</c> 都不在 member 域下）。
+    /// </summary>
+    public string BilibiliApiHost { get; init; } = "https://api.bilibili.com";
+
     // ── 今日头条 ──
 
     /// <summary>头条号创作平台域名</summary>

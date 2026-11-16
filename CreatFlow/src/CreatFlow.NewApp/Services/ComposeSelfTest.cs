@@ -47,7 +47,7 @@ public static class ComposeSelfTest
             // 参数样板：全部可写字段都要列出来（2026-10-11 用户反馈「不清楚有哪些参数」）
             var guide = ComposeUnitWriter.BuildParamsText("样板检查");
             var guideKeys = new[] { "发布时间", "简介", "话题", "话题ID", "官方活动", "位置", "合集",
-                "可见性", "允许下载", "内容声明", "原创" };
+                "可见性", "允许下载", "内容声明", "原创", "抖音横版封面", "章节" };
             Check("样板列全所有可写字段",
                 guideKeys.All(k => guide.Contains($"# {k}: ", StringComparison.Ordinal)),
                 string.Join("/", guideKeys.Where(k => !guide.Contains($"# {k}: ", StringComparison.Ordinal))));

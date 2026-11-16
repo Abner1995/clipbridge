@@ -25,20 +25,27 @@ public sealed class XhsVideoService
     /// </summary>
     /// <param name="cookie">Cookie</param>
     /// <param name="page">页码（0-based）</param>
+    /// <param name="tab">0 = 全部（默认）/ 1 = 已发布 / 2 = 审核中 / 3 = 未通过（抓包口径）</param>
     /// <param name="ct">取消令牌</param>
     /// <returns>视频条目列表</returns>
     public async Task<List<XhsVideoItem>> ListAsync(
-        string cookie, int page = 0, CancellationToken ct = default)
+        string cookie, int page = 0, int tab = 0, CancellationToken ct = default)
     {
         using var client = new XhsApiClient(cookie, _options,
             _logger as ILogger<PlatformHttpClient>);
 
         try
         {
-            // Galaxy API on creator host
-            var resp = await client.PostCreatorAsync<XhsVideoListResponse>(
+            // Galaxy API on creator host —— **GET + query**（抓包原文见
+            // docs/xiaohongshu/20261105/requests/note_list_all.json；早先按 POST 实现会回
+            // HTTP 404 page not found —— 2026-11-10 探针实测）。tab=0 全部 / 1 已发布。
+            var resp = await client.GetCreatorAsync<XhsVideoListResponse>(
                 "/api/galaxy/v2/creator/note/user/posted",
-                new { tab = "0", page = page.ToString() }, ct);
+                new Dictionary<string, string>
+                {
+                    ["tab"] = tab.ToString(),
+                    ["page"] = page.ToString(),
+                }, ct);
 
             return resp?.Data?.Notes ?? [];
         }

@@ -84,6 +84,14 @@ public static class DouyinItemInfoProbe
                 foreach (var (k, v) in info.ActivityFields.OrderBy(x => x.Key))
                     sb.AppendLine($"    {k} = {Truncate(v, 600)}");
             }
+
+            // P5 回读（2026-11-11）：除 activity 外，aweme/顶层的**全部**字段也落进报告 ——
+            // 封面双槽（Cover/horizontal_cover）、标签 anchor、@好友、可见性、话题等的
+            // 回读字段名此前未记录，先看原文再定结论。
+            sb.AppendLine($"  全部字段 {info.AllFields.Count} 个（每个最多 4000 字）：");
+            foreach (var (k, v) in info.AllFields
+                         .OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
+                sb.AppendLine($"    {k} = {Truncate(v, 4000)}");
             return Write(sb, 0);
         }
         catch (Exception ex)

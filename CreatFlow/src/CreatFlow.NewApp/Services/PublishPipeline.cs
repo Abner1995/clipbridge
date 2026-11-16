@@ -270,13 +270,64 @@ public sealed class PublishPipeline
             }
         }
 
+        // 横版 4:3 封面（2026-11-11 B1 抓包）—— 抖音封面双槽的第二张图：
+        // 竖版 3:4 用 poster（上面的 coverUri + 裁剪宽高），这里上传后落
+        // cover.horizontal_custom_cover_image_uri。文件缺失 / 上传失败一律只少一个槽，
+        // 绝不阻断发布（与封面上传同一条「非致命」口径）。
+        string? horizontalCoverUri = null;
+        (int Width, int Height)? landscapeSize = null;
+        if (!string.IsNullOrWhiteSpace(payload.CoverLandscapePath))
+        {
+            var landscapePath = payload.CoverLandscapePath;
+            if (!File.Exists(landscapePath))
+            {
+                Log.Warning("[Douyin] 横版封面文件不存在，跳过：{File}", landscapePath);
+            }
+            else
+            {
+                OnPlatformProgress?.Invoke(PlatformNames.Douyin, "cover_upload", 68,
+                    "上传横版封面...");
+                try
+                {
+                    var imageSvc = new DouyinImageUploadService(options);
+                    var landscapeBytes = await File.ReadAllBytesAsync(landscapePath, ct);
+                    var landscapeUri = await imageSvc.UploadAsync(landscapeBytes,
+                        Path.GetFileName(landscapePath),
+                        sts.AccessKeyId, sts.SecretAccessKey, sts.SessionToken, ct);
+                    if (!string.IsNullOrWhiteSpace(landscapeUri))
+                    {
+                        if (coverUri is null)
+                        {
+                            // 竖版 poster 没图可发（没选自定义封面且抽首帧失败）——
+                            // 横版图改作**唯一封面**（poster），不发 horizontal 键。
+                            Log.Warning("[Douyin] 竖版封面缺失，横版封面改作 poster：{File}", landscapePath);
+                            coverUri = landscapeUri;
+                            landscapeSize = ImageDimensionProbe.TryRead(landscapeBytes);
+                        }
+                        else
+                        {
+                            horizontalCoverUri = landscapeUri;
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "[Douyin] 横版封面上传失败（非致命）：{File}", landscapePath);
+                }
+            }
+        }
+
         OnPlatformProgress?.Invoke(PlatformNames.Douyin, "publishing", 80, "发布中...");
 
         // 封面帧 / 裁剪的最终取值（2026-11-05 抓包）：上传了自定义封面图时页面
         // poster_delay 恒 0（帧设置不生效），裁剪尺寸 = 裁剪结果（1051×788，= 图片实际像素）；
         // 没有自定义封面 → 帧照发、裁剪不下发。规则收口在 CoverMapping，自检钉住。
         var cover = CoverMapping.Douyin(payload.CoverFrameMs, payload.CoverCropWidth,
-            payload.CoverCropHeight, coverUri is not null, coverSize);
+            payload.CoverCropHeight, coverUri is not null, coverSize ?? landscapeSize);
 
         var publishReq = new CreateDouyinWorkRequest(
             VideoId: upResult.VideoId,
@@ -295,6 +346,8 @@ public sealed class PublishPipeline
                 : null,
             HotSentence: payload.HotSentence,
             CoverUri: coverUri,
+            // 横版 4:3 封面（B1 抓包）：只有上传成功才下发，否则保持旧 wire 形状
+            HorizontalCoverUri: horizontalCoverUri,
             TextExtra: payload.TextExtra,
             Challenges: payload.Challenges,
             // ── 2.1 全量长尾（1.3 抖音表）──
@@ -309,7 +362,18 @@ public sealed class PublishPipeline
             CoverCropWidth: cover.CropWidth,
             CoverCropHeight: cover.CropHeight,
             CoverToolsInfo: payload.CoverToolsInfo,
-            CoverToolsExtendInfo: payload.CoverToolsExtendInfo);
+            CoverToolsExtendInfo: payload.CoverToolsExtendInfo,
+            // 添加标签（抓包）：影视 / 游戏 / 标记万物 / 小程序 → item.anchor.anchor 字符串化 JSON。
+            // 参数不完整（游戏缺 short_video_point / 小程序缺 extra 等）→ null，发布体不出现 anchor。
+            AnchorJson: payload.Anchor is { } anchorRef
+                ? DouyinAnchorService.BuildAnchorJson(anchorRef.Type, anchorRef.Id, anchorRef.Content)
+                : null,
+            // 小程序额外两键（页面 bundle 逐字）：anchor_business_type=4 + anchor_content=JSON.stringify(extra)
+            AnchorBusinessType: payload.Anchor is { Type: DouyinAnchorTypes.Applet } appletBiz
+                ? appletBiz.Type : null,
+            AnchorContentJson: payload.Anchor is { Type: DouyinAnchorTypes.Applet } appletContent
+                ? DouyinAnchorService.BuildAnchorContentJson(appletContent.Type, appletContent.Content)
+                : null);
 
         var item = DouyinVideoService.BuildCreateItem(publishReq);
         var bodyJson = JsonSerializer.Serialize(new { item },
@@ -626,6 +690,14 @@ public sealed class PublishPipeline
             ExternalLink: payload.ExternalLink,
             ExternalLinkTitle: payload.ExternalLinkTitle,
             ExternalLinkType: payload.ExternalLinkType,
+            // 官方活动（2026-11-11 B2：objectDesc.event 三件套）
+            Event: payload.Event is { } ev
+                ? new WechatVideoEvent(ev.EventTopicId, ev.EventName, ev.EventCreatorNickname)
+                : null,
+            // 声明原创 → postFlag bit0（2026-11-11 B2 实测；旧实现被当成定时位）
+            IsOriginal: payload.IsOriginal,
+            // @好友（2026-11-11 B2 §5：objectDesc.mentionedUser 只带昵称 + 正文补 @昵称）
+            MentionUsers: payload.MentionUsers,
             ScheduledAt: payload.ScheduledAt,
             TagInfo: BuildWechatTagInfo(payload, tagKey));
 
@@ -642,7 +714,9 @@ public sealed class PublishPipeline
         try
         {
             await Task.Delay(3000, ct); // 等 3s 让列表索引生效
-            objectId = await contentSvc.FindObjectIdByClipKeyAsync(cookie, deviceId, clipKey, ct: ct);
+            // md5 = 当前平台唯一还能对上的锚点（2026-11-14：列表项已无 urlCdnTaskId）
+            objectId = await contentSvc.FindObjectIdByClipKeyAsync(
+                cookie, deviceId, clipKey, md5: clipResult.Md5, ct: ct);
         }
         catch (Exception ex)
         {
@@ -871,10 +945,10 @@ public sealed class PublishPipeline
         if (payload is null)
             return (false, null, "发布参数缺失或已损坏，请重新编辑该条目再发布", null);
 
-        // 章节 / 共创是原始 JSON 透传：**上传前**先验格式 —— 传完几分钟才报「JSON 写错」太伤
+        // 共创仍是原始 JSON 透传：**上传前**先验格式 —— 传完几分钟才报「JSON 写错」太伤
+        // （章节已收敛成结构化列表，见 B3 抓包 2026-11-11）
         try
         {
-            KuaishouPublishService.ParseJsonArray(payload.ChaptersJson, "章节");
             KuaishouPublishService.ParseJsonArray(payload.CoPublishUsersJson, "共创用户");
         }
         catch (KuaishouApiException ex)
@@ -958,11 +1032,42 @@ public sealed class PublishPipeline
 
         OnPlatformProgress?.Invoke(PlatformNames.Kuaishou, "publishing", 80, "发布中...");
 
+        // @好友（B3 抓包 2026-11-11）：页面在选人时即调 at/choose 做会话级登记；
+        // 队列任务是几分钟后才跑，这里在提交前重新登记一次。单个用户失败 → 跳过该用户，
+        // 不把可选曝光项变成发布阻塞（与封面/热点同口径）。
+        var mentionUsers = KuaishouMentionText.Usable(payload.MentionUsers);
+        if (mentionUsers.Count > 0)
+        {
+            var mentionSvc = new KuaishouMentionService(options);
+            var registered = new List<KuaishouMentionRef>();
+            foreach (var mention in mentionUsers)
+            {
+                try
+                {
+                    await mentionSvc.ChooseAsync(cookie, mention.UserId, ct);
+                    registered.Add(mention);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "[Kuaishou] @好友登记失败（本次跳过「{User}」）：{Error}",
+                        mention.UserName, ex.Message);
+                }
+            }
+            mentionUsers = registered;
+        }
+
         // 修复前入队的老条目（载荷已经落盘）可能还带着超过 3 个话题标签 ——
         // 快手会整条拒（2026-10-22 实测 result=1000「话题标签数量超过上限：4」）。
         // 组装端已裁，这里提交前再裁一道，让老队列条目重试也能发出去。
         var caption = PublishPayloadBuilder.ComposeKuaishouCaption(
             payload.Caption ?? platform.Description ?? "", []);
+        // @好友落点是 caption 的纯文本 token（`@昵称(O<userId>) `，2026-11-15 页面 submit 抓包）——
+        // 必须放在二次裁剪**之后**，否则 token 可能被截断。
+        caption = KuaishouMentionText.Append(caption, mentionUsers);
         var recTagIds = payload.RecTagIds?.Take(PlatformLimits.KuaishouMaxTopics).ToList();
 
         var decl = payload.DeclarationDetail;
@@ -986,6 +1091,7 @@ public sealed class PublishPipeline
             NotifyFollowers = payload.NotifyFollowers,
             CoverFrameMs = coverFrameMs,
             CoverTitle = payload.CoverTitle,
+            CoverTitleStyle = payload.CoverTitleStyle,
             PkCoverKey = payload.PkCoverKey,
             PkCoverTimeStamp = payload.PkCoverTimeStamp,
             PkCoverType = payload.PkCoverType,
@@ -1001,7 +1107,24 @@ public sealed class PublishPipeline
             SecondDomain = payload.SecondDomain,
             MovieId = payload.MovieId,
             ProjectId = payload.ProjectId,
-            ChaptersJson = payload.ChaptersJson,
+            Chapters = payload.Chapters?
+                .Select(c => new KuaishouChapter(c.StartMs, c.Title)).ToList(),
+            // 关联热点（B3 抓包 2026-11-11）：hotspotId（数字）+ hotspotConnectType:1
+            HotspotId = payload.HotspotId,
+            // 关联小程序（2026-11-15 抓包）：整个 associateTaskId 对象；null = 不带 associateTasks
+            AssociateTask = payload.AssociateTask is { BindId.Length: > 0 } associate
+                ? new KuaishouAssociateTask(
+                    associate.TaskId, associate.BindId, associate.EntranceType,
+                    associate.BindType, associate.TaskType)
+                : null,
+            // 共创（2026-11-15 页面 bundle）：结构化列表优先于旧档原始 JSON
+            CoPublishUsers = payload.CoPublishUsers is { Count: > 0 } coPublish
+                ? coPublish
+                    .Where(u => u.UserId > 0 && !string.IsNullOrWhiteSpace(u.UserName))
+                    .Select(u => new KuaishouCoPublishUser(
+                        u.UserId, u.UserName.Trim(), u.UserHead, u.Role))
+                    .ToList()
+                : null,
             CoPublishUsersJson = payload.CoPublishUsersJson,
             CoPublishRole = payload.CoPublishRole,
             ActivityIds = payload.ActivityIds,
@@ -1164,11 +1287,101 @@ public sealed class PublishPipeline
             }
         }
 
+        // ── 互动投票（A4，2026-11-11）──
+        // widget 是平台侧对象，每次发布现建（页面同款；草稿复用不回收）。
+        // 投票是可选项：参数不完整 / 创建失败一律**跳过投票继续发布**（只记 Warning），
+        // 绝不因为一个组件把整条发布拦下。
+        string? pollWidgetId = null;
+        var pollPlan = XhsPollRules.Analyze(payload.PollQuestion, payload.PollOptions);
+        if (pollPlan.State == XhsPollState.Invalid)
+        {
+            Log.Warning("[Xhs] 投票参数不完整，跳过投票：{Error}", pollPlan.Error);
+            OnPlatformProgress?.Invoke(PlatformNames.Xiaohongshu, "publishing", 78,
+                $"投票已跳过：{pollPlan.Error}");
+        }
+        else if (pollPlan.HasVote)
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Xiaohongshu, "publishing", 78, "创建投票...");
+            try
+            {
+                pollWidgetId = await new XhsInteractionService(options)
+                    .CreateVoteAsync(cookie, pollPlan.Question, pollPlan.Options, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;   // 用户暂停/删除选中：取消不是「投票失败」
+            }
+            catch (Exception ex)
+            {
+                // 创建失败不拦发布 —— 队列行照常往下走，只是这条笔记没有投票
+                Log.Warning(ex, "[Xhs] 投票创建失败（非致命，继续发布）");
+                OnPlatformProgress?.Invoke(PlatformNames.Xiaohongshu, "publishing", 78,
+                    $"投票创建失败（继续发布）：{ex.Message}");
+            }
+        }
+
         OnPlatformProgress?.Invoke(PlatformNames.Xiaohongshu, "publishing", 80, "发布中...");
 
         // 上传了自定义封面 → 新 fileId + 帧归 0；没有 → 不指定封面、帧照发
         var (resolvedCoverFileId, resolvedCoverFrameMs) =
             XhsPublishService.ResolveCover(coverFileId, payload.CoverFrameMs);
+
+        // ── PK 封面（2026-11-15）──
+        // 结构化（开关 + 本地图）优先：逐张上传拿 fileId + 像素；
+        // 主封面用当前发布封面（自定义图 / 首帧 / 视频 fileId）当 index=0。
+        // 单张失败只跳过该张；全部失败 → 回落开发者选项原始 JSON（不拦发布）。
+        var pkCoverJson = payload.PkCoverBizRelations;
+        if (payload.PkCoverEnabled == true && payload.PkCoverImages is { Count: > 0 } pkPaths)
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Xiaohongshu, "cover_upload", 72,
+                "上传 PK 封面...");
+            var pkEntries = new List<XhsPkCoverEntry>();
+            foreach (var pkPath in pkPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    if (!File.Exists(pkPath))
+                    {
+                        Log.Warning("[Xhs] PK 封面图片不存在，跳过：{Path}", pkPath);
+                        continue;
+                    }
+
+                    var dim = ImageDimensionProbe.TryReadFile(pkPath);
+                    var fid = await new XhsUploadService(options)
+                        .UploadImageAsync(cookie, pkPath, ct);
+                    if (!string.IsNullOrWhiteSpace(fid))
+                        pkEntries.Add(new XhsPkCoverEntry(
+                            fid, dim?.Width ?? 0, dim?.Height ?? 0));
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;   // 用户暂停/删除选中：取消不是「PK 封面失败」
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "[Xhs] PK 封面上传失败（跳过该张）：{Path}", pkPath);
+                }
+            }
+
+            if (pkEntries.Count > 0)
+            {
+                var mainId = string.IsNullOrWhiteSpace(resolvedCoverFileId)
+                    ? upResult.FileId : resolvedCoverFileId;
+                var mainDim = coverFile?.Path is { } coverPath
+                    ? ImageDimensionProbe.TryReadFile(coverPath) : null;
+                pkCoverJson = XhsPublishService.BuildPkCoverRelationsJson(
+                    mainId,
+                    mainDim?.Width ?? (meta is { Width: > 0 } mw ? mw.Width : 0),
+                    mainDim?.Height ?? (meta is { Height: > 0 } mh ? mh.Height : 0),
+                    pkEntries,
+                    // 页面 C6：上传封面 → user；首帧/默认 → frame
+                    string.IsNullOrWhiteSpace(resolvedCoverFileId) ? "frame" : "user");
+            }
+            else
+            {
+                Log.Warning("[Xhs] PK 封面全部上传失败 —— 回落原始 JSON / 空列表");
+            }
+        }
 
         // 可见性：**按名字映射，绝不强转 int**（老版强转导致隐私事故，缺陷 L11）
         var (privacyType, opType, needsUsers) = VisibilityMapping.Xhs(payload.Visibility);
@@ -1225,7 +1438,30 @@ public sealed class PublishPipeline
             SketchCollectionId = payload.SketchCollectionId,
             OrderBindJson = payload.OrderBind,
             ChapterSyncText = payload.ChapterSyncText,
-            PkCoverBizRelationsJson = payload.PkCoverBizRelations,
+            PkCoverBizRelationsJson = pkCoverJson,
+            // 选择群聊（2026-11-15）：快照 → business_binds.groupBind
+            GroupBind = payload.GroupBind is { GroupId.Length: > 0 } group
+                ? new XhsGroupBind(group.GroupId, group.GroupName, group.Desc, group.Avatar)
+                : null,
+            // 视频标记（2026-11-15）：只认 user / location，坏条目由 BuildMarkers 跳过
+            Markers = payload.Markers is { Count: > 0 } markers
+                ? [.. markers.Select(m => new XhsMarkerInput(
+                    m.Id, m.Name, m.Type, m.StartSeconds, m.EndSeconds))]
+                : null,
+            // 添加路线（2026-11-15）：hash_tag 的 map_traver + biz_relations 的 POI_MAP_TRAVEL
+            RouteBind = payload.Route is { TravelId.Length: > 0 } routeBind
+                ? new XhsRouteBind(routeBind.TravelId, routeBind.RouteName,
+                    routeBind.TravelType, routeBind.PlanAmount)
+                : null,
+            // 互动投票（A4）：widget 已建好 → hash_tag 末尾追加 INTERACT_VOTE 条目
+            PollWidgetId = pollWidgetId,
+            PollQuestion = pollWidgetId is null ? null : pollPlan.Question,
+            // 引用笔记（A5）/ 关联活动（A6）：optionRelationList 追加 REF_POST / ACTIVITY_COMPONENT
+            ReferencedNoteId = payload.ReferencedNote?.Id,
+            Activities = payload.Activities is { Count: > 0 } activityBinds
+                ? [.. activityBinds.Select(a => new XhsActivityBind(
+                    a.Id, a.Name, a.StartTimeMs, a.EndTimeMs))]
+                : null,
             AtsJson = payload.Ats,
             GoodsInfoJson = payload.GoodsInfo,
             BizRelationsJson = payload.BizRelations,
@@ -1343,6 +1579,105 @@ public sealed class PublishPipeline
             return (false, null, ex.Message, null);
         }
 
+        // ── 字幕（B5，2026-11-15）：cid 已到手 → 上传 .srt → 绑定草稿字幕 →
+        //    add/v3 的 videos[0].pre_subtitle。用户明确配了字幕，失败就整条中止
+        //    （静默发一条没字幕的稿件比失败更伤人）。 ──
+        var subtitleUploaded = false;
+        if (!string.IsNullOrWhiteSpace(payload.SubtitleFile))
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Bilibili, "uploading", 57, "上传字幕中...");
+            try
+            {
+                await new BilibiliSubtitleService(options).UploadAsync(
+                    creds.Cookie, uploaded.Cid, payload.SubtitleFile, payload.SubtitleFileLan, ct);
+                subtitleUploaded = true;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (BilibiliApiException ex)
+            {
+                Log.Warning(ex, "[Bilibili] 字幕上传失败：{File}", payload.SubtitleFile);
+                return (false, null, "B站字幕上传失败：" + ex.Message, null);
+            }
+        }
+
+        // ── 个性化卡片（B5 / B5.2）：**非致命** —— 建不出来就不带 pre_command，
+        //    稿件照常发（卡片是装饰，平台侧对非 H.264 MP4 本来就会拒）。
+        //    三类卡片各自独立：任意一张建成即打 pre_command（页面同口径）。 ──
+        var cardService = new BilibiliCardService(options);
+        var anyCardCreated = false;
+
+        if (payload.GuideCardFollowType is { } guideFollowType)
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Bilibili, "uploading", 62, "配置互动卡片...");
+            try
+            {
+                var card = await cardService.CreateGuideCardAsync(
+                    creds.Cookie, uploaded.Cid, guideFollowType,
+                    payload.GuideCardStartSeconds * 1000L, ct);
+                anyCardCreated = true;
+                Log.Information("[Bilibili] 互动引导卡片已创建 id={Id} command={Command}",
+                    card.Id, card.Command);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // 卡片是装饰：网络错误 / 平台拒绝都只记日志，不带 pre_command 继续投稿
+                Log.Warning(ex, "[Bilibili] 互动卡片创建失败（非致命，稿件不带 pre_command）");
+            }
+        }
+
+        // 关联视频（B5.2 wire §4.1）：目标稿件「仅自己」时平台回 79025，同样非致命。
+        if (!string.IsNullOrWhiteSpace(payload.RelatedVideoBvid))
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Bilibili, "uploading", 64, "配置关联视频卡片...");
+            try
+            {
+                var card = await cardService.CreateRelatedVideoCardAsync(
+                    creds.Cookie, uploaded.Cid, payload.RelatedVideoBvid,
+                    payload.RelatedVideoMsg, payload.RelatedVideoStartSeconds * 1000L, ct);
+                anyCardCreated = true;
+                Log.Information("[Bilibili] 关联视频卡片已创建 id={Id} command={Command}",
+                    card.Id, card.Command);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "[Bilibili] 关联视频卡片创建失败（非致命）：目标 {Bvid}",
+                    payload.RelatedVideoBvid);
+            }
+        }
+
+        // 投票弹幕（B5.2 wire §4.2）：参数在本地先验一道（预检已拦，这里防御脚本/旧档）。
+        if (!string.IsNullOrWhiteSpace(payload.VoteQuestion))
+        {
+            var voteOptions = payload.VoteOptions ?? [];
+            var voteProblems = BilibiliCardService.ValidateVote(payload.VoteQuestion, voteOptions);
+            if (voteProblems.Count > 0)
+            {
+                Log.Warning("[Bilibili] 投票弹幕参数不合法，跳过卡片：{Problems}",
+                    string.Join("；", voteProblems));
+            }
+            else
+            {
+                OnPlatformProgress?.Invoke(PlatformNames.Bilibili, "uploading", 66, "配置投票弹幕...");
+                try
+                {
+                    var card = await cardService.CreateVoteCardAsync(
+                        creds.Cookie, uploaded.Cid, payload.VoteQuestion, voteOptions,
+                        payload.VoteDurationSeconds * 1000L,
+                        payload.VoteStartSeconds * 1000L, ct);
+                    anyCardCreated = true;
+                    Log.Information("[Bilibili] 投票弹幕已创建 id={Id} command={Command}",
+                        card.Id, card.Command);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "[Bilibili] 投票弹幕创建失败（非致命）");
+                }
+            }
+        }
+
         // ── 封面：用户图 → 自动抽帧 → 无（2.5.7 统一口径）；上传失败非致命 ──
         string? cover169 = null;
         string? cover43 = null;
@@ -1407,6 +1742,10 @@ public sealed class PublishPipeline
             Watermark = payload.Watermark,
             SubtitleOpen = payload.SubtitleOpen,
             SubtitleLan = payload.SubtitleLan,
+            // 只有真的传成功了才打标记 —— 页面 bundle 同口径（getPreSubtitle 看列表里有没有 url）
+            PreSubtitle = subtitleUploaded,
+            // 任意一张卡片建成 → pre_command（B5.2：互动引导 / 关联视频 / 投票弹幕共用）
+            PreCommand = anyCardCreated,
             AllowComment = payload.AllowComment,
             AllowDanmaku = payload.AllowDanmaku,
             UpSelectionReply = payload.UpSelectionReply,
@@ -1585,6 +1924,46 @@ public sealed class PublishPipeline
             return (false, null, "头条封面上传失败：" + ex.Message, null);
         }
 
+        // ── 互动贴纸（A3，v1 只做「关注引导」）：可选 —— 创建失败只记状态，不拦发布 ──
+        string? playerSticker = null;
+        var stickerNote = "";
+        if (payload.FollowSticker)
+        {
+            OnPlatformProgress?.Invoke(PlatformNames.Toutiao, "publishing", 80,
+                "创建关注引导贴纸...");
+            var stickerStart = Math.Max(0, payload.StickerStartSec ?? 0);
+            var stickerDuration = Math.Max(1,
+                payload.StickerDurationSec ?? ToutiaoStickerService.DefaultDurationSec);
+            try
+            {
+                var avatar = await FetchAccountAvatarAsync(platform.PlatformSessionId);
+                var stickerIds = await new ToutiaoStickerService(options).CreateFollowStickerAsync(
+                    creds.Cookie, csrfToken, userId, avatar, stickerStart, stickerDuration, ct);
+                var percentBase = upResult.Duration > 0 ? upResult.Duration : meta.DurationS;
+                if (ToutiaoStickerService.TryMergeFollowSticker(
+                        attrs, etData, stickerIds, stickerStart, stickerDuration, percentBase,
+                        out var mergedAttrs, out var mergedEtData))
+                {
+                    attrs = mergedAttrs;
+                    etData = mergedEtData;
+                    // 抓包固定值：带贴纸时页面发字符串 "{\"list\":[]}"（配置在 etData）
+                    playerSticker = "{\"list\":[]}";
+                }
+                else
+                {
+                    Log.Warning("[Toutiao] 贴纸已创建但无法并入发布体（长尾属性/埋点扩展不是 JSON 对象）");
+                    stickerNote = "（贴纸未添加：长尾属性/埋点扩展不是 JSON 对象）";
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "[Toutiao] 关注引导贴纸创建失败（非致命，继续发布）");
+                stickerNote = "（关注引导贴纸未添加："
+                    + (ex.Message.Length > 60 ? ex.Message[..60] + "…" : ex.Message) + "）";
+            }
+        }
+
         // ── 发布 ──
         OnPlatformProgress?.Invoke(PlatformNames.Toutiao, "publishing", 85, "发布中...");
 
@@ -1620,10 +1999,20 @@ public sealed class PublishPipeline
             Hashtags = payload.Hashtags is { Count: > 0 } hashtags
                 ? hashtags.Select(h => new ToutiaoHashtag(h.Id, h.Name)).ToList()
                 : null,
+            // 作品声明（A1）：只下发已解析好的 ComplianceType；null = 不声明（字段不出现）
+            ComplianceInfo = ToutiaoComplianceOptions.BuildInfo(
+                payload.ComplianceType, payload.ComplianceCity, payload.ComplianceTimeMs),
+            // 视频生成图文（A2）：载荷只在 1/2 时有值；执行端仍按 1/2 兜底过滤
+            VideoTransArticleFlag = payload.VideoTransArticleFlag,
+            // 发布类型：null = 立即发布（1）；探针验证「仅保存草稿」时传 0
+            PublishType = payload.PublishType ?? 1,
             Commodity = commodity,
             CompassVideo = compass,
             // SyncPlatform 线形未抓到（抓包恒 {}）—— v1 不发送结构化同步，保留默认 {}
             SyncPlatform = null,
+            // 互动贴纸（A3）：三件套 —— PlayerSticker 固定空 list 字符串，
+            // 真实配置并入 AttrsValueMap.InteractStickers / etData.stickerETData
+            PlayerSticker = playerSticker,
             AttrsValueMap = attrs,
             EtData = etData,
         };
@@ -1633,9 +2022,10 @@ public sealed class PublishPipeline
             var result = await new ToutiaoPublishService(options)
                 .PublishAsync(creds.Cookie, csrfToken, request, ct);
             var extraJson = JsonSerializer.Serialize(new { itemId = result.ItemId });
-            Log.Information("[Toutiao] 发布成功 ItemId={ItemId}", result.ItemId);
+            Log.Information("[Toutiao] 发布成功 ItemId={ItemId}{StickerNote}",
+                result.ItemId, stickerNote.Length > 0 ? " " + stickerNote : "");
             OnPlatformProgress?.Invoke(PlatformNames.Toutiao, "published", 100,
-                $"发布成功! {result.ItemId}");
+                $"发布成功! {result.ItemId}{stickerNote}");
             return (true, result.ItemId, null, extraJson);
         }
         catch (OperationCanceledException) { throw; }
@@ -1669,6 +2059,27 @@ public sealed class PublishPipeline
         catch (Exception ex)
         {
             Log.Warning(ex, "[Publish] 取会话凭证失败 session={SessionId}", sessionId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 取账号头像 URL（头条互动贴纸 create 的 <c>FollowExtraInfo.FollowAvatar</c>）。
+    /// 凭证接口不带头像，只存在于会话列表的 <c>PlatformAvatar</c> 字段；
+    /// 拿不到返回 null（create 体里写空串，平台侧是否接受由创建结果决定 —— 失败非致命）。
+    /// </summary>
+    private static async Task<string?> FetchAccountAvatarAsync(Guid? sessionId)
+    {
+        if (sessionId is not { } sid) return null;
+        try
+        {
+            var resp = await ApiClient.PostAsync<PlatformSessionListResponse>(
+                "/api/platform-sessions/list");
+            return resp?.Sessions?.FirstOrDefault(s => s.Id == sid)?.PlatformAvatar;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[Publish] 取账号头像失败 session={SessionId}", sid);
             return null;
         }
     }

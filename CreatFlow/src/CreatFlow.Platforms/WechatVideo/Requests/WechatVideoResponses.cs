@@ -145,7 +145,9 @@ public sealed class PostListItem
     public int Status { get; set; }
     [JsonPropertyName("exportId")]
     public string? ExportId { get; set; }
-    /// <summary>发布时传入的 videoClipTaskId（clipKey），用于匹配回查 objectId</summary>
+    /// <summary>发布时传入的 videoClipTaskId（clipKey），用于匹配回查 objectId。
+    /// ⚠️ 2026-11-14 实测：当前平台「视频管理」列表项的 media[0] **不再返回该键** ——
+    /// 回查改按 <c>media[0].md5sum</c>（见 WechatVideoContentService.FindObjectIdByClipKeyAsync）。</summary>
     [JsonPropertyName("urlCdnTaskId")]
     public string? UrlCdnTaskId { get; set; }
 }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using CreatFlow.Platforms.Xiaohongshu;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -14,6 +15,13 @@ internal sealed record UnitParams
     public string? Title { get; init; }
     public string? Description { get; init; }
     public IReadOnlyList<string> Topics { get; init; } = [];
+
+    /// <summary>
+    /// 平台标签（<c>标签</c> 键，可多行/逗号分隔）—— 落到各目标的 <see cref="PlatformParams.Tags"/>。
+    /// B站投稿**至少需要 1 个标签**（预检 Error）、头条的 <c>Label</c> 同源；其余平台不读这个字段。
+    /// 2026-11-10 新增：没有它，params/自动发布这条路永远发不了 B站（除非预设里配过标签）。
+    /// </summary>
+    public IReadOnlyList<string> Tags { get; init; } = [];
 
     /// <summary>
     /// 结构化话题（<c>话题ID</c> 键）—— 「平台:话题名=平台话题ID」，只对指定平台生效。
@@ -46,7 +54,8 @@ internal sealed record UnitParams
     public DeclarationKind? Declaration { get; init; }
     public bool? AllowDownload { get; init; }
 
-    /// <summary>仅小红书：原创声明。落在账号级 <see cref="PlatformParams.IsOriginal"/> 上</summary>
+    /// <summary>原创声明（小红书 / B站 / 头条 / 视频号）。落在账号级
+    /// <see cref="PlatformParams.IsOriginal"/> 上；其余平台没有这个字段</summary>
     public bool? IsOriginal { get; init; }
 
     public bool? IsScheduled { get; init; }
@@ -60,6 +69,52 @@ internal sealed record UnitParams
     /// <summary>B站二级分区（<c>human_type2</c>，默认 1015 家装房产）—— <c>B站二级分区</c> 键</summary>
     public int? BilibiliHumanType2 { get; init; }
 
+    /// <summary>
+    /// B站字幕文件（<c>B站字幕</c> 键，仅 B站目标）：本地 <c>.srt</c>。
+    /// **相对路径按发布单元的文件夹解析**（与「抖音横版封面」同口径）。
+    /// 执行端上传后落 <c>videos[0].pre_subtitle</c>。
+    /// </summary>
+    public string? BilibiliSubtitleFile { get; init; }
+
+    /// <summary>B站字幕语言（<c>B站字幕语言</c> 键；zh / en / ja…，默认 zh）</summary>
+    public string? BilibiliSubtitleLan { get; init; }
+
+    /// <summary>
+    /// B站互动引导卡片（<c>B站互动引导</c> 键，仅 B站目标）：
+    /// 是 / 三连+关注 / 仅三连 / 仅关注 → true（对应样式见
+    /// <see cref="BilibiliGuideCardFollowType"/>）；否 → false。
+    /// </summary>
+    public bool? BilibiliGuideCard { get; init; }
+
+    /// <summary>互动引导样式（2 = 三连+关注 / 1 = 仅三连 / 0 = 仅关注）</summary>
+    public int? BilibiliGuideCardFollowType { get; init; }
+
+    /// <summary>卡片起始时间（<c>B站引导时间</c> 键，秒）</summary>
+    public int? BilibiliGuideCardStartSeconds { get; init; }
+
+    // ── 卡片 v2：关联视频 / 投票弹幕（2026-11-15 B5.2，wire §4）──
+
+    /// <summary>关联视频目标 BVID（<c>B站关联视频</c> 键；非空 = 建 type=2 卡片）</summary>
+    public string? BilibiliRelatedVideo { get; init; }
+
+    /// <summary>关联视频描述（<c>B站关联视频描述</c> 键 → create 体的 <c>msg</c>）</summary>
+    public string? BilibiliRelatedVideoMsg { get; init; }
+
+    /// <summary>关联视频卡片起始时间（<c>B站关联视频时间</c> 键，秒）</summary>
+    public int? BilibiliRelatedVideoStartSeconds { get; init; }
+
+    /// <summary>投票问题（<c>B站投票</c> 键；非空 = 建 type=9 卡片）</summary>
+    public string? BilibiliVoteQuestion { get; init; }
+
+    /// <summary>投票选项（<c>B站投票选项</c> 键；分号 / 竖线分隔，2~4 个）</summary>
+    public List<string>? BilibiliVoteOptions { get; init; }
+
+    /// <summary>投票卡片起始时间（<c>B站投票时间</c> 键，秒）</summary>
+    public int? BilibiliVoteStartSeconds { get; init; }
+
+    /// <summary>投票持续时间（<c>B站投票时长</c> 键，秒；默认 7）</summary>
+    public int? BilibiliVoteDurationSeconds { get; init; }
+
     /// <summary>头条赞赏（<c>头条赞赏</c> 键，仅头条目标）</summary>
     public bool? ToutiaoPraise { get; init; }
 
@@ -68,6 +123,61 @@ internal sealed record UnitParams
 
     /// <summary>头条滤镜名（<c>头条滤镜</c> 键，仅头条目标）</summary>
     public string? ToutiaoFilter { get; init; }
+
+    /// <summary>
+    /// 头条视频生成图文（<c>头条视频生成图文</c> 键，仅头条目标）：
+    /// 0 = 不生成；1 = 与视频同时发布；2 = 仅保存草稿。
+    /// </summary>
+    public int? ToutiaoVideoTransArticle { get; init; }
+
+    /// <summary>
+    /// 抖音横版 4:3 封面（<c>抖音横版封面</c> 键，仅抖音目标）：本地图片路径。
+    /// **相对路径按发布单元的文件夹解析** —— 图和 params.txt 放同一个文件夹时只写
+    /// <c>横版.jpg</c> 就够（绝对路径也认）。落到 <see cref="DouyinExtras.CoverLandscapePath"/>，
+    /// 执行端上传后写 <c>cover.horizontal_custom_cover_image_uri</c>。
+    /// </summary>
+    public string? DouyinLandscapeCover { get; init; }
+
+    /// <summary>
+    /// 快手封面文字样式（<c>快手封面文字样式</c> 键，仅快手目标）—— <c>coverTitleStyle</c>。
+    /// **取值未验证**：该字段只在作品编辑提交里观测到（恒为空串），官方发布页 2026-11-15
+    /// 的 submit 不带它。留空 = 不下发（与页面行为一致）；填了才原样透传。
+    /// </summary>
+    public string? KuaishouCoverTitleStyle { get; init; }
+
+    /// <summary>
+    /// 视频章节（<c>章节</c> 键，可写多行累加，每行 <c>mm:ss 标题</c>）——
+    /// 落到抖音 / 快手 / 小红书共用的 <see cref="PlatformParams.Chapters"/>。
+    /// 解析复用编辑器同一个 <see cref="PublishFieldText.ParseChapters"/>（两套口径必然漂移）。
+    /// </summary>
+    public IReadOnlyList<PlatformChapter> Chapters { get; init; } = [];
+
+    /// <summary>
+    /// 视频号 @好友（<c>视频号好友</c> 键，逗号/顿号分隔多个昵称）—— 仅视频号目标。
+    /// 平台只认昵称（2026-11-11 B2）：落 <see cref="WechatVideoExtras.MentionUsers"/>，
+    /// 发布时 <c>objectDesc.mentionedUser=[{nickname}]</c> + 正文末尾补 <c>@昵称 </c>。
+    /// </summary>
+    public IReadOnlyList<string> WechatMentionUsers { get; init; } = [];
+
+    /// <summary>
+    /// 小红书 @用户（<c>小红书@用户</c> 键，仅小红书目标）—— 每条 <c>昵称=userId</c>，
+    /// 分号 / 竖线分隔、可多行累加。落到 <see cref="XhsExtras.Ats"/>（发布体 <c>common.ats</c>，
+    /// 页面 bundle 逐字 <c>{nickname,userId,userid}</c>），正文末尾由 <c>XhsCaption</c>
+    /// 按同一份用户补「@昵称」。<c>userId</c> 是平台用户 ID（24 位十六进制），不是小红书号。
+    /// </summary>
+    public IReadOnlyList<XhsMentionUser> XhsMentions { get; init; } = [];
+
+    /// <summary>
+    /// 快手「专属领域」（<c>快手领域</c> 键，仅快手目标）—— submit 的 <c>domain</c>（一级领域名，
+    /// 如「舞蹈」）。取值来自 <c>--probe-kuaishou-domains</c> / 发布页的领域列表，原样下发。
+    /// </summary>
+    public string? KuaishouDomain { get; init; }
+
+    /// <summary>
+    /// 快手「二级领域」（<c>快手二级领域</c> 键，仅快手目标）—— submit 的 <c>secondDomain</c>
+    /// （二级领域名，如「舞蹈民族舞」）。与 <see cref="KuaishouDomain"/> 配套使用。
+    /// </summary>
+    public string? KuaishouSecondDomain { get; init; }
 
     /// <summary>没看懂的行 —— 不阻断导入，但要让用户看见（§5.1「不能装作全都成功」）</summary>
     public IReadOnlyList<ParamProblem> Problems { get; init; } = [];
@@ -112,6 +222,7 @@ internal static class PublishParamsFile
 
         string? title = null, desc = null, location = null, collection = null;
         var topics = new List<string>();
+        var tags = new List<string>();
         var topicRefs = new List<UnitTopicRef>();
         var activities = new List<UnitActivityRef>();
         PublishVisibility? visibility = null;
@@ -119,8 +230,23 @@ internal static class PublishParamsFile
         bool? allowDownload = null, isOriginal = null, isScheduled = null;
         DateTime? scheduledAt = null;
         int? bilibiliTid = null, bilibiliHumanType2 = null;
+        string? bilibiliSubtitleFile = null, bilibiliSubtitleLan = null;
+        bool? bilibiliGuideCard = null;
+        int? bilibiliGuideCardFollowType = null, bilibiliGuideCardStartSeconds = null;
+        string? bilibiliRelatedVideo = null, bilibiliRelatedVideoMsg = null;
+        int? bilibiliRelatedVideoStartSeconds = null;
+        string? bilibiliVoteQuestion = null;
+        List<string>? bilibiliVoteOptions = null;
+        int? bilibiliVoteStartSeconds = null, bilibiliVoteDurationSeconds = null;
         bool? toutiaoPraise = null;
         string? toutiaoTemplate = null, toutiaoFilter = null;
+        int? toutiaoVideoTransArticle = null;
+        string? douyinLandscapeCover = null;
+        string? kuaishouCoverTitleStyle = null;
+        var chapterLines = new List<string>();
+        var wechatMentions = new List<string>();
+        var xhsMentions = new List<XhsMentionUser>();
+        string? kuaishouDomain = null, kuaishouSecondDomain = null;
         var problems = new List<ParamProblem>();
 
         // 去 BOM（文件可能是记事本另存的 UTF-8 BOM）+ 统一换行
@@ -180,6 +306,11 @@ internal static class PublishParamsFile
                 case "话题" or "topic" or "topics" or "tag" or "tags":
                     // 追加语义 —— 「一行一个话题」才好用
                     topics.AddRange(SplitTopics(value));
+                    break;
+
+                case "标签" or "标签列表" or "平台标签" or "taglist" or "platformtags":
+                    // 追加语义；B站必填 ≥1（预检 Error），头条落到 Label
+                    tags.AddRange(SplitTopics(value));
                     break;
 
                 case "话题id" or "topicid" or "topicids" or "topic_id" or "topic_ids":
@@ -295,6 +426,107 @@ internal static class PublishParamsFile
                     else problems.Add(new(lineNo, key, "二级分区 ID 应为正整数，已忽略（默认 1015 家装房产）"));
                     break;
 
+                // B站字幕 / 互动引导卡片（B5，2026-11-15）：只对 B站目标生效。
+                // 字幕是内容级（每条视频一份 .srt），所以放 params 而不是账号预设。
+                case "b站字幕" or "bilibili字幕" or "bilibilisubtitle" or "bilibili_subtitle":
+                    bilibiliSubtitleFile = value;
+                    break;
+
+                case "b站字幕语言" or "bilibilisubtitlelan" or "bilibili_subtitle_lan":
+                    bilibiliSubtitleLan = value;
+                    break;
+
+                case "b站互动引导" or "bilibili互动引导" or "bilibiliguidecard"
+                    or "bilibili_guide_card":
+                    switch (Norm(value))
+                    {
+                        case "是" or "开启" or "yes" or "true" or "三连+关注" or "三连关注":
+                            bilibiliGuideCard = true;
+                            bilibiliGuideCardFollowType = 2;
+                            break;
+                        case "仅三连" or "三连":
+                            bilibiliGuideCard = true;
+                            bilibiliGuideCardFollowType = 1;
+                            break;
+                        case "仅关注" or "关注":
+                            bilibiliGuideCard = true;
+                            bilibiliGuideCardFollowType = 0;
+                            break;
+                        case "否" or "关闭" or "no" or "false":
+                            bilibiliGuideCard = false;
+                            break;
+                        default:
+                            problems.Add(new(lineNo, key,
+                                "认不出「是 / 否 / 三连+关注 / 仅三连 / 仅关注」，已忽略"));
+                            break;
+                    }
+                    break;
+
+                case "b站引导时间" or "bilibili引导时间" or "bilibiliguidecardstart"
+                    or "bilibili_guide_card_start":
+                    if (PublishFieldText.TryParseTime(value, out var guideMs))
+                        bilibiliGuideCardStartSeconds = (int)(guideMs / 1000);
+                    else
+                        problems.Add(new(lineNo, key,
+                            "认不出时间（写法示例：00:30 或 30），已忽略（默认视频开头）"));
+                    break;
+
+                // 卡片 v2（2026-11-15 B5.2）：关联视频 / 投票弹幕 —— 同样只对 B站目标生效。
+                // 关联视频填目标 BVID（「仅自己」稿件会被平台回 79025，见 wire §4.3）。
+                case "b站关联视频" or "bilibili关联视频" or "bilibilirelatedvideo"
+                    or "bilibili_related_video":
+                    bilibiliRelatedVideo = value;
+                    break;
+
+                case "b站关联视频描述" or "bilibili关联视频描述"
+                    or "bilibilirelatedvideomsg" or "bilibili_related_video_msg":
+                    bilibiliRelatedVideoMsg = value;
+                    break;
+
+                case "b站关联视频时间" or "bilibili关联视频时间"
+                    or "bilibilirelatedvideostart" or "bilibili_related_video_start":
+                    if (PublishFieldText.TryParseTime(value, out var relatedMs))
+                        bilibiliRelatedVideoStartSeconds = (int)(relatedMs / 1000);
+                    else
+                        problems.Add(new(lineNo, key,
+                            "认不出时间（写法示例：00:30 或 30），已忽略（默认视频开头）"));
+                    break;
+
+                case "b站投票" or "bilibili投票" or "bilibilivote" or "bilibili_vote":
+                    bilibiliVoteQuestion = value;
+                    break;
+
+                case "b站投票选项" or "bilibili投票选项" or "bilibilivoteoptions"
+                    or "bilibili_vote_options":
+                    // 选项不能含分号（平台规则）—— 用分号 / 竖线分隔没有歧义
+                    bilibiliVoteOptions = value
+                        .Split([';', '；', '|'], StringSplitOptions.RemoveEmptyEntries
+                            | StringSplitOptions.TrimEntries)
+                        .ToList();
+                    if (bilibiliVoteOptions.Count < 2)
+                    {
+                        problems.Add(new(lineNo, key,
+                            "投票选项至少要 2 个（用分号或竖线分隔），当前不足"));
+                    }
+                    break;
+
+                case "b站投票时间" or "bilibili投票时间" or "bilibilivotestart"
+                    or "bilibili_vote_start":
+                    if (PublishFieldText.TryParseTime(value, out var voteStartMs))
+                        bilibiliVoteStartSeconds = (int)(voteStartMs / 1000);
+                    else
+                        problems.Add(new(lineNo, key,
+                            "认不出时间（写法示例：00:30 或 30），已忽略（默认视频开头）"));
+                    break;
+
+                case "b站投票时长" or "bilibili投票时长" or "bilibili_vote_duration":
+                    if (PublishFieldText.TryParseTime(value, out var voteDurationMs))
+                        bilibiliVoteDurationSeconds = (int)(voteDurationMs / 1000);
+                    else
+                        problems.Add(new(lineNo, key,
+                            "认不出时长（写法示例：7 或 00:07），已忽略（默认 7 秒）"));
+                    break;
+
                 // 头条长尾（阶段 5.6）：赞赏 / 模板 / 滤镜 —— 只对头条目标生效
                 case "头条赞赏" or "toutiao赞赏" or "toutiaopraise" or "toutiao_praise":
                     if (TryBool(value, out var ttPraise)) toutiaoPraise = ttPraise;
@@ -307,6 +539,76 @@ internal static class PublishParamsFile
 
                 case "头条滤镜" or "toutiao滤镜" or "toutiaofilter" or "toutiao_filter":
                     toutiaoFilter = value;
+                    break;
+
+                // 视频生成图文（A2）：0 / 1 / 2，也接受中文语义
+                case "头条视频生成图文" or "头条生成图文" or "toutiaovideotransarticle"
+                    or "toutiao_video_trans_article":
+                    if (TryToutiaoTransArticle(value, out var transArticle))
+                        toutiaoVideoTransArticle = transArticle;
+                    else
+                        problems.Add(new(lineNo, key,
+                            "认不出「不生成 / 与视频同时发布 / 仅保存草稿」，已忽略"));
+                    break;
+
+                // 抖音横版封面（D1，2026-11-14）：竖版 3:4 用文件夹里的 cover.*，
+                // 横版 4:3 是抖音的第二张图 —— 每条的图不一样，所以得有内容级键。
+                case "抖音横版封面" or "douyin横版封面" or "douyinlandscapecover" or "douyin_landscape_cover":
+                    douyinLandscapeCover = value;
+                    break;
+
+                // 快手封面文字样式（P3，2026-11-15）：取值未验证（编辑提交里恒为空串）；
+                // 留空/不写 = 不下发（官方发布页就是不发）。
+                case "快手封面文字样式" or "kuaishoucovertitlestyle" or "kuaishou_cover_title_style"
+                    or "covertitlestyle":
+                    kuaishouCoverTitleStyle = value.Length == 0 ? null : value;
+                    break;
+
+                // 章节（D1，2026-11-14）：一行一个（「00:15 户型」），多行累加 ——
+                // 与「话题」同款追加语义。解析在收尾处统一走 ParseChapters
+                // （排序 / 去重 / 时间格式全在那一处，和编辑器文本框同一个函数）。
+                case "章节" or "chapters" or "chapter":
+                    chapterLines.Add(value);
+                    break;
+
+                // 视频号 @好友（W5，2026-11-14）：昵称，逗号 / 顿号 / 分号分隔，可多行累加。
+                // **不按空格切** —— 昵称里可以有空格（同「话题ID / 官方活动」的口径）。
+                case "视频号好友" or "视频号@好友" or "wechatmentions" or "wechat_mentions":
+                    foreach (var nick in SplitEntries(value))
+                        if (!wechatMentions.Contains(nick)) wechatMentions.Add(nick);
+                    break;
+
+                // 小红书 @用户（P5，2026-11-15）：每条「昵称=userId」，分号 / 竖线分隔，可多行累加。
+                // userId 是平台用户 ID（24 位十六进制，不是小红书号）；昵称只用于
+                // 正文「@昵称」与界面展示。用**最后一个**等号切——昵称里可能有「=」，userId 不会有。
+                case "小红书@用户" or "小红书@好友" or "xhsmentions" or "xhs_mentions"
+                    or "xiaohongshumentions" or "xiaohongshu_mentions":
+                    foreach (var entry in value.Split([';', '；', '|'],
+                                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    {
+                        var eq = entry.LastIndexOf('=');
+                        var nickname = eq > 0 ? entry[..eq].Trim() : "";
+                        var userId = eq >= 0 && eq < entry.Length - 1 ? entry[(eq + 1)..].Trim() : "";
+                        if (nickname.Length == 0 || userId.Length == 0)
+                        {
+                            problems.Add(new(lineNo, key,
+                                "认不出（写法：昵称=userId，多条用分号分隔），已忽略这一条"));
+                            continue;
+                        }
+                        if (xhsMentions.All(u => u.UserId != userId))
+                            xhsMentions.Add(new XhsMentionUser(userId, nickname));
+                    }
+                    break;
+
+                // 快手专属领域（P3/P5，2026-11-15）：一级 / 二级领域名，原样下发
+                // submit.domain / submit.secondDomain。取值来自发布页领域列表
+                // （--probe-kuaishou-domains 可回查）。
+                case "快手领域" or "快手一级领域" or "kuaishoudomain" or "kuaishou_domain":
+                    kuaishouDomain = value.Length == 0 ? null : value;
+                    break;
+
+                case "快手二级领域" or "kuaishouseconddomain" or "kuaishou_second_domain":
+                    kuaishouSecondDomain = value.Length == 0 ? null : value;
                     break;
 
                 case "发布时间" or "publishat" or "schedule" or "time" or "定时":
@@ -336,6 +638,7 @@ internal static class PublishParamsFile
             Location = location,
             Collection = collection,
             Topics = topics,
+            Tags = tags,
             TopicRefs = topicRefs,
             Activities = activities,
             Visibility = visibility,
@@ -346,9 +649,31 @@ internal static class PublishParamsFile
             ScheduledAt = scheduledAt,
             BilibiliTid = bilibiliTid,
             BilibiliHumanType2 = bilibiliHumanType2,
+            BilibiliSubtitleFile = bilibiliSubtitleFile,
+            BilibiliSubtitleLan = bilibiliSubtitleLan,
+            BilibiliGuideCard = bilibiliGuideCard,
+            BilibiliGuideCardFollowType = bilibiliGuideCardFollowType,
+            BilibiliGuideCardStartSeconds = bilibiliGuideCardStartSeconds,
+            BilibiliRelatedVideo = bilibiliRelatedVideo,
+            BilibiliRelatedVideoMsg = bilibiliRelatedVideoMsg,
+            BilibiliRelatedVideoStartSeconds = bilibiliRelatedVideoStartSeconds,
+            BilibiliVoteQuestion = bilibiliVoteQuestion,
+            BilibiliVoteOptions = bilibiliVoteOptions,
+            BilibiliVoteStartSeconds = bilibiliVoteStartSeconds,
+            BilibiliVoteDurationSeconds = bilibiliVoteDurationSeconds,
             ToutiaoPraise = toutiaoPraise,
             ToutiaoTemplate = toutiaoTemplate,
             ToutiaoFilter = toutiaoFilter,
+            ToutiaoVideoTransArticle = toutiaoVideoTransArticle,
+            DouyinLandscapeCover = douyinLandscapeCover,
+            KuaishouCoverTitleStyle = kuaishouCoverTitleStyle,
+            Chapters = chapterLines.Count == 0
+                ? []
+                : PublishFieldText.ParseChapters(string.Join("\n", chapterLines)),
+            WechatMentionUsers = wechatMentions,
+            XhsMentions = xhsMentions,
+            KuaishouDomain = kuaishouDomain,
+            KuaishouSecondDomain = kuaishouSecondDomain,
             Problems = problems,
         };
     }
@@ -453,13 +778,34 @@ internal static class PublishParamsFile
     }
 
     /// <summary>
+    /// 头条视频生成图文：0 = 不生成 / 1 = 与视频同时发布 / 2 = 仅保存草稿。
+    /// 接受数字与中文语义；认不出返回 false（由调用方记 Problem，不阻断其它字段）。
+    /// </summary>
+    private static bool TryToutiaoTransArticle(string value, out int flag)
+    {
+        switch (Norm(value))
+        {
+            case "0" or "不生成" or "关闭" or "否" or "no" or "n":
+                flag = 0; return true;
+            case "1" or "与视频同时发布" or "同时发布" or "同时发" or "发布" or "是" or "yes" or "y":
+                flag = 1; return true;
+            case "2" or "仅保存草稿" or "仅草稿" or "保存草稿" or "草稿":
+                flag = 2; return true;
+            default:
+                flag = 0; return false;
+        }
+    }
+
+    /// <summary>
     /// 正文类字段（标题/简介/话题）—— 值里的 <c>#</c> 是**内容**，一律不许当注释切掉。
     /// 其余字段（可见性/声明/下载/原创/发布时间/位置）的取值里不可能出现 <c>#</c>，
     /// 切掉尾注释是安全的。
     /// </summary>
     private static bool IsProseKey(string nk) =>
         nk is "标题" or "title" or "简介" or "desc" or "description"
-            or "话题" or "topic" or "topics" or "tag" or "tags";
+            or "话题" or "topic" or "topics" or "tag" or "tags"
+            // 关联视频描述是写给观众看的一句话，`#` 可能真是正文，不能当尾注释切掉
+            or "b站关联视频描述" or "bilibili关联视频描述";
 
     /// <summary>
     /// 切掉值后面的注释：<c>公开   # 公开 / 仅自己 / …</c> → <c>公开</c>。

@@ -1,3 +1,5 @@
+using CreatFlow.NewApp.Models;
+
 namespace CreatFlow.NewApp.Services;
 
 /// <summary>
@@ -13,6 +15,12 @@ public sealed record AutoPublishTarget(
 
 /// <summary>自动发布结果。<see cref="Ok"/> = 已进服务端上传队列。</summary>
 public sealed record AutoPublishResult(bool Ok, string Message, int PlatformCount = 0);
+
+/// <summary>
+/// 组装好的提交请求 + 非致命提示（合集没命中之类）。<see cref="PublishUnitSubmitter.BuildRequestAsync"/>
+/// 的产物 —— 自动发布拿它去 submit，CLI 发布探针拿它去 <c>PublishPipeline.RunAsync</c>（submit + 执行）。
+/// </summary>
+public sealed record BuiltPublishRequest(SubmitPublishRequest Request, List<string> Trouble);
 
 /// <summary>
 /// 合成完成后自动进上传队列的**无头提交器** —— 把一份发布单元目录
@@ -50,72 +58,15 @@ public sealed class PublishUnitSubmitter
     {
         try
         {
-            if (targets.Count == 0) return Fail("没有勾选任何账号");
+            var (built, error) = await BuildRequestAsync(unitDir, videoPath, targets, ct);
+            if (built is null) return Fail(error ?? "提交请求组装失败");
 
-            // 1) 单元目录 + 已知成片 → 候选（标题回退链、封面、params 都在这一层算好）
-            var candidate = PublishImportPlanner.UnitFor(unitDir, videoPath);
-            if (!File.Exists(candidate.VideoPath)) return Fail("成片不存在（可能已被移动或删除）");
-
-            // 2) 账号级预设（与发布页同一份 publish-defaults.json）
-            var defaults = await _store.LoadDefaultsAsync(ct);
-
-            // 3) 建草稿：预设先播种、params 后覆盖（顺序不可反，见 PublishDraftFactory）
-            var draft = new PublishDraft(candidate.VideoPath, candidate.SourceFolder)
-            {
-                Title = candidate.Title,
-                Description = candidate.Description ?? "",
-                CoverPath = candidate.CoverPath,
-            };
-            var seed = targets
-                .Select(t => new PublishTarget(t.PlatformKey, t.SessionId, t.AccountLabel)
-                {
-                    IsLoggedIn = t.IsLoggedIn,
-                })
-                .ToList();
-            PublishDraftFactory.SeedTargets(draft, seed, defaults);
-            PublishDraftFactory.ApplyUnitParams(draft, candidate.Params);
-
-            // 4) 元数据探测 —— 小红书 ≥10 秒预检要用时长；失败不致命（预检按无时长处理）
-            try
-            {
-                draft.Meta = await _probe.ProbeAsync(draft.VideoPath, ct);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "[AutoPublish] 视频元数据探测失败（继续）");
-            }
-
-            // 5) params 带了话题/位置/合集才做联邦解析 —— 跳过它们提交时会被静默忽略
-            var trouble = new List<string>();
-            if (draft.Topics.Count > 0)
-                await ResolveTopicsAsync(draft, defaults, ct);
-            if (candidate.Params.Location is { Length: > 0 } locationKeyword)
-                await ResolveLocationAsync(draft, locationKeyword, defaults, ct);
-            if (candidate.Params.Collection is { Length: > 0 } collectionName)
-                trouble.AddRange(await ApplyCollectionAsync(draft, collectionName, defaults, ct));
-
-            ct.ThrowIfCancellationRequested();
-
-            // 6) 预检 —— Error 级拦截（与发布页「有 Error 不能提交」同口径）
-            var errors = PublishPreflight.Validate(draft)
-                .Where(i => i.Severity == PreflightSeverity.Error)
-                .Select(i => i.Message)
-                .ToList();
-            if (errors.Count > 0)
-            {
-                var head = string.Join("；", errors.Take(3));
-                return Fail(errors.Count > 3 ? $"预检未通过：{head}（共 {errors.Count} 条）" : $"预检未通过：{head}");
-            }
-
-            // 7) 组装 + 提交（服务端建记录，上传队列接管）
-            var request = await PublishDraftFactory.BuildSubmitRequestAsync(draft, defaults);
-            if (request is null) return Fail("提交请求组装失败（视频读不到或哈希失败）");
-
-            var resp = await _pipeline.SubmitAsync(request, ct);
+            var resp = await _pipeline.SubmitAsync(built.Request, ct);
             if (resp is null) return Fail("服务端没有返回结果（网络或登录态问题，请稍后从发布页手动导入）");
 
             var message = $"已进上传队列 · {targets.Count} 个账号（{resp.Platforms.Count} 条平台记录）";
-            if (trouble.Count > 0) message += "；" + string.Join("；", trouble.Distinct().Take(2));
+            if (built.Trouble.Count > 0)
+                message += "；" + string.Join("；", built.Trouble.Distinct().Take(2));
             Log.Information("[AutoPublish] {Unit} → 已提交任务 {TaskId}（{Count} 条平台记录）",
                 Path.GetFileName(unitDir), resp.TaskId, resp.Platforms.Count);
             return new AutoPublishResult(true, message, resp.Platforms.Count);
@@ -129,6 +80,81 @@ public sealed class PublishUnitSubmitter
             Log.Warning(ex, "[AutoPublish] 自动发布失败：{Dir}", unitDir);
             return Fail(ex.Message);
         }
+    }
+
+    /// <summary>
+    /// 只组装、不发网络 —— 返回提交请求与需要告知用户的非致命提示（合集未命中等）。
+    /// <paramref name="Error"/> 非空表示组装失败（原因可直接展示）。
+    /// **自动发布（<see cref="SubmitAsync"/>）与 CLI 发布探针共用这一份**，别各写一套。
+    /// </summary>
+    public async Task<(BuiltPublishRequest? Built, string? Error)> BuildRequestAsync(
+        string unitDir, string videoPath, IReadOnlyList<AutoPublishTarget> targets,
+        CancellationToken ct = default)
+    {
+        if (targets.Count == 0) return (null, "没有勾选任何账号");
+
+        // 1) 单元目录 + 已知成片 → 候选（标题回退链、封面、params 都在这一层算好）
+        var candidate = PublishImportPlanner.UnitFor(unitDir, videoPath);
+        if (!File.Exists(candidate.VideoPath)) return (null, "成片不存在（可能已被移动或删除）");
+
+        // 2) 账号级预设（与发布页同一份 publish-defaults.json）
+        var defaults = await _store.LoadDefaultsAsync(ct);
+
+        // 3) 建草稿：预设先播种、params 后覆盖（顺序不可反，见 PublishDraftFactory）
+        var draft = new PublishDraft(candidate.VideoPath, candidate.SourceFolder)
+        {
+            Title = candidate.Title,
+            Description = candidate.Description ?? "",
+            CoverPath = candidate.CoverPath,
+        };
+        var seed = targets
+            .Select(t => new PublishTarget(t.PlatformKey, t.SessionId, t.AccountLabel)
+            {
+                IsLoggedIn = t.IsLoggedIn,
+            })
+            .ToList();
+        PublishDraftFactory.SeedTargets(draft, seed, defaults);
+        PublishDraftFactory.ApplyUnitParams(draft, candidate.Params);
+
+        // 4) 元数据探测 —— 小红书 ≥10 秒预检要用时长；失败不致命（预检按无时长处理）
+        try
+        {
+            draft.Meta = await _probe.ProbeAsync(draft.VideoPath, ct);
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[AutoPublish] 视频元数据探测失败（继续）");
+        }
+
+        // 5) params 带了话题/位置/合集才做联邦解析 —— 跳过它们提交时会被静默忽略
+        var trouble = new List<string>();
+        if (draft.Topics.Count > 0)
+            await ResolveTopicsAsync(draft, defaults, ct);
+        if (candidate.Params.Location is { Length: > 0 } locationKeyword)
+            await ResolveLocationAsync(draft, locationKeyword, defaults, ct);
+        if (candidate.Params.Collection is { Length: > 0 } collectionName)
+            trouble.AddRange(await ApplyCollectionAsync(draft, collectionName, defaults, ct));
+
+        ct.ThrowIfCancellationRequested();
+
+        // 6) 预检 —— Error 级拦截（与发布页「有 Error 不能提交」同口径）
+        var errors = PublishPreflight.Validate(draft)
+            .Where(i => i.Severity == PreflightSeverity.Error)
+            .Select(i => i.Message)
+            .ToList();
+        if (errors.Count > 0)
+        {
+            var head = string.Join("；", errors.Take(3));
+            return (null, errors.Count > 3
+                ? $"预检未通过：{head}（共 {errors.Count} 条）"
+                : $"预检未通过：{head}");
+        }
+
+        // 7) 组装（不含网络）
+        var request = await PublishDraftFactory.BuildSubmitRequestAsync(draft, defaults);
+        if (request is null) return (null, "提交请求组装失败（视频读不到或哈希失败）");
+
+        return (new BuiltPublishRequest(request, trouble), null);
     }
 
     private static AutoPublishResult Fail(string reason) => new(false, $"自动发布失败：{reason}");

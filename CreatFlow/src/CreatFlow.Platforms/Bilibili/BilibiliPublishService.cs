@@ -70,6 +70,21 @@ public sealed class BilibiliPublishService
     /// </summary>
     public static string BuildAddV3Body(BilibiliPublishRequest r)
     {
+        // videos[0] 的预配置标记（2026-11-15 B5 抓包）：
+        //   · pre_subtitle —— cid 上已通过 subtitle/draft/preSave 挂了草稿字幕；
+        //   · pre_command  —— cid 上已建好个性化卡片（互动引导）。
+        // 页面 bundle 逐字只写这两个键（`r.videos[0].pre_subtitle=!0` /
+        // `r.videos[0].pre_command=!0`），没有别的落点。
+        var video = new Dictionary<string, object?>
+        {
+            ["filename"] = r.Filename,
+            ["title"] = r.Title,
+            ["desc"] = r.Description,
+            ["cid"] = r.Cid,
+        };
+        if (r.PreSubtitle) video["pre_subtitle"] = true;
+        if (r.PreCommand) video["pre_command"] = true;
+
         var body = new Dictionary<string, object?>
         {
             ["cover"] = r.Cover ?? "",
@@ -90,16 +105,7 @@ public sealed class BilibiliPublishService
             ["dynamic"] = r.Dynamic ?? "",
             ["recreate"] = 0,
             ["interactive"] = r.Interactive ? 1 : 0,
-            ["videos"] = new[]
-            {
-                new Dictionary<string, object?>
-                {
-                    ["filename"] = r.Filename,
-                    ["title"] = r.Title,
-                    ["desc"] = r.Description,
-                    ["cid"] = r.Cid,
-                },
-            },
+            ["videos"] = new[] { video },
             ["act_reserve_create"] = r.ActReserve ? 1 : 0,
             ["act_reserve_create_title"] = r.ActReserveTitle ?? "",
             ["no_disturbance"] = 0,
@@ -109,10 +115,13 @@ public sealed class BilibiliPublishService
             {
                 ["state"] = r.Watermark ? 1 : 0,
             },
+            // 字幕：页面 bundle 在 showSubtitle 时**恒下发** {open:0,lan:""}（占位），
+            // 真正生效靠 videos[0].pre_subtitle。挂了字幕就按页面占位下发，
+            // 不再把旧的「字幕语言」当开关（那是抓包前的字段语义）。
             ["subtitle"] = new Dictionary<string, object?>
             {
-                ["open"] = r.SubtitleOpen ? 1 : 0,
-                ["lan"] = r.SubtitleLan ?? "",
+                ["open"] = r.PreSubtitle ? 0 : (r.SubtitleOpen ? 1 : 0),
+                ["lan"] = r.PreSubtitle ? "" : (r.SubtitleLan ?? ""),
             },
             ["no_reprint"] = r.NoReprint ? 1 : 0,
             ["up_selection_reply"] = r.UpSelectionReply,
@@ -258,6 +267,19 @@ public sealed record BilibiliPublishRequest
     public bool Watermark { get; init; } = true;
     public bool SubtitleOpen { get; init; }
     public string? SubtitleLan { get; init; }
+
+    /// <summary>
+    /// 该 cid 已通过 <see cref="BilibiliSubtitleService.UploadAsync"/> 挂好草稿字幕 →
+    /// <c>videos[0].pre_subtitle = true</c>（2026-11-15 B5 抓包）。
+    /// 注意：真正生效靠这个标记，<see cref="SubtitleOpen"/> 只是页面恒下发的占位。
+    /// </summary>
+    public bool PreSubtitle { get; init; }
+
+    /// <summary>
+    /// 该 cid 已通过 <see cref="BilibiliCardService.CreateGuideCardAsync"/> 建好个性化卡片 →
+    /// <c>videos[0].pre_command = true</c>（2026-11-15 B5 抓包）。
+    /// </summary>
+    public bool PreCommand { get; init; }
 
     /// <summary>允许评论；null = 沿用页面默认（允许）。执行端取反成 <c>up_close_reply</c>。</summary>
     public bool? AllowComment { get; init; }

@@ -113,12 +113,21 @@ public sealed class WechatVideoContentService
     /// <summary>
     /// 构建 <c>post_create</c> 请求体（**纯函数**，自检可直接断言 wire 字段）。
     ///
-    /// 抓包依据（docs/wechatvideo/20261105）：
-    ///   · 立即发表 <c>postFlag=1</c> 且**不下发** <c>effectiveTime</c>；定时 <c>postFlag=0</c> + Unix 秒；
+    /// 抓包依据（docs/wechatvideo/20261105 + wire-2026-11-11）：
+    ///   · <c>postFlag</c> 是**声明位域**（2026-11-11 B2 A/B 实测：同一草稿只切换「声明原创」，
+    ///     走完确认弹窗后 bit0 0→1、取消回落 0，定时开关全程没动）——
+    ///     立即 / 定时**只由 <c>effectiveTime</c> 表达**；05 文档「立即 1 / 定时 0」是相关性误读
+    ///     （wire-2026-11-11 §2.3 已更正）。本项目只置 bit0（原创），
+    ///     bit1/bit2（Original_Auth / Member）不下发；
+    ///   · 定时发表 + Unix 秒 <c>effectiveTime</c>；立即**不下发**该键；
     ///   · 未选标注时 <c>tagInfo</c> 整个键不出现（定时/图文两次抓包都没有）；
+    ///   · 未参加活动时 <c>objectDesc.event</c> 是 <c>{}</c>；参加时是
+    ///     <c>{eventTopicId, eventName, eventCreatorNickname}</c>（wire-2026-11-11 §1）；
+    ///   · @好友：<c>objectDesc.mentionedUser = [{nickname}]</c>，正文末尾补 <c>@昵称 </c>
+    ///     （结尾空格；wire-2026-11-11 §5）；
     ///   · 无位置时 <c>objectDesc.location</c> 整个键不出现；
-    ///   · 无链接时 <c>extReading</c> 是 <c>{}</c>；有链接时页面内部形态是 <c>{link, title, type}</c>
-    ///     （type: 1 公众号 / 2 游戏 / 3 红包，见页面 bundle 的 LinkType 枚举）；
+    ///   · 无链接时 <c>extReading</c> 是 <c>{}</c>；有链接时 <c>{link, title, urlType}</c>
+    ///     （urlType: 1 公众号文章 / 2 红包封面 / 0 未选，wire-2026-11-11 §3）；
     ///   · 短标题 <c>[{shortTitle}]</c>，不足 6 字页面直接报错 → 本项目**不下发**该字段。
     /// </summary>
     public static Dictionary<string, object?> BuildPostBody(
@@ -133,10 +142,35 @@ public sealed class WechatVideoContentService
         if (topics.Count > 0)
             descWithTopics = descBase + " " + string.Join(" ", topics.Select(t => $"#{t}")) + " ";
 
+        // @好友（2026-11-11 B2 §5）：正文末尾补「@昵称 」（**结尾带空格**，与页面内联节点
+        // 序列化同形）。正文里已有的 @昵称 不重复补 —— 手写与选人两条路都保留；
+        // 手写在句尾的（后面没空格）只补一个分隔空格，不重复昵称。
+        var descWithMentions = descWithTopics;
+        if (request.MentionUsers is { Count: > 0 } mentionUsers)
+        {
+            foreach (var nickname in mentionUsers)
+            {
+                var nick = (nickname ?? "").Trim();
+                if (nick.Length == 0) continue;
+                var token = "@" + nick;
+
+                var boundary = FindMentionBoundary(descWithMentions, token);
+                if (boundary >= 0)
+                {
+                    if (boundary == descWithMentions.Length) descWithMentions += " ";
+                    continue;
+                }
+
+                if (descWithMentions.Length > 0 && !descWithMentions.EndsWith(' '))
+                    descWithMentions += " ";
+                descWithMentions += token + " ";
+            }
+        }
+
         // 构建 topic XML（finderTopicInfo）
         var topicXmlParts = new List<string>
         {
-            $"<value0><![CDATA[{descWithTopics}]]></value0>",
+            $"<value0><![CDATA[{descWithMentions}]]></value0>",
         };
         foreach (var t in topics)
             topicXmlParts.Add($"<value1><topic><![CDATA[#{t}#]]></topic></value1>");
@@ -155,7 +189,7 @@ public sealed class WechatVideoContentService
         var objectDesc = new Dictionary<string, object?>
         {
             ["mpTitle"] = "",
-            ["description"] = descWithTopics,
+            ["description"] = descWithMentions,
             ["extReading"] = BuildExtReading(request),
             ["mediaType"] = 4, // video
             ["topic"] = new Dictionary<string, object?>
@@ -164,8 +198,21 @@ public sealed class WechatVideoContentService
                 ["collectionId"] = request.CollectionId ?? "",
                 ["collectionName"] = request.CollectionName ?? "",
             },
-            ["event"] = new { },
-            ["mentionedUser"] = Array.Empty<object>(),
+            // 官方活动：未参加 = {}；参加 = 三件套原样（2026-11-11 B2 §1.2）
+            ["event"] = request.Event is { } ev
+                ? new Dictionary<string, object?>
+                {
+                    ["eventTopicId"] = ev.EventTopicId,
+                    ["eventName"] = ev.EventName ?? "",
+                    ["eventCreatorNickname"] = ev.EventCreatorNickname ?? "",
+                }
+                : new Dictionary<string, object?>(),
+            // @好友：只带昵称（2026-11-11 B2 §5.3；username 不进提交体）
+            ["mentionedUser"] = request.MentionUsers is { Count: > 0 } muted
+                ? muted.Where(n => !string.IsNullOrWhiteSpace(n))
+                    .Select(n => new Dictionary<string, object?> { ["nickname"] = n.Trim() })
+                    .ToArray()
+                : Array.Empty<object>(),
             ["media"] = new[]
             {
                 new Dictionary<string, object?>
@@ -236,8 +283,10 @@ public sealed class WechatVideoContentService
                 ["fileSize"] = request.FileSize,
                 ["uploadCost"] = (uploadCdnEnd - uploadCdnStart) * 100,
             },
-            // 立即 1 / 定时 0（2026-11-05 抓包；旧实现恒 0）
-            ["postFlag"] = request.ScheduledAt.HasValue ? 0 : 1,
+            // 声明位域：bit0 = 声明原创（2026-11-11 B2 A/B 实测，wire-2026-11-11 §2）。
+            // ⚠️ 立即 / 定时**不在这里**表达 —— 定时只靠 effectiveTime（见下）。
+            // 旧实现「立即 1 / 定时 0」会把每条立即发布的视频都当成声明原创，已修。
+            ["postFlag"] = request.IsOriginal ? 1 : 0,
             ["mode"] = 1,
             ["clientid"] = Guid.NewGuid().ToString(),
         };
@@ -258,6 +307,23 @@ public sealed class WechatVideoContentService
     }
 
     /// <summary>
+    /// 找正文里「@昵称」的命中位置（返回命中的**下一个**字符下标；没命中返回 -1）。
+    /// 只认后面是空白 / 标点 / 行尾的命中 —— 防止「@知鸭」误吞「@知鸭鸭」。
+    /// </summary>
+    private static int FindMentionBoundary(string text, string token)
+    {
+        var idx = 0;
+        while ((idx = text.IndexOf(token, idx, StringComparison.Ordinal)) >= 0)
+        {
+            var end = idx + token.Length;
+            if (end == text.Length || char.IsWhiteSpace(text[end]) || char.IsPunctuation(text[end]))
+                return end;
+            idx = end;
+        }
+        return -1;
+    }
+
+    /// <summary>
     /// 短标题规范化：trim → 不足 6 字返回 null（不下发）、超过 20 字截断。
     /// 页面实测 5 字报「标题至少6个字」，会把整条发布拦下。
     /// </summary>
@@ -271,7 +337,8 @@ public sealed class WechatVideoContentService
     /// <summary>
     /// 扩展链接卡片（<c>objectDesc.extReading</c>）。
     /// 无链接 = <c>{}</c>（2026-11-05 抓包三次全是 <c>{}</c>）；
-    /// 有链接 = <c>{link, title, type}</c>（页面 bundle：type 1 公众号 / 2 游戏 / 3 红包）。
+    /// 有链接 = <c>{link, title, urlType}</c> —— **键名是 urlType 不是 type**，
+    /// 枚举 1 = 公众号文章 / 2 = 红包封面 / 0 = 未选（wire-2026-11-11 §3 草稿提交体裁剪）。
     /// </summary>
     private static object BuildExtReading(WechatVideoPublishRequest request)
     {
@@ -282,7 +349,7 @@ public sealed class WechatVideoContentService
         {
             ["link"] = request.ExternalLink,
             ["title"] = request.ExternalLinkTitle ?? "",
-            ["type"] = request.ExternalLinkType,
+            ["urlType"] = request.ExternalLinkType,
         };
     }
 
@@ -474,11 +541,44 @@ public sealed class WechatVideoContentService
     }
 
     /// <summary>
-    /// 发布成功后回查 post_list，按 clipKey（urlCdnTaskId）匹配拿到 objectId。
-    /// 微信 post_create 不直接返回 objectId，需从列表回查。
+    /// 诊断：原样返回 <c>post_list</c> 的 <c>data</c> JSON —— <c>--probe-wechat-list</c> 用。
+    /// 业务路径不要用；它存在的意义是回答「新发的作品进没进列表 / urlCdnTaskId 还对不对得上
+    /// clipKey / 官方活动挂上没有」这类**字段核对**问题（与 <see cref="PostListItem"/> 的
+    /// 半成品映射无关，直接看平台原样返回）。
     /// </summary>
+    public async Task<string?> ListRawAsync(
+        string cookie,
+        string deviceId,
+        int page = 1,
+        int pageSize = 20,
+        int userpageType = 11,
+        CancellationToken ct = default)
+    {
+        using var client = new WechatVideoApiClient(_options, cookie, deviceId, uin: Uin, finderId: FinderId);
+        var body = new Dictionary<string, object?>
+        {
+            ["pageSize"] = pageSize,
+            ["currentPage"] = page,
+            ["userpageType"] = userpageType,
+            ["stickyOrder"] = true,
+        };
+        var resp = await client.PostAsync("/post/post_list", body,
+            "https://channels.weixin.qq.com/micro/content/post/list", ct);
+        return resp.ErrCode == 0 ? resp.Data.GetRawText() : null;
+    }
+
+    /// <summary>
+    /// 发布成功后回查 post_list 拿到 objectId。微信 post_create 不直接返回 objectId，需从列表回查。
+    ///
+    /// 两种匹配锚点（2026-11-14 实测修正）：
+    ///   · <c>desc.media[0].urlCdnTaskId == clipKey</c> —— 2026-11-05 抓包里的形状；
+    ///   · <c>desc.media[0].md5sum == md5</c> —— **当前平台（2026-11-14）列表项里已没有
+    ///     <c>urlCdnTaskId</c> 这个键**，只按 clipKey 匹配永远查不到（objectId 恒 null →
+    ///     report 500 卡住队列行）。列表按时间倒序，第一个 md5 命中就是刚发的那条。
+    /// </summary>
+    /// <param name="md5">clip_video_result 返回的成片 MD5（与列表项 media[0].md5sum 同源）</param>
     public async Task<string?> FindObjectIdByClipKeyAsync(
-        string cookie, string deviceId, string clipKey,
+        string cookie, string deviceId, string clipKey, string? md5 = null,
         int maxPages = 3, CancellationToken ct = default)
     {
         for (int page = 1; page <= maxPages; page++)
@@ -502,25 +602,37 @@ public sealed class WechatVideoContentService
             foreach (var item in list.EnumerateArray())
             {
                 var oid = item.TryGetProperty("objectId", out var idEl) ? idEl.GetString() : null;
-                var taskId = "";
+                if (string.IsNullOrWhiteSpace(oid)) continue;
+
+                string? taskId = null, itemMd5 = null;
                 if (item.TryGetProperty("desc", out var desc)
                     && desc.TryGetProperty("media", out var media)
+                    && media.ValueKind == JsonValueKind.Array
                     && media.GetArrayLength() > 0)
                 {
-                    taskId = media[0].TryGetProperty("urlCdnTaskId", out var tId) ? tId.GetString() ?? "" : "";
+                    taskId = media[0].TryGetProperty("urlCdnTaskId", out var tId) ? tId.GetString() : null;
+                    itemMd5 = media[0].TryGetProperty("md5sum", out var md5El) ? md5El.GetString() : null;
                 }
-                if (taskId == clipKey && !string.IsNullOrWhiteSpace(oid))
+
+                var byClipKey = !string.IsNullOrEmpty(taskId) && taskId == clipKey;
+                var byMd5 = !string.IsNullOrWhiteSpace(md5) && !string.IsNullOrWhiteSpace(itemMd5)
+                            && string.Equals(itemMd5, md5, StringComparison.OrdinalIgnoreCase);
+                if (byClipKey || byMd5)
                 {
-                    LogInfo("[WechatVideo] Found objectId by clipKey={ClipKey}: {ObjectId}", clipKey, oid);
+                    LogInfo("[WechatVideo] Found objectId by {Anchor}={Key}: {ObjectId}",
+                        byClipKey ? "clipKey" : "md5",
+                        byClipKey ? clipKey : md5, oid);
                     return oid;
                 }
             }
 
             // 检查是否还有下一页
-            if (!doc.RootElement.TryGetProperty("continueFlag", out var cf) || !cf.GetBoolean())
+            if (!doc.RootElement.TryGetProperty("continueFlag", out var cf)
+                || cf.ValueKind != JsonValueKind.True)
                 break;
         }
-        LogWarn("[WechatVideo] ObjectId not found for clipKey={ClipKey} after {Pages} pages", clipKey, maxPages);
+        LogWarn("[WechatVideo] ObjectId not found for clipKey={ClipKey} md5={Md5} after {Pages} pages",
+            clipKey, md5 ?? "-", maxPages);
         return null;
     }
 
@@ -743,8 +855,13 @@ public sealed record WechatVideoPublishRequest(
     /// <summary>短标题（不足 6 字不下发、超过 20 字截断）</summary>
     string? ShortTitle = null,
 
-    /// <summary>原创标记（0=非原创）</summary>
+    /// <summary>原创标记 —— 顶层 <c>originalFlag</c>，实测恒 0（2026-11-11 B2：勾没勾声明都是 0；
+    /// 真正的原创位在 <see cref="IsOriginal"/> → <c>postFlag</c> bit0）</summary>
     int OriginalFlag = 0,
+
+    /// <summary>声明原创 —— <c>postFlag</c> bit0（2026-11-11 B2 A/B 实测：
+    /// 走完「声明原创」确认弹窗后 0→1，取消回落 0）</summary>
+    bool IsOriginal = false,
 
     /// <summary>内容类型（0=默认）</summary>
     int ObjectType = 0,
@@ -755,8 +872,17 @@ public sealed record WechatVideoPublishRequest(
     /// <summary>链接卡片标题 —— extReading.title（选填）</summary>
     string? ExternalLinkTitle = null,
 
-    /// <summary>链接类型 —— extReading.type（1 公众号 / 2 游戏 / 3 红包）</summary>
+    /// <summary>链接类型 —— extReading.urlType（1 公众号文章 / 2 红包封面；wire-2026-11-11 §3）</summary>
     int ExternalLinkType = 1,
+
+    /// <summary>官方活动 —— <c>objectDesc.event</c>（null/空 = 不参加活动，下发 <c>{}</c>）。
+    /// 形状 <c>{eventTopicId, eventName, eventCreatorNickname}</c>（2026-11-11 B2 §1）
+    /// </summary>
+    WechatVideoEvent? Event = null,
+
+    /// <summary>@好友昵称 —— <c>objectDesc.mentionedUser = [{nickname}]</c>，同时正文末尾补
+    /// <c>@昵称 </c>（2026-11-11 B2 §5；平台只认昵称）</summary>
+    IReadOnlyList<string>? MentionUsers = null,
 
     /// <summary>定时发布时间（null=立即）</summary>
     DateTime? ScheduledAt = null,
@@ -764,6 +890,15 @@ public sealed record WechatVideoPublishRequest(
     /// <summary>视频标注信息</summary>
     object? TagInfo = null
 );
+
+/// <summary>
+/// 官方活动 —— 发布体 <c>objectDesc.event</c> 的三件套（2026-11-11 B2 抓包 §1）。
+/// 三项都来自 <c>post/post_search_event</c> 的选中项，平台不再按 ID 二次查询。
+/// </summary>
+public sealed record WechatVideoEvent(
+    string EventTopicId,
+    string? EventName = null,
+    string? EventCreatorNickname = null);
 
 /// <summary>发布前封面来源（用户封面 / 视频首帧 / 占位图兜底）</summary>
 public enum WechatVideoCoverSource

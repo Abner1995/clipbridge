@@ -50,8 +50,9 @@ public interface ITagSuggestService
 /// <summary>
 /// 官方活动列表 —— 关联活动增加曝光。
 ///
-/// 支持面（2026-11-06 抓包）：抖音 / 快手 / 小红书 / B站；头条视频无活动接口、
-/// 视频号未抓到 → <see cref="Supported"/> = false 且 UI 不显示活动块（不误导用户）。
+/// 支持面：抖音 / 快手 / 小红书 / B站（2026-11-06 抓包）+
+/// 视频号（2026-11-11 B2 抓到 <c>post/post_search_event</c>）；头条视频无活动接口 →
+/// <see cref="Supported"/> = false 且 UI 不显示活动块（不误导用户）。
 ///
 /// 同 <see cref="ITopicSuggestService"/>：永不抛（用户取消除外），失败不阻塞发布。
 /// </summary>
@@ -92,7 +93,7 @@ public static class TopicServiceCatalog
                 "未知平台，没有话题服务"),
         };
 
-    /// <summary>取该平台的活动服务（头条/视频号返回 Supported=false 的实现）。</summary>
+    /// <summary>取该平台的活动服务（头条返回 Supported=false 的实现；视频号走活动搜索）。</summary>
     public static IActivityListService CreateActivityService(string platformKey, PlatformOptions options)
         => platformKey switch
         {
@@ -128,7 +129,7 @@ public static class TopicServiceCatalog
 
     /// <summary>
     /// 平台是否有**任何**官方活动能力（UI 显示「官方活动」块的条件）。
-    /// 头条/视频号 false —— 卡片上不出现活动块，避免误以为漏了。
+    /// 头条 false —— 卡片上不出现活动块，避免误以为漏了。
     /// </summary>
     public static bool SupportsActivities(string platformKey) =>
         CapabilityOf(platformKey).SupportsActivities;

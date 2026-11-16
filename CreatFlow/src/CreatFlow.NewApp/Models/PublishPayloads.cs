@@ -63,6 +63,14 @@ public sealed record DouyinPayload : PublishPayloadBase
     /// <summary>热点词（与声明正交，走 item.common）</summary>
     public string? HotSentence { get; init; }
 
+    /// <summary>
+    /// 添加标签（影视演艺 / 游戏手柄 / 标记万物 / 小程序，单选）—— 执行端转
+    /// <c>item.anchor.anchor</c> 的字符串化 JSON（<c>DouyinAnchorService.BuildAnchorJson</c>）；
+    /// 小程序额外带 <c>anchor_business_type</c> + <c>anchor_content</c>。
+    /// 与 <see cref="Location"/> 互斥（页面同一个 anchor）：两者都在时按标签发布。
+    /// </summary>
+    public DouyinAnchorRef? Anchor { get; init; }
+
     /// <summary>话题的 API 形态（text_extra JSON 串 —— **带真实偏移量**，见 PublishPayloadBuilder.BuildDouyinTopics）</summary>
     public string? TextExtra { get; init; }
     /// <summary>话题的 challenges JSON 串</summary>
@@ -75,12 +83,21 @@ public sealed record DouyinPayload : PublishPayloadBase
     public int? CoverCropWidth { get; init; }
     /// <summary>自定义封面裁剪高 —— <c>cover.custom_cover_image_height</c></summary>
     public int? CoverCropHeight { get; init; }
+    /// <summary>
+    /// 横版 4:3 封面（本地图片路径）—— 执行端上传后落
+    /// <c>cover.horizontal_custom_cover_image_uri</c>（2026-11-11 B1 抓包）。
+    /// 竖版 3:4 仍由全局主封面（<c>poster</c> + 裁剪宽高）承担。
+    /// </summary>
+    public string? CoverLandscapePath { get; init; }
     /// <summary>封面工具信息（原始 JSON 串）—— <c>cover.cover_tools_info</c></summary>
     public string? CoverToolsInfo { get; init; }
     /// <summary>封面工具扩展信息（原始 JSON 串）—— <c>cover.cover_tools_extend_info</c></summary>
     public string? CoverToolsExtendInfo { get; init; }
 
     // ── 长尾（1.3 抖音表）──
+    /// <summary>@好友（结构化，2026-11-11）—— 组装时已转成正文 @昵称 + <see cref="Mentions"/>
+    /// + <see cref="TextExtra"/>；此处保留快照供诊断/重试显示。</summary>
+    public IReadOnlyList<DouyinMentionRef>? MentionUsers { get; init; }
     /// <summary>@ 用户（原始 JSON 数组串）—— <c>common.mentions</c></summary>
     public string? Mentions { get; init; }
     /// <summary>互动贴纸（原始 JSON 数组串）—— <c>common.interaction_stickers</c></summary>
@@ -159,14 +176,35 @@ public sealed record KuaishouPayload : PublishPayloadBase
     /// <summary>项目 ID —— <c>projectId</c></summary>
     public string? ProjectId { get; init; }
 
-    /// <summary>章节（**原始 JSON 数组串**）—— <c>chapters</c>；元素结构未抓到（2026-11-05 恒为 []），先透传</summary>
-    public string? ChaptersJson { get; init; }
-    /// <summary>共创用户（**原始 JSON 数组串**）—— <c>coPublishUser</c>；元素结构未抓到，先透传</summary>
+    /// <summary>章节 —— <c>chapters</c>（B3 抓包 2026-11-11：<c>{ timeStart: 秒, title }</c>）</summary>
+    public List<PlatformChapter>? Chapters { get; init; }
+    /// <summary>
+    /// 关联热点 ID —— <c>hotspotId</c>（数字）+ <c>hotspotConnectType: 1</c>
+    /// （B3 抓包 2026-11-11；null = 两个键都不下发）。
+    /// </summary>
+    public long? HotspotId { get; init; }
+    /// <summary>
+    /// 作者服务 · 关联小程序 —— <c>associateTasks</c>（2026-11-15 真页面抓包）。
+    /// null = 不关联（这个键都不下发）。
+    /// </summary>
+    public KuaishouAssociateRef? AssociateTask { get; init; }
+    /// <summary>
+    /// 共创用户（结构化，2026-11-15 页面 bundle 定案）—— <c>coPublishUser</c> 数组元素
+    /// <c>{userId, userName, userHead, coPublishRole}</c>。非空时优先于原始 JSON。
+    /// </summary>
+    public List<KuaishouCoPublishRef>? CoPublishUsers { get; init; }
+    /// <summary>（旧数据兼容）共创用户原始 JSON 数组串；结构化列表为空时才透传</summary>
     public string? CoPublishUsersJson { get; init; }
     /// <summary>共创角色 —— <c>coPublishRole</c>（抓包默认 0）</summary>
     public int? CoPublishRole { get; init; }
     /// <summary>官方活动 ID —— <c>activityIds</c>（数组；数字 ID 序列化成 JSON 数字）</summary>
     public List<string>? ActivityIds { get; init; }
+
+    /// <summary>
+    /// @好友（2026-11-15 submit 抓包）—— 落点不是独立字段：执行时把 caption 里的
+    /// <c>@昵称</c> 换成纯文本 token <c>@昵称(O&lt;userId&gt;)</c>，并对每人先调 <c>at/choose</c>。
+    /// </summary>
+    public List<KuaishouMentionRef>? MentionUsers { get; init; }
 }
 
 /// <summary>小红书载荷 —— <c>note/update</c>（字段清单见进度表 §1.3 小红书表）。</summary>
@@ -220,7 +258,44 @@ public sealed record XhsPayload : PublishPayloadBase
     public bool? ChapterSyncText { get; init; }
     /// <summary>PK 封面业务关联（原始 JSON 数组串）—— <c>video_info.pk_cover_biz_relations</c></summary>
     public string? PkCoverBizRelations { get; init; }
+
+    /// <summary>群聊绑定 —— <c>business_binds.groupBind</c>（null = 不关联）</summary>
+    public XhsGroupRef? GroupBind { get; init; }
+
+    /// <summary>PK 封面开关 —— 开启后执行端现传 <see cref="PkCoverImages"/> 并组 relations</summary>
+    public bool? PkCoverEnabled { get; init; }
+
+    /// <summary>PK 封面附加图片（本地路径；主封面自动用发布封面/首帧）</summary>
+    public List<string>? PkCoverImages { get; init; }
+
+    /// <summary>视频标记（标记地点 / 标记朋友）—— <c>video_info.timelines</c></summary>
+    public List<XhsVideoMarker>? Markers { get; init; }
+
+    /// <summary>添加路线 —— hash_tag 的 <c>map_traver</c> + <c>biz_relations</c> 的 POI_MAP_TRAVEL</summary>
+    public XhsRouteRef? Route { get; init; }
+
+    // ── 互动组件（A4，2026-11-11）──
+    /// <summary>投票问题 —— 发布前 create_interact 建 widget，再挂进 <c>common.hash_tag</c></summary>
+    public string? PollQuestion { get; init; }
+    /// <summary>投票选项（2~5 条；空行由发布端滤掉）</summary>
+    public List<string>? PollOptions { get; init; }
+
+    // ── 引用笔记 + 关联活动（A5/A6，2026-11-11）──
+    /// <summary>引用笔记 —— <c>business_binds.optionRelationList</c> 追加 <c>REF_POST</c></summary>
+    public XhsNoteRef? ReferencedNote { get; init; }
+    /// <summary>官方活动 —— 同一数组追加 <c>ACTIVITY_COMPONENT</c>（多个活动同一 relationList）</summary>
+    public List<XhsActivityRef>? Activities { get; init; }
 }
+
+/// <summary>
+/// 小红书活动载荷（A6）—— 只带 <c>ACTIVITY_COMPONENT.extraInfo</c> 需要的四项。
+/// 时间是 Unix 毫秒（活动列表接口同款）；null = 快照缺该项，不写。
+/// </summary>
+public sealed record XhsActivityRef(
+    string Id,
+    string Name,
+    long? StartTimeMs = null,
+    long? EndTimeMs = null);
 
 /// <summary>小红书话题引用（平台侧 ID + 名称）</summary>
 public sealed record XhsTopicRef(string Id, string Name, string Type = "topic");
@@ -236,6 +311,13 @@ public sealed record WechatVideoPayload : PublishPayloadBase
 {
     /// <summary>短标题（视频号标题映射到 ShortTitle，**上限 20 字符**）</summary>
     public string? ShortTitle { get; init; }
+
+    /// <summary>
+    /// 声明原创 —— wire 落 <c>postFlag</c> bit0（2026-11-11 B2 A/B 实测）。
+    /// 旧实现把 <c>postFlag</c> 当「立即 1 / 定时 0」，导致每条立即发布的视频都被声明原创；
+    /// 定时只由 <c>effectiveTime</c> 表达。
+    /// </summary>
+    public bool IsOriginal { get; init; }
 
     /// <summary>合集 ID</summary>
     public string? CollectionId { get; init; }
@@ -255,6 +337,19 @@ public sealed record WechatVideoPayload : PublishPayloadBase
     /// </summary>
     public List<string>? Topics { get; init; }
 
+    /// <summary>
+    /// 官方活动 —— <c>objectDesc.event</c> 的三件套（2026-11-11 B2 抓包）。
+    /// null = 不参加活动（提交体下发 <c>event: {}</c>）；
+    /// 只有从平台活动列表选中的活动才带得全（活动名 / 发起人来自搜索接口）。
+    /// </summary>
+    public WechatVideoEventRef? Event { get; init; }
+
+    /// <summary>
+    /// @好友昵称 —— <c>objectDesc.mentionedUser = [{nickname}]</c>（2026-11-11 B2 §5）。
+    /// 平台只认昵称；正文末尾的 <c>@昵称 </c> 由执行端补（与话题同口径，避免两处各写一遍）。
+    /// </summary>
+    public List<string>? MentionUsers { get; init; }
+
     /// <summary>合集内排序 —— <c>mod_collection_feed</c>（发布后调）</summary>
     public int? CollectionOrder { get; init; }
 
@@ -264,7 +359,8 @@ public sealed record WechatVideoPayload : PublishPayloadBase
     /// <summary>链接卡片标题 —— <c>objectDesc.extReading.title</c></summary>
     public string? ExternalLinkTitle { get; init; }
 
-    /// <summary>链接类型 —— <c>objectDesc.extReading.type</c>（1 公众号 / 2 游戏 / 3 红包）</summary>
+    /// <summary>链接类型 —— <c>objectDesc.extReading.urlType</c>（1 公众号文章 / 2 红包封面；
+    /// wire-2026-11-11 §3。旧文档写的「2 游戏 / 3 红包」与页面下拉不符）</summary>
     public int ExternalLinkType { get; init; } = 1;
 
     /// <summary>媒体卡片样式 —— <c>objectDesc.media[].cardShowStyle</c>（抓包恒 2）</summary>
@@ -323,7 +419,8 @@ public sealed record BilibiliPayload : PublishPayloadBase
     /// <summary>版权 —— <c>copyright</c>（转载 2 / 自制 1 / 抓包默认 3，含义待实账号探针确认）</summary>
     public int Copyright { get; init; } = 3;
 
-    /// <summary>创作声明 —— <c>creation_statement.id</c>（0 无需标注 / 1 AI / 2 虚构 / 3 营销）</summary>
+    /// <summary>创作声明 —— <c>creation_statement.id</c>（-1 无需标注 / 1 AI / 2 虚构 / 3 营销 /
+    /// 4 个人观点 / -2 转载；null 或 0 = 不下发该键）</summary>
     public int? CreationStatementId { get; init; }
 
     /// <summary>动态文案 —— <c>dynamic</c>（抓包默认空串）</summary>
@@ -335,10 +432,47 @@ public sealed record BilibiliPayload : PublishPayloadBase
     /// <summary>水印 —— <c>watermark.state</c>（wire 1/0；页面默认开）</summary>
     public bool Watermark { get; init; } = true;
 
-    /// <summary>开启字幕 —— <c>subtitle.open</c>（wire 0/1）</summary>
+    /// <summary>开启字幕 —— <c>subtitle.open</c>（页面恒下发占位 0，**不是开关**）</summary>
     public bool SubtitleOpen { get; init; }
     /// <summary>字幕语言 —— <c>subtitle.lan</c>（抓包默认空串）</summary>
     public string? SubtitleLan { get; init; }
+
+    /// <summary>
+    /// 本地上传的字幕文件（<c>.srt</c> 绝对路径）—— 2026-11-15 B5：
+    /// 执行端在拿到 cid 后两步上传（upload/web/image → subtitle/draft/preSave），
+    /// 再设 <c>videos[0].pre_subtitle=true</c>。null = 不传字幕。
+    /// </summary>
+    public string? SubtitleFile { get; init; }
+
+    /// <summary>上传字幕的语言代码（preSave <c>files[].lan</c>；空 = zh）</summary>
+    public string? SubtitleFileLan { get; init; }
+
+    /// <summary>
+    /// 互动引导卡片样式（null = 不建卡片）：2 = 三连+关注 / 1 = 仅三连 / 0 = 仅关注。
+    /// 执行端在 cid 上建卡片，再设 <c>videos[0].pre_command=true</c>。
+    /// </summary>
+    public int? GuideCardFollowType { get; init; }
+
+    /// <summary>卡片起始时间（秒；0 = 视频开头）</summary>
+    public int GuideCardStartSeconds { get; init; }
+
+    // ── 卡片 v2：关联视频 / 投票弹幕（2026-11-15 B5.2 补抓）──
+
+    /// <summary>关联视频目标 BVID（create 体字段 <c>oid</c>）；null = 不建这张卡片</summary>
+    public string? RelatedVideoBvid { get; init; }
+    /// <summary>关联视频描述（<c>msg</c>）</summary>
+    public string? RelatedVideoMsg { get; init; }
+    /// <summary>关联视频卡片起始时间（秒）</summary>
+    public int RelatedVideoStartSeconds { get; init; }
+
+    /// <summary>投票问题（null = 不建投票卡片）</summary>
+    public string? VoteQuestion { get; init; }
+    /// <summary>投票选项（2~4 个，按顺序落 optionA…optionD）</summary>
+    public List<string>? VoteOptions { get; init; }
+    /// <summary>投票卡片起始时间（秒）</summary>
+    public int VoteStartSeconds { get; init; }
+    /// <summary>投票持续时间（秒；= 时间轴选区长度，wire 的 <c>duration</c> 毫秒）</summary>
+    public int VoteDurationSeconds { get; init; } = 7;
 
     /// <summary>
     /// 允许评论 —— 执行时取反成 <c>up_close_reply</c>（**B站是「关闭」语义，与统一语义相反**）。
@@ -386,7 +520,8 @@ public sealed record BilibiliTopicRef(string Id, string Name, long MissionId = 0
 ///     竖版没有简介（`Abstract`）与定时（`TimerTime`），这里直接置空；
 ///   · `HideInfo.HideType` 由基类 <see cref="PublishPayloadBase.Visibility"/> 在执行时经
 ///     <see cref="Services.VisibilityMapping.Toutiao"/> 派生；
-///   · 作品声明提交字段名未抓到 → 载荷仍带语义，**v1 不下发**（预检在阶段 5 提示）。
+///   · 作品声明 → `ComplianceInfo`（A1，2026-11-10 抓包）：组装时把全局语义或平台覆盖
+///     解析成 `ComplianceType`，执行端逐字下发。
 /// </summary>
 public sealed record ToutiaoPayload : PublishPayloadBase
 {
@@ -398,6 +533,40 @@ public sealed record ToutiaoPayload : PublishPayloadBase
 
     /// <summary>3 = 横版 / 6 = 竖版（提交时按视频宽高算好）</summary>
     public int VideoType { get; init; } = 3;
+
+    /// <summary>
+    /// 作品声明 —— <c>ComplianceInfo.ComplianceType</c>（null = 不传）。
+    /// 0 不声明 / 1 自行拍摄 / 2 取自站外 / 3 AI / 5 个人观点 / 6 虚构 / 7 投资观点 / 8 健康医疗。
+    /// 组装时已把「跟随全局」解析成具体值；平台专有覆盖（<see cref="ToutiaoExtras.DeclarationOverride"/>）优先。
+    /// </summary>
+    public int? ComplianceType { get; init; }
+    /// <summary>自行拍摄 · 城市 —— <c>CreativeInfo.City</c></summary>
+    public string? ComplianceCity { get; init; }
+    /// <summary>自行拍摄 · 拍摄时间（毫秒）—— <c>CreativeInfo.CreativeTime</c></summary>
+    public long? ComplianceTimeMs { get; init; }
+
+    /// <summary>
+    /// 视频生成图文 —— <c>VideoTransArticleFlag</c>（A2，2026-11-10 抓包）：
+    /// null = 不生成（字段不下发）；1 = 与视频同时发布；2 = 仅保存草稿。
+    /// </summary>
+    public int? VideoTransArticleFlag { get; init; }
+
+    /// <summary>
+    /// 互动贴纸 · 关注引导（A3，2026-11-10 抓包）：true = 发布前现建贴纸并注入发布体；
+    /// 创建失败非致命（不投贴纸，继续发布）。
+    /// </summary>
+    public bool FollowSticker { get; init; }
+    /// <summary>贴纸开始秒 —— null = 默认 0</summary>
+    public int? StickerStartSec { get; init; }
+    /// <summary>贴纸持续秒 —— null = 默认 5</summary>
+    public int? StickerDurationSec { get; init; }
+
+    /// <summary>
+    /// 发布类型 —— <c>PublishType</c>：null = 立即发布（执行端按 1），0 = 存草稿。
+    /// 页面「存草稿」才发 0；正常发布恒为 1。目前只有诊断探针用它验证
+    /// 「视频生成图文 = 仅保存草稿」—— 视频本身不入草稿时该值没有实际意义。
+    /// </summary>
+    public int? PublishType { get; init; }
 
     /// <summary>原创 —— <c>ClaimOrigin</c></summary>
     public bool IsOriginal { get; init; }

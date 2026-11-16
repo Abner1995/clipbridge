@@ -60,6 +60,138 @@ public sealed class XhsCollectionService :
         return new CollectionListResult(items, hasMore, nextCursor);
     }
 
+    // ═══ 速览合集（发布页「添加短剧」下拉）═══
+
+    /// <summary>
+    /// 速览合集列表 —— <c>GET /api/sns/v1/note/collection/pc/list?cursor=&amp;type=1&amp;mode=detail</c>。
+    ///
+    /// 与普通合集 <c>list_v2</c> 是**两个接口**（页面 project-publish-vue 的
+    /// <c>GET_SKETCH_LIST</c> 原样：这个走 GET + <c>type=1&amp;mode=detail</c>，
+    /// 那个走 POST + <c>need_type_list</c>），别混用。
+    /// 发布时选中项写 <c>business_binds.noteSketchCollectionBind.id</c>。
+    /// </summary>
+    /// <param name="cookie">Cookie</param>
+    /// <param name="cursor">翻页游标（首页传 null / 空串）</param>
+    /// <param name="ct">取消令牌</param>
+    public async Task<SketchCollectionPage> ListSketchCollectionsAsync(
+        string cookie, string? cursor = null, CancellationToken ct = default)
+    {
+        using var client = CreateClient(cookie);
+
+        var query = new Dictionary<string, string>
+        {
+            ["cursor"] = cursor ?? "",
+            ["type"] = "1",
+            ["mode"] = "detail",
+        };
+
+        var root = await client.GetEdithRawAsync(
+            "/api/sns/v1/note/collection/pc/list", query, ct);
+
+        var page = ParseSketchCollections(root);
+        _logger?.LogInformation(
+            "XHS sketch collections: {Count} 条 (cursor={Cursor})", page.Items.Count, cursor ?? "");
+
+        // 0 条时把原始响应留一条 debug 日志 —— 区分「账号真没有速览合集」与「响应形状变了」
+        if (page.Items.Count == 0)
+        {
+            Serilog.Log.Debug("[XhsCollection] sketch 空结果原始响应：{Raw}",
+                page.RawJson.Length > 2000 ? page.RawJson[..2000] : page.RawJson);
+        }
+
+        return page;
+    }
+
+    /// <summary>
+    /// 解析速览合集列表。页面 <c>transform:true</c> 之后直接拿到数组
+    /// （<c>t.map(e =&gt; ({value: e.id, label: e.name, disabled: e.noteNum &gt;= e.totalEpisodes}))</c>），
+    /// 但裸响应也可能套一层 <c>data</c> 或某个 list 键 —— 几种形状都认，认不出就返回空页
+    /// （保留 <see cref="SketchCollectionPage.RawJson"/> 供探针排障）。
+    /// </summary>
+    internal static SketchCollectionPage ParseSketchCollections(JsonElement root)
+    {
+        var items = new List<XhsSketchCollection>();
+        var nextCursor = "";
+
+        if (FindSketchArray(root) is { } arr)
+        {
+            foreach (var el in arr.EnumerateArray())
+            {
+                if (el.ValueKind != JsonValueKind.Object) continue;
+
+                var id = StrOf(el, "id", "collection_id", "collectionId");
+                if (string.IsNullOrWhiteSpace(id)) continue;
+
+                items.Add(new XhsSketchCollection(
+                    id,
+                    StrOf(el, "name", "collection_name") ?? "",
+                    IntOf(el, "noteNum", "note_num") ?? 0,
+                    IntOf(el, "totalEpisodes", "total_episodes") ?? 0));
+
+                // 页面把**最后一条**的 cursor 当下一页游标（空 = 没有下一页）
+                if (StrOf(el, "cursor") is { Length: > 0 } c) nextCursor = c;
+            }
+        }
+
+        return new SketchCollectionPage
+        {
+            Items = items,
+            NextCursor = nextCursor,
+            RawJson = root.GetRawText(),
+        };
+    }
+
+    private static JsonElement? FindSketchArray(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Array) return root;
+        if (root.ValueKind != JsonValueKind.Object) return null;
+
+        if (root.TryGetProperty("data", out var data))
+        {
+            if (data.ValueKind == JsonValueKind.Array) return data;
+            if (data.ValueKind == JsonValueKind.Object && FindListInObject(data) is { } nested)
+                return nested;
+        }
+
+        return FindListInObject(root);
+
+        static JsonElement? FindListInObject(JsonElement obj)
+        {
+            // sketch_collection_list 是页面语义名；其余是同一接口可能的下发键，
+            // 按「数组 + 有 id」的宽容口径接住（认不出就空页，绝不猜成有数据）
+            foreach (var key in new[]
+                     {
+                         "sketch_collection_list", "collection_info_list",
+                         "collections", "list", "items",
+                     })
+            {
+                if (obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Array)
+                    return v;
+            }
+            return null;
+        }
+    }
+
+    /// <summary>宽容取字符串：number 也当字符串读（平台 ID 数字/字符串混发）</summary>
+    private static string? StrOf(JsonElement obj, params string[] keys)
+    {
+        foreach (var key in keys)
+        {
+            if (!obj.TryGetProperty(key, out var v)) continue;
+            switch (v.ValueKind)
+            {
+                case JsonValueKind.String:
+                    return v.GetString();
+                case JsonValueKind.Number:
+                    return v.ToString();
+            }
+        }
+        return null;
+    }
+
+    private static int? IntOf(JsonElement obj, params string[] keys) =>
+        int.TryParse(StrOf(obj, keys), out var n) ? n : null;
+
     // ═══ ICollectionCreate ═══
 
     /// <inheritdoc />
@@ -311,4 +443,29 @@ public sealed class XhsCollectionService :
         try { return DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime; }
         catch { return null; }
     }
+}
+
+/// <summary>速览合集（发布页「添加短剧」下拉的一项）。</summary>
+/// <param name="Id">合集 ID —— 选中后写 <c>noteSketchCollectionBind.id</c></param>
+/// <param name="Name">合集名</param>
+/// <param name="NoteNum">已收录集数（noteNum）</param>
+/// <param name="TotalEpisodes">总集数（totalEpisodes）；0 = 平台没给</param>
+public sealed record XhsSketchCollection(string Id, string Name, int NoteNum, int TotalEpisodes)
+{
+    /// <summary>是否已满 —— 页面同款判定（<c>noteNum &gt;= totalEpisodes</c>）：满了不能再加入</summary>
+    public bool IsFull => TotalEpisodes > 0 && NoteNum >= TotalEpisodes;
+}
+
+/// <summary>一页速览合集。</summary>
+public sealed class SketchCollectionPage
+{
+    public List<XhsSketchCollection> Items { get; init; } = [];
+
+    /// <summary>下一页游标（空 = 没有下一页）</summary>
+    public string NextCursor { get; init; } = "";
+
+    public bool HasMore => NextCursor.Length > 0;
+
+    /// <summary>原始响应 JSON（排障用：区分「真的没有合集」与「形状变了」）</summary>
+    public string RawJson { get; init; } = "";
 }

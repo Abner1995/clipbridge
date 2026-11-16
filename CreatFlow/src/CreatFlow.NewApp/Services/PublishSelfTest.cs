@@ -9,6 +9,7 @@ using CreatFlow.Platforms.Kuaishou;
 using CreatFlow.Platforms.Topics;
 using CreatFlow.Platforms.Toutiao;
 using CreatFlow.Platforms.WechatVideo;
+using CreatFlow.Platforms.WechatVideo.Requests;
 using CreatFlow.Platforms.Xiaohongshu;
 
 namespace CreatFlow.NewApp.Services;
@@ -54,6 +55,50 @@ public static class PublishSelfTest
         Check("视频号 个人观点 → 8（老版丢弃）", DeclarationMapping.WechatTagType(DeclarationKind.PersonalOpinion) == 8);
         Check("视频号 营销 → 2（老版丢弃）", DeclarationMapping.WechatTagType(DeclarationKind.Marketing) == 2);
         Check("视频号 不声明 → null", DeclarationMapping.WechatTagType(DeclarationKind.None) is null);
+
+        // 头条作品声明（A1）：AI/虚构/个人观点/自行拍摄/转载有对应；营销没有
+        Check("头条声明支持 AI/虚构/个人观点/自行拍摄/转载，不支持营销",
+            DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.AiGenerated)
+            && DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.Fiction)
+            && DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.PersonalOpinion)
+            && DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.SelfShot)
+            && DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.Repost)
+            && !DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.Marketing)
+            && DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.None));
+        Check("头条声明：全局 → ComplianceType（AI 3 / 虚构 6 / 观点 5 / 自拍 1 / 转载 2 / 营销 null）",
+            DeclarationMapping.ToutiaoComplianceType(DeclarationKind.AiGenerated, null) == 3
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.Fiction, null) == 6
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.PersonalOpinion, null) == 5
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.SelfShot, null) == 1
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.Repost, null) == 2
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.Marketing, null) is null
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.None, null) is null);
+        Check("头条声明：平台覆盖优先（7/8/0/非法值）",
+            DeclarationMapping.ToutiaoComplianceType(DeclarationKind.AiGenerated, 7) == 7
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.AiGenerated, 8) == 8
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.AiGenerated, 0) is null
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.Marketing, 0) is null
+            && DeclarationMapping.ToutiaoComplianceType(DeclarationKind.AiGenerated, 4) is null);
+        bool ToutiaoComplianceShapeOk()
+        {
+            var ai = JsonSerializer.Serialize(ToutiaoComplianceOptions.BuildInfo(3, null, null));
+            var fromNet = JsonSerializer.Serialize(ToutiaoComplianceOptions.BuildInfo(2, null, null));
+            using var selfDoc = JsonDocument.Parse(
+                JsonSerializer.Serialize(ToutiaoComplianceOptions.BuildInfo(1, "苏州", 1794276000000)));
+            var self = selfDoc.RootElement;
+            using var bareDoc = JsonDocument.Parse(
+                JsonSerializer.Serialize(ToutiaoComplianceOptions.BuildInfo(1, null, null)));
+            return ai == """{"IsAIGC":true,"ComplianceType":3}"""
+                && fromNet == """{"IsAIGC":false,"ComplianceType":2,"MaterialInfo":{"MaterialSource":2}}"""
+                && self.GetProperty("IsAIGC").GetBoolean() == false
+                && self.GetProperty("ComplianceType").GetInt32() == 1
+                && self.GetProperty("CreativeInfo").GetProperty("City").GetString() == "苏州"
+                && self.GetProperty("CreativeInfo").GetProperty("CreativeTime").GetInt64() == 1794276000000
+                // 缺城市/时间时不写半截 CreativeInfo（预检会提示），不编造空值
+                && !bareDoc.RootElement.TryGetProperty("CreativeInfo", out _)
+                && ToutiaoComplianceOptions.BuildInfo(0, null, null) is null;
+        }
+        Check("头条 ComplianceInfo 逐字形状（AI / 取自站外 / 自行拍摄）", ToutiaoComplianceShapeOk());
 
         // ── 2. 可见性映射（L11 隐私事故的回归防线）──
         sb.AppendLine("\n[2] 可见性映射（缺陷 L11 回归防线）");
@@ -1780,14 +1825,13 @@ public static class PublishSelfTest
                 {
                     RiseQuality = true,
                     UseAiCover = false,
-                    ChaptersJson = "[{\"desc\":\"开场\",\"timestamp\":0}]",
                     CoPublishUsersJson = "[{\"userId\":\"u1\"}]",
                     CoPublishRole = 1,
                 },
                 Xhs = new XhsExtras { SketchCollectionId = "sk1" },
                 WechatVideo = new WechatVideoExtras { CardShowStyle = 2 },
                 Bilibili = new BilibiliExtras { Tid = 21, HumanType2 = 1015, Dynamic = "动态", Watermark = false },
-                Toutiao = new ToutiaoExtras { TemplateName = "模板A" },
+                Toutiao = new ToutiaoExtras { TemplateName = "模板A", VideoTransArticleFlag = 1 },
             };
 
             string JsonOf(PublishDraft draft, string key, PlatformParams pp) =>
@@ -1816,10 +1860,11 @@ public static class PublishSelfTest
                 && dy.SyncTargets is ["toutiao"]);
 
             var ks = PublishPayload.Deserialize<KuaishouPayload>(JsonOf(d, PlatformNames.Kuaishou, p));
-            Check("快手载荷：封面帧/封面文字/排序/通知/画质/章节与共创 JSON",
+            Check("快手载荷：封面帧/封面文字/排序/通知/画质/章节（公共字段）/共创 JSON",
                 ks is { CoverFrameMs: 1500, CoverTitle: "封面标题", CollectionOrder: 2,
                         NotifyFollowers: true, RiseQuality: true, CoPublishRole: 1 }
-                && ks.ChaptersJson == "[{\"desc\":\"开场\",\"timestamp\":0}]"
+                && ks.Chapters?.Count == 2
+                && ks.Chapters[0] == new PlatformChapter(0, "开箱")
                 && ks.CoPublishUsersJson == "[{\"userId\":\"u1\"}]");
 
             var xhs = PublishPayload.Deserialize<XhsPayload>(JsonOf(d, PlatformNames.Xiaohongshu, p));
@@ -1840,14 +1885,16 @@ public static class PublishSelfTest
 
             Check("B站：原创 → copyright=1、creation_statement=1",
                 bili is { Copyright: 1, CreationStatementId: 1, IsOriginal: true });
-            Check("B站：转载 → copyright=2（声明下拉无转载，走版权）",
+            Check("B站：转载 → copyright=2（版权独立于创作声明，v1 不动）",
                 CopyrightMapping.Bilibili(DeclarationKind.Repost, isOriginal: false) == 2);
             Check("B站：未声明未原创 → copyright=3（沿用抓包默认）",
                 CopyrightMapping.Bilibili(DeclarationKind.None, isOriginal: false) == 3);
-            Check("B站声明能力：AI/虚构/营销支持，转载/自行拍摄不支持",
+            Check("B站声明能力：AI/虚构/营销/个人观点/转载支持，自行拍摄不支持（A7）",
                 DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.AiGenerated)
+                && DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.Fiction)
                 && DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.Marketing)
-                && !DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.Repost)
+                && DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.PersonalOpinion)
+                && DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.Repost)
                 && !DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.SelfShot));
             Check("B站：定时意图带进载荷（执行端阶段 4 必须显式拦截，不得静默改立即）",
                 bili?.ScheduledAt == d.ScheduledAt);
@@ -1859,13 +1906,34 @@ public static class PublishSelfTest
             Check("头条横版：VideoType=3 / Abstract 含 # 话题 / 定时保留",
                 tt is { VideoType: 3 } && tt.Caption?.Contains("#苏州楼市") == true
                 && tt.ScheduledAt == d.ScheduledAt);
-            Check("头条：原创/赞赏/合集/模板/同步字段落载荷",
-                tt is { IsOriginal: true, Praise: true, TemplateName: "模板A" }
+            Check("头条：原创/赞赏/合集/模板/同步/视频生成图文落载荷",
+                tt is { IsOriginal: true, Praise: true, TemplateName: "模板A", VideoTransArticleFlag: 1 }
                 && tt?.CollectionId == "7704513538005402155"
                 && tt?.Topics is ["苏州楼市"]
                 && tt?.SyncTargets is ["toutiao"]);
-            Check("头条声明暂不支持（字段未抓，v1 不下发）",
-                !DeclarationMapping.Supports(PlatformNames.Toutiao, DeclarationKind.AiGenerated));
+            Check("头条：正常载荷不写 PublishType（null → 执行端按 1 立即发布）",
+                tt?.PublishType is null);
+            // 作品声明（A1）：草稿全局 AI → ComplianceType=3；平台覆盖 7（投资观点）优先
+            Check("头条声明已接线：全局 AI → ComplianceType=3",
+                tt is { ComplianceType: 3 });
+            var pOverride = new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { DeclarationOverride = 7 },
+            };
+            var ttOverride = PublishPayload.Deserialize<ToutiaoPayload>(
+                JsonOf(d, PlatformNames.Toutiao, pOverride));
+            Check("头条声明：平台覆盖 7（投资观点）优先于全局 AI",
+                ttOverride is { ComplianceType: 7 });
+
+            // 视频生成图文（A2）：只有 1/2 进载荷；0/未选 = 不下发
+            var pTransOff = new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { VideoTransArticleFlag = 0 },
+            };
+            var ttTransOff = PublishPayload.Deserialize<ToutiaoPayload>(
+                JsonOf(d, PlatformNames.Toutiao, pTransOff));
+            Check("头条视频生成图文：0（关闭）不进载荷",
+                ttTransOff?.VideoTransArticleFlag is null);
 
             // ⑤ 头条竖版：VideoType=6、无简介、无定时
             var vd = new PublishDraft(@"D:\demo\t23v.mp4")
@@ -1894,8 +1962,9 @@ public static class PublishSelfTest
             Check("B站载荷往返：分区/版权/声明/标签不丢",
                 biliBack is { Tid: 21, HumanType2: 1015, Copyright: 1, CreationStatementId: 1 }
                 && biliBack?.Tags is ["家居", "室内设计"]);
-            Check("头条载荷往返：VideoType/原创/合集/话题不丢",
-                ttBack is { VideoType: 3, IsOriginal: true, Praise: true }
+            Check("头条载荷往返：VideoType/原创/合集/话题/声明/视频生成图文不丢",
+                ttBack is { VideoType: 3, IsOriginal: true, Praise: true, ComplianceType: 3,
+                            VideoTransArticleFlag: 1 }
                 && ttBack?.CollectionId == "7704513538005402155"
                 && ttBack?.Topics is ["苏州楼市"]);
         }
@@ -2069,8 +2138,16 @@ public static class PublishSelfTest
                 SecondDomain = "都市",
                 MovieId = "m1",
                 ProjectId = "p1",
-                ChaptersJson = "[{\"desc\":\"开场\",\"timestamp\":0}]",
-                CoPublishUsersJson = "[{\"userId\":\"u1\"}]",
+                Chapters = [new KuaishouChapter(0, "开场"), new KuaishouChapter(12_800, "实拍")],
+                HotspotId = 6566560,
+                AssociateTask = new KuaishouAssociateTask(
+                    0, "plc669066023879745919", 9, "25", "PLC"),
+                CoPublishUsers =
+                [
+                    new KuaishouCoPublishUser(123, "张三", "http://head.jpg", 1),
+                    new KuaishouCoPublishUser(0, "坏条目", null, 2),
+                ],
+                CoPublishUsersJson = "[{\"userId\":\"u1\"}]",   // 结构化非空 → 不采用原始 JSON
                 CoPublishRole = 1,
                 ActivityIds = ["318524", "abc", "318524"],
             });
@@ -2087,6 +2164,8 @@ public static class PublishSelfTest
             Check("快手：专属领域 / 短剧 / 项目",
                 full.Domain == "短剧" && full.SecondDomain == "都市"
                 && full.MovieId == "m1" && full.ProjectId == "p1");
+            Check("快手：关联热点 → hotspotId + hotspotConnectType=1（B3 抓包）",
+                full.HotspotId == 6566560 && full.HotspotConnectType == 1);
             Check("快手：通知/同城/同框反向映射 + 禁止下载",
                 full.NotifyResult == 0 && full.DisableNearbyShow && !full.AllowSameFrame
                 && full.DownloadType == 2);
@@ -2112,26 +2191,368 @@ public static class PublishSelfTest
             {
                 var root = body.RootElement;
                 var chapters = root.GetProperty("chapters");
-                Check("快手：章节原始 JSON 透传（元素原样）",
-                    chapters.GetArrayLength() == 1
-                    && chapters[0].GetProperty("desc").GetString() == "开场");
-                Check("快手：共创 JSON 透传 + coPublishRole",
-                    root.GetProperty("coPublishUser").GetArrayLength() == 1
+                Check("快手：章节 wire = {timeStart: 整秒, title}（B3 抓包）",
+                    chapters.GetArrayLength() == 2
+                    && chapters[0].GetProperty("timeStart").GetInt32() == 0
+                    && chapters[0].GetProperty("title").GetString() == "开场"
+                    && chapters[1].GetProperty("timeStart").GetInt32() == 12
+                    && chapters[1].GetProperty("title").GetString() == "实拍");
+                // 共创（2026-11-15 页面 bundle）：结构化列表优先于原始 JSON；
+                // 元素 {userId, userName, userHead, coPublishRole}，坏条目（userId≤0）被过滤
+                var coUsers = root.GetProperty("coPublishUser");
+                Check("快手：共创 wire = coPublishUser[{userId,userName,userHead,coPublishRole}]",
+                    coUsers.GetArrayLength() == 1
+                    && coUsers[0].GetProperty("userId").GetInt64() == 123
+                    && coUsers[0].GetProperty("userName").GetString() == "张三"
+                    && coUsers[0].GetProperty("userHead").GetString() == "http://head.jpg"
+                    && coUsers[0].GetProperty("coPublishRole").GetInt32() == 1
                     && root.GetProperty("coPublishRole").GetInt32() == 1);
+                Check("快手：共创坏条目（userId≤0）被过滤", coUsers.GetArrayLength() == 1);
+
+                // 旧档兼容：结构化列表为空 → 原始 JSON 数组照旧透传
+                var legacyCo = KuaishouPublishService.BuildSubmitRequest(new KuaishouPublishRequest
+                {
+                    FileId = 1,
+                    CoverKey = "c.jpg",
+                    MediaId = "m",
+                    PhotoIdStr = "p",
+                    VideoDuration = 1000,
+                    CoPublishUsersJson = "[{\"userId\":\"u1\"}]",
+                });
+                var legacyCoJson = JsonSerializer.Serialize(legacyCo);
+                Check("快手：共创旧档原始 JSON 兼容（结构化为空时才透传）",
+                    legacyCoJson.Contains("\"coPublishUser\":[{\"userId\":\"u1\"}]",
+                        StringComparison.Ordinal));
                 Check("快手：请求体不再有重复的 activity 字段",
                     !root.TryGetProperty("activity", out _));
+                Check("快手：热点 wire = hotspotId（数字）+ hotspotConnectType=1",
+                    root.GetProperty("hotspotId").GetInt64() == 6566560
+                    && root.GetProperty("hotspotConnectType").GetInt32() == 1);
+                // 关联小程序（2026-11-15 受控发布抓包）：associateTasks 是**整个对象**的数组
+                var tasks = root.GetProperty("associateTasks");
+                Check("快手：关联小程序 wire = associateTasks[{taskId,bindId,entranceType,bindType,taskType}]",
+                    tasks.GetArrayLength() == 1
+                    && tasks[0].GetProperty("taskId").GetInt64() == 0
+                    && tasks[0].GetProperty("bindId").GetString() == "plc669066023879745919"
+                    && tasks[0].GetProperty("entranceType").GetInt32() == 9
+                    && tasks[0].GetProperty("bindType").GetString() == "25"
+                    && tasks[0].GetProperty("taskType").GetString() == "PLC");
             }
 
             var leanJson = JsonSerializer.Serialize(KuaishouPublishService.BuildSubmitRequest(Req()));
             Check("快手：未填章节/共创 → 空数组（不是 null）",
                 leanJson.Contains("\"chapters\":[]", StringComparison.Ordinal)
                 && leanJson.Contains("\"coPublishUser\":[]", StringComparison.Ordinal));
+            Check("快手：未选热点 → hotspotId / hotspotConnectType 两个键都不出现",
+                !leanJson.Contains("hotspotId", StringComparison.Ordinal)
+                && !leanJson.Contains("hotspotConnectType", StringComparison.Ordinal));
+            Check("快手：未关联小程序 → associateTasks 键不出现（2026-11-05 抓包同形）",
+                !leanJson.Contains("associateTasks", StringComparison.Ordinal));
+
+            // 封面文字样式（2026-11-15）：取值未验证 —— 默认不下发（与官方发布页 submit 一致），
+            // 只有显式填了才原样透传。
+            Check("快手：未填封面文字样式 → coverTitleStyle 键不出现（官方发布页同形）",
+                !leanJson.Contains("coverTitleStyle", StringComparison.Ordinal));
+            var styledJson = JsonSerializer.Serialize(KuaishouPublishService.BuildSubmitRequest(
+                new KuaishouPublishRequest
+                {
+                    FileId = 1,
+                    CoverKey = "c.jpg",
+                    MediaId = "m",
+                    PhotoIdStr = "p",
+                    VideoDuration = 1000,
+                    CoverTitleStyle = "2",
+                }));
+            Check("快手：封面文字样式填了才下发（原样透传）",
+                styledJson.Contains("\"coverTitleStyle\":\"2\"", StringComparison.Ordinal));
+            Check("快手：params.txt「快手封面文字样式」解析 / 留空为 null",
+                PublishParamsFile.Parse("快手封面文字样式: 2").KuaishouCoverTitleStyle == "2"
+                && PublishParamsFile.Parse("快手封面文字样式:").KuaishouCoverTitleStyle is null);
+
+            // 关联小程序候选解析（2026-11-15 真页面抓包：relation/list → data.list + cursor 字符串）
+            var relPage = KuaishouRelationService.ParseRelations(
+                """{"result":1,"message":"成功","data":{"list":[{"title":"优酷","url":"http://w2.kskwai.com/kimg/x.png","associateTaskId":{"taskId":0,"bindId":"plc669066023879745919","entranceType":9,"bindType":"25","taskType":"PLC"},"bannerTask":null,"desc":"优酷独家剧集综艺一网打尽","validMessage":null}],"cursor":"0"}}""");
+            Check("快手：小程序关联解析（名称/图标/描述/五字段/cursor）",
+                relPage.Items.Count == 1
+                && relPage.Items[0].Title == "优酷"
+                && relPage.Items[0].Url == "http://w2.kskwai.com/kimg/x.png"
+                && relPage.Items[0].Desc == "优酷独家剧集综艺一网打尽"
+                && relPage.Items[0].ValidMessage is null
+                && relPage.Items[0].Task.TaskId == 0
+                && relPage.Items[0].Task.BindId == "plc669066023879745919"
+                && relPage.Items[0].Task.EntranceType == 9
+                && relPage.Items[0].Task.BindType == "25"
+                && relPage.Items[0].Task.TaskType == "PLC"
+                && relPage.Cursor == "0");
+
+            var relFiltered = KuaishouRelationService.ParseRelations(
+                """{"result":1,"data":{"list":[{"title":"无任务"},{"title":"","associateTaskId":{"bindId":"plc-1","entranceType":9,"bindType":"25","taskType":"PLC"}}],"cursor":""}}""");
+            Check("快手：缺 bindId 丢弃 / 空标题回落 bindId / 空 cursor 归一成 null",
+                relFiltered.Items.Count == 1
+                && relFiltered.Items[0].Title == "plc-1"
+                && relFiltered.Cursor is null);
+
+            var relBad = KuaishouRelationService.ParseRelations(
+                """{"result":1000,"message":"失败"}""");
+            Check("快手：小程序关联 result≠1 → 空页（不抛）",
+                relBad.Items.Count == 0 && relBad.Cursor is null);
+
+            // 热点候选解析（B3 抓包 2026-11-11：hotspot/list → data.list + nextCursor）
+            var hotPage = KuaishouHotspotService.ParseHotspots(
+                """{"result":1,"message":"成功","data":{"list":[{"hotspotId":6569413,"hotspotContent":"前10个月全国二手房交易增11.4%","iconUrls":[],"rising":false,"hotValue":"1175万","feedCount":1},{"hotspotId":6566560,"hotspotContent":"房","hotValue":"","feedCount":0,"rising":true}],"nextCursor":2}}""");
+            Check("快手：热点列表解析（ID/文案/热度/视频数/rising）",
+                hotPage.Items.Count == 2
+                && hotPage.Items[0].HotspotId == 6569413
+                && hotPage.Items[0].Content == "前10个月全国二手房交易增11.4%"
+                && hotPage.Items[0].HotValue == "1175万" && hotPage.Items[0].FeedCount == 1
+                && !hotPage.Items[0].Rising
+                && hotPage.Items[1].HotspotId == 6566560 && hotPage.Items[1].Rising);
+            Check("快手：热点翻页游标（nextCursor=2 → HasMore）",
+                hotPage.NextCursor == 2 && hotPage.HasMore);
+
+            var hotEnd = KuaishouHotspotService.ParseHotspots(
+                """{"result":1,"data":{"list":[],"nextCursor":-2147483648}}""");
+            Check("快手：热点无更多（nextCursor=-2147483648 → 归一成 0/HasMore=false）",
+                hotEnd.Items.Count == 0 && hotEnd.NextCursor == 0 && !hotEnd.HasMore);
+
+            var hotBad = KuaishouHotspotService.ParseHotspots(
+                """{"result":1000,"message":"失败"}""");
+            Check("快手：热点 result≠1 → 空页（不抛）",
+                hotBad.Items.Count == 0 && !hotBad.HasMore);
+
+            // @好友候选解析（B3 抓包 2026-11-11：at/search → data.list + hasMore + sessionId）
+            var mentionPage = KuaishouMentionService.ParseUsers(
+                """{"result":1,"data":{"hasMore":true,"sessionId":"s-1","list":[{"userName":"房","userId":2210679639,"fansCount":4272,"headUrl":"https://p66.a.kwimgs.com/uhead/x.jpg"},{"userName":" ","userId":9},{"userName":"无ID","userId":0},{"userName":"房","userId":2210679639}]}}""");
+            Check("快手：@好友候选解析（昵称/ID/粉丝数/头像/hasMore/sessionId）",
+                mentionPage.Items.Count == 1
+                && mentionPage.Items[0].UserId == 2210679639
+                && mentionPage.Items[0].UserName == "房"
+                && mentionPage.Items[0].FansCount == 4272
+                && mentionPage.Items[0].HeadUrl == "https://p66.a.kwimgs.com/uhead/x.jpg"
+                && mentionPage.HasMore && mentionPage.SessionId == "s-1");
+            Check("快手：@好友空昵称丢弃 / 非正 ID 丢弃 / 同 userId 去重",
+                mentionPage.Items.Count == 1);
+
+            var mentionBad = KuaishouMentionService.ParseUsers(
+                """{"result":1000,"message":"失败"}""");
+            Check("快手：@好友 result≠1 → 空页（不抛）",
+                mentionBad.Items.Count == 0 && !mentionBad.HasMore && mentionBad.SessionId is null);
+
+            // 选中确认响应（at/choose：data 恒 null，只看 result）
+            Check("快手：@好友 at/choose 结果解析（1=成功 / 0=失败）",
+                KuaishouMentionService.ParseChooseResult("""{"result":1,"data":null}""") == 1
+                && KuaishouMentionService.ParseChooseResult("""{"result":0,"message":"失败"}""") == 0);
+
+            // @好友 caption token（2026-11-15 页面 submit 抓包）：
+            // 编辑器 HTML 只是 autosave；真实 submit 是纯文本 `@昵称(O<userId>) `
+            var mentionToken = KuaishouMentionText.BuildToken(2210679639, "房");
+            Check("快手：@好友 token 与 submit 抓包逐字同形",
+                mentionToken == "@房(O2210679639)", mentionToken);
+            Check("快手：@好友 → caption 末尾追加（token + 尾空格）",
+                KuaishouMentionText.Append("标题 简介", [new KuaishouMentionRef(2210679639, "房")])
+                    == "标题 简介 " + mentionToken + " ");
+            Check("快手：正文已有 @昵称 → 原位替换成 token（不重复追加）",
+                KuaishouMentionText.Append("测试 @房 你好", [new KuaishouMentionRef(2210679639, "房")])
+                    == "测试 " + mentionToken + " 你好");
+            Check("快手：已带完整 token → 幂等（不重复加）",
+                KuaishouMentionText.Append("正文 @房(O2210679639) ", [new KuaishouMentionRef(2210679639, "房")])
+                    == "正文 @房(O2210679639) ");
+            Check("快手：@昵称 词边界（@房主 不匹配 @房）",
+                KuaishouMentionText.Append("@房主来了", [new KuaishouMentionRef(2210679639, "房")])
+                    == "@房主来了 " + mentionToken + " ");
+            Check("快手：@好友坏条目跳过（userId≤0 / 空昵称）",
+                KuaishouMentionText.Usable(
+                    [new KuaishouMentionRef(0, "x"), new KuaishouMentionRef(1, " ")]).Count == 0);
+            Check("快手：多个 @好友 依次追加",
+                KuaishouMentionText.Append("正文",
+                    [new KuaishouMentionRef(1, "甲"), new KuaishouMentionRef(2, "乙")])
+                    == "正文 " + KuaishouMentionText.BuildToken(1, "甲") + " "
+                       + KuaishouMentionText.BuildToken(2, "乙") + " ");
+
+            // 载荷接线：KuaishouExtras.HotspotId → KuaishouPayload.HotspotId（文案快照不进载荷）
+            var hotDraft = new PublishDraft(Path.Combine(Path.GetTempPath(), "smoke-ks-hot.mp4"))
+            {
+                Title = "热点标题",
+            };
+            var hotParams = new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras { HotspotId = 6566560, HotspotContent = "房" },
+            };
+            var hotPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(hotDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    hotParams).ExtraDataJson ?? "{}");
+            var noHotPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(hotDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    new PlatformParams()).ExtraDataJson ?? "{}");
+            Check("快手：热点 ID 进载荷 / 未选为空",
+                hotPayload?.HotspotId == 6566560 && noHotPayload?.HotspotId is null);
+
+            // 关联小程序进载荷（2026-11-15 真页面抓包）：五字段 + 展示快照整体进载荷
+            var assocDraft = new PublishDraft(Path.Combine(Path.GetTempPath(), "smoke-ks-assoc.mp4"))
+            {
+                Title = "小程序标题",
+            };
+            var assocParams = new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    AssociateTask = new KuaishouAssociateRef(
+                        0, "plc669066023879745919", 9, "25", "PLC",
+                        Title: "优酷", Link: "https://fcvs.kuai666bj7tu65rkdz82.com/f/X3uTsgHfDnXDtNu"),
+                },
+            };
+            var assocPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(assocDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    assocParams).ExtraDataJson ?? "{}");
+            Check("快手：关联小程序进载荷（五字段 + 展示快照）",
+                assocPayload?.AssociateTask is { } ap
+                && ap.BindId == "plc669066023879745919" && ap.EntranceType == 9
+                && ap.BindType == "25" && ap.TaskType == "PLC"
+                && ap.Title == "优酷"
+                && ap.Link == "https://fcvs.kuai666bj7tu65rkdz82.com/f/X3uTsgHfDnXDtNu");
+
+            // 共创进载荷（2026-11-15 页面 bundle）：结构化列表；原始 JSON 被抑制
+            var coParams = new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    CoPublishUsers = [new KuaishouCoPublishRef(123, "张三", "http://h.jpg", 2)],
+                    CoPublishUsersJson = "[{\"userId\":\"legacy\"}]",
+                },
+            };
+            var coPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(assocDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    coParams).ExtraDataJson ?? "{}");
+            Check("快手：共创进载荷（结构化列表优先，原始 JSON 不再透传）",
+                coPayload?.CoPublishUsers is [{ UserId: 123, UserName: "张三", Role: 2 }]
+                && coPayload.CoPublishUsersJson is null);
+
+            // @好友进载荷（B3 抓包 2026-11-11）：userId + 昵称两件套；HTML 由执行端追加
+            var mentionDraft = new PublishDraft(
+                Path.Combine(Path.GetTempPath(), "smoke-ks-mention.mp4"))
+            {
+                Title = "快手@标题",
+            };
+            var mentionParams = new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    MentionUsers = [new KuaishouMentionRef(2210679639, "房")],
+                },
+            };
+            var mentionPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(mentionDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    mentionParams).ExtraDataJson ?? "{}");
+            var noMentionPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                PublishPayloadBuilder.Build(mentionDraft,
+                    new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"),
+                    new PlatformParams()).ExtraDataJson ?? "{}");
+            Check("快手：@好友 进载荷（userId + 昵称）/ 未选为空",
+                mentionPayload?.MentionUsers is { Count: 1 }
+                && mentionPayload.MentionUsers[0].UserId == 2210679639
+                && mentionPayload.MentionUsers[0].UserName == "房"
+                && noMentionPayload?.MentionUsers is null);
+            Check("快手：@好友 token 不进载荷 Caption（执行端追加，避免二次裁剪切坏）",
+                mentionPayload?.Caption?.Contains("<span", StringComparison.Ordinal) == false);
+
+            // 预检：坏条目点名（Warning，不拦发布）；正常条目不报
+            var mentionPreflightDraft = new PublishDraft(@"D:\demo\t25-mention.mp4")
+            {
+                Title = "快手@预检",
+            };
+            mentionPreflightDraft.Targets.Add(
+                new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"));
+            var mentionIssues = PublishPreflight.Validate(mentionPreflightDraft, new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras { MentionUsers = [new KuaishouMentionRef(0, "房")] },
+            });
+            Check("预检：快手 @好友 坏条目 → Warning「参数不完整 / 不会带上」",
+                mentionIssues.Any(i => i.PlatformKey == PlatformNames.Kuaishou
+                    && i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("@好友 参数不完整")
+                    && i.Message.Contains("不会带上")),
+                string.Join("；", mentionIssues.Select(i => i.Message)));
+
+            var okMentionDraft = new PublishDraft(@"D:\demo\t25-mention-ok.mp4")
+            {
+                Title = "快手@预检正常",
+            };
+            okMentionDraft.Targets.Add(
+                new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"));
+            var okMentionIssues = PublishPreflight.Validate(okMentionDraft, new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    MentionUsers = [new KuaishouMentionRef(2210679639, "房")],
+                },
+            });
+            Check("预检：快手 @好友 正常 → 不报该提示",
+                okMentionIssues.All(i => !i.Message.Contains("@好友 参数不完整")),
+                string.Join("；", okMentionIssues.Select(i => i.Message)));
+
+            // 关联小程序（2026-11-15 真页面抓包）：半截数据（缺 bindId）发布端会跳过
+            var assocBadDraft = new PublishDraft(@"D:\demo\t25-assoc-bad.mp4")
+            {
+                Title = "快手小程序预检",
+            };
+            assocBadDraft.Targets.Add(
+                new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"));
+            var assocBadIssues = PublishPreflight.Validate(assocBadDraft, new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    AssociateTask = new KuaishouAssociateRef(0, " ", 9, "25", "PLC"),
+                },
+            });
+            Check("预检：快手 关联小程序 缺 bindId → Warning「参数不完整 / 不会带上」",
+                assocBadIssues.Any(i => i.PlatformKey == PlatformNames.Kuaishou
+                    && i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("关联小程序参数不完整")
+                    && i.Message.Contains("不会带上")),
+                string.Join("；", assocBadIssues.Select(i => i.Message)));
+
+            var assocOkDraft = new PublishDraft(@"D:\demo\t25-assoc-ok.mp4")
+            {
+                Title = "快手小程序预检正常",
+            };
+            assocOkDraft.Targets.Add(
+                new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "主号"));
+            var assocOkIssues = PublishPreflight.Validate(assocOkDraft, new PlatformParams
+            {
+                Kuaishou = new KuaishouExtras
+                {
+                    AssociateTask = new KuaishouAssociateRef(
+                        0, "plc669066023879745919", 9, "25", "PLC", "优酷", "https://x"),
+                },
+            });
+            Check("预检：快手 关联小程序 正常 → 不报该提示",
+                assocOkIssues.All(i => !i.Message.Contains("关联小程序参数不完整")),
+                string.Join("；", assocOkIssues.Select(i => i.Message)));
+
+            // 章节转换（B3 抓包 2026-11-11）：毫秒 → 整秒（floor）、升序、同一秒去重。
+            var chapterRows = KuaishouPublishService.BuildChapters(
+            [
+                new KuaishouChapter(45_700, "第二段"),
+                new KuaishouChapter(7_001, "开场"),
+                new KuaishouChapter(7_999, "重复秒丢弃"),
+                new KuaishouChapter(-1, "负值归零"),
+            ]);
+            Check("快手：章节毫秒→整秒 / 升序 / 同秒去重 / 负值归零",
+                chapterRows.Count == 3
+                && chapterRows[0].TimeStart == 0 && chapterRows[0].Title == "负值归零"
+                && chapterRows[1].TimeStart == 7 && chapterRows[1].Title == "开场"
+                && chapterRows[2].TimeStart == 45 && chapterRows[2].Title == "第二段");
 
             var bad = "";
-            try { KuaishouPublishService.ParseJsonArray("不是 JSON", "章节"); }
+            try { KuaishouPublishService.ParseJsonArray("不是 JSON", "共创用户"); }
             catch (Exception ex) { bad = ex.Message; }
-            Check("快手：坏章节 JSON 明确报错（不静默丢）",
-                bad.Contains("章节", StringComparison.Ordinal), bad);
+            Check("快手：坏共创 JSON 明确报错（不静默丢）",
+                bad.Contains("共创用户", StringComparison.Ordinal), bad);
         }
 
         // ── 26. 小红书发布字段接线（2.3）──
@@ -2253,10 +2674,10 @@ public static class PublishSelfTest
         }
 
         // ── 27. 视频号发布字段接线（2.4）──
-        //   抓包依据：docs/wechatvideo/20261105/requests/post_create_video.json
-        //   （立即 postFlag=1 / 无 effectiveTime / 有 tagInfo 与 position）、
-        //   定时抓包（postFlag=0 + effectiveTime 秒 + **无 tagInfo**）、图文抓包（无 shortTitle）；
-        //   短标题 ≥6 字与 extReading {link,title,type} 取自页面 bundle。
+        //   抓包依据：docs/wechatvideo/20261105/requests/post_create_video.json、
+        //   docs/wechatvideo/wire-2026-11-11.md（B2：postFlag bit0 = 声明原创、
+        //   extReading 键名 urlType）、定时抓包（effectiveTime 秒 + **无 tagInfo**）、
+        //   图文抓包（无 shortTitle）；短标题 ≥6 字取自页面 bundle。
         sb.AppendLine("\n[27] 视频号发布字段接线（2.4）");
         {
             var fixedNow = new DateTimeOffset(2026, 11, 6, 12, 0, 0, TimeSpan.Zero);
@@ -2267,17 +2688,31 @@ public static class PublishSelfTest
 
             var immediate = Make(new WechatVideoPublishRequest(
                 VideoUrl: "https://example.com/v.mp4", FileSize: 1024));
-            Check("视频号：立即发布 postFlag=1 且不下发 effectiveTime",
-                immediate.GetProperty("postFlag").GetInt32() == 1
+            Check("视频号：立即 + 未声明原创 → postFlag=0 且不下发 effectiveTime",
+                immediate.GetProperty("postFlag").GetInt32() == 0
                 && !immediate.TryGetProperty("effectiveTime", out _));
+
+            var original = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024, IsOriginal: true));
+            Check("视频号：声明原创 → postFlag bit0=1（B2 A/B 口径）",
+                original.GetProperty("postFlag").GetInt32() == 1
+                && !original.TryGetProperty("effectiveTime", out _));
 
             var scheduledAt = new DateTime(2026, 11, 7, 12, 0, 0, DateTimeKind.Utc);
             var scheduled = Make(new WechatVideoPublishRequest(
                 VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
                 ScheduledAt: scheduledAt));
-            Check("视频号：定时 postFlag=0 / effectiveTime=Unix 秒",
+            Check("视频号：定时 + 未声明原创 → postFlag=0 / effectiveTime=Unix 秒",
                 scheduled.GetProperty("postFlag").GetInt32() == 0
                 && scheduled.GetProperty("effectiveTime").GetInt64()
+                    == new DateTimeOffset(scheduledAt).ToUnixTimeSeconds());
+
+            var scheduledOriginal = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
+                IsOriginal: true, ScheduledAt: scheduledAt));
+            Check("视频号：定时 + 声明原创 → postFlag 仍为 1（定时不影响该位）",
+                scheduledOriginal.GetProperty("postFlag").GetInt32() == 1
+                && scheduledOriginal.GetProperty("effectiveTime").GetInt64()
                     == new DateTimeOffset(scheduledAt).ToUnixTimeSeconds());
 
             var desc = immediate.GetProperty("objectDesc");
@@ -2301,14 +2736,59 @@ public static class PublishSelfTest
             Check("视频号：无链接 → extReading = {}",
                 desc.GetProperty("extReading").ValueKind == JsonValueKind.Object
                 && !desc.GetProperty("extReading").EnumerateObject().Any());
+
+            // 官方活动（2026-11-11 B2）：objectDesc.event 三件套
+            var noEvent = desc.GetProperty("event");
+            Check("视频号：未参加活动 → objectDesc.event = {}",
+                noEvent.ValueKind == JsonValueKind.Object && !noEvent.EnumerateObject().Any());
+            var withEvent = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
+                Event: new WechatVideoEvent("event/aaa", "萌宠日常", "我柴不要吃保底粮")));
+            var ev = withEvent.GetProperty("objectDesc").GetProperty("event");
+            Check("视频号：活动三件套 eventTopicId/eventName/eventCreatorNickname",
+                ev.GetProperty("eventTopicId").GetString() == "event/aaa"
+                && ev.GetProperty("eventName").GetString() == "萌宠日常"
+                && ev.GetProperty("eventCreatorNickname").GetString() == "我柴不要吃保底粮");
+
+            // @好友（2026-11-11 B2 §5）：mentionedUser 只带昵称 + 正文末尾补「@昵称 」
+            Check("视频号：未选 @好友 → mentionedUser=[]",
+                desc.GetProperty("mentionedUser").GetArrayLength() == 0);
+            var withMentions = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
+                Description: "南北通透",
+                MentionUsers: ["知鸭", "温史知新"]));
+            var mentionDesc = withMentions.GetProperty("objectDesc");
+            var mentioned = mentionDesc.GetProperty("mentionedUser");
+            Check("视频号：@好友 mentionedUser=[{nickname}]（只带昵称）",
+                mentioned.GetArrayLength() == 2
+                && mentioned[0].GetProperty("nickname").GetString() == "知鸭"
+                && mentioned[1].GetProperty("nickname").GetString() == "温史知新"
+                && !mentioned[0].TryGetProperty("username", out _));
+            Check("视频号：正文末尾补「@昵称 」（结尾空格）",
+                mentionDesc.GetProperty("description").GetString() == "南北通透 @知鸭 @温史知新 ");
+
+            var alreadyMentioned = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
+                Description: "谢谢 @知鸭 ",
+                MentionUsers: ["知鸭"]));
+            Check("视频号：正文已有 @昵称 不重复补",
+                alreadyMentioned.GetProperty("objectDesc").GetProperty("description").GetString()
+                    == "谢谢 @知鸭 ");
             var withLink = Make(new WechatVideoPublishRequest(
                 VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
                 ExternalLink: "https://example.com/a", ExternalLinkTitle: "示例文章"));
             var ext = withLink.GetProperty("objectDesc").GetProperty("extReading");
-            Check("视频号：扩展链接 {link,title,type}",
+            Check("视频号：扩展链接 {link,title,urlType}（键名不是 type）",
                 ext.GetProperty("link").GetString() == "https://example.com/a"
                 && ext.GetProperty("title").GetString() == "示例文章"
-                && ext.GetProperty("type").GetInt32() == 1);
+                && ext.GetProperty("urlType").GetInt32() == 1
+                && !ext.TryGetProperty("type", out _));
+            var withRedPacket = Make(new WechatVideoPublishRequest(
+                VideoUrl: "https://example.com/v.mp4", FileSize: 1024,
+                ExternalLink: "https://example.com/red", ExternalLinkType: 2));
+            Check("视频号：链接类型 2 = 红包封面（wire 枚举）",
+                withRedPacket.GetProperty("objectDesc").GetProperty("extReading")
+                    .GetProperty("urlType").GetInt32() == 2);
 
             Check("视频号：未填短标题 → 不下发 shortTitle",
                 !desc.TryGetProperty("shortTitle", out _));
@@ -2332,12 +2812,13 @@ public static class PublishSelfTest
                     .GetProperty("cardShowStyle").GetInt32() == 1);
 
             // builder：标题 ≥6 → 短标题；<6 → 不下发 + 标题并入正文首行
-            WechatVideoPayload? Built(string title, PlatformParams pp)
+            WechatVideoPayload? Built(string title, PlatformParams pp, bool isOriginal = false)
             {
                 var d = new PublishDraft(@"D:\demo\t24.mp4")
                 {
                     Title = title,
                     Description = "南北通透",
+                    IsOriginal = isOriginal,
                 };
                 return PublishPayload.Deserialize<WechatVideoPayload>(
                     PublishPayloadBuilder.Build(d,
@@ -2358,6 +2839,55 @@ public static class PublishSelfTest
                 wxOverride is { ShortTitle: null }
                 && wxOverride.Caption?.StartsWith("四字的短标\n", StringComparison.Ordinal) == true);
 
+            var wxOriginal = Built("苏州园区三居室", new PlatformParams(), isOriginal: true);
+            Check("视频号 builder：全局原创 → 载荷 IsOriginal=true",
+                wxOriginal is { IsOriginal: true });
+
+            var wxOriginalOff = Built("苏州园区三居室",
+                new PlatformParams { IsOriginal = false }, isOriginal: true);
+            Check("视频号 builder：账号预设原创覆盖（false 压过全局 true）",
+                wxOriginalOff is { IsOriginal: false });
+
+            var wxEvent = Built("苏州园区三居室", new PlatformParams
+            {
+                Activities =
+                [
+                    new ActivityRef
+                    {
+                        Id = "event/aaa", Name = "萌宠日常", CreatorNickname = "我柴不要吃保底粮",
+                    },
+                ],
+            });
+            Check("视频号 builder：活动 → Event 三件套",
+                wxEvent?.Event is
+                {
+                    EventTopicId: "event/aaa", EventName: "萌宠日常",
+                    EventCreatorNickname: "我柴不要吃保底粮",
+                });
+
+            var wxEventIdOnly = Built("苏州园区三居室", new PlatformParams
+            {
+                // params.txt「官方活动」只给 ID：Name 回落成 ID、没有发起人
+                Activities = [new ActivityRef { Id = "event/aaa", Name = "event/aaa" }],
+            });
+            Check("视频号 builder：缺发起人 → Event=null（不带半截活动）",
+                wxEventIdOnly is { Event: null });
+
+            var wxMentions = Built("苏州园区三居室", new PlatformParams
+            {
+                WechatVideo = new WechatVideoExtras
+                {
+                    MentionUsers =
+                    [
+                        new WechatVideoMentionRef("知鸭"),
+                        new WechatVideoMentionRef("知鸭"),
+                        new WechatVideoMentionRef("  "),
+                    ],
+                },
+            });
+            Check("视频号 builder：@好友按昵称去重去空 → [知鸭]",
+                wxMentions?.MentionUsers is ["知鸭"]);
+
             // 预检：标题 <6 字不再 Error（发得出去，只是短标题缺省）
             var wxFile = Path.Combine(Path.GetTempPath(), "newapp-selftest-t27.mp4");
             File.WriteAllText(wxFile, "x");
@@ -2376,6 +2906,27 @@ public static class PublishSelfTest
                         && i.Message.Contains("不会作为短标题下发"))
                     && pre.All(i => !(i.PlatformKey == PlatformNames.WechatVideo
                         && i.Severity == PreflightSeverity.Error)));
+
+                // 活动三件套：只有 ID（缺活动名 / 发起人）→ Warning 明说这次不挂活动
+                var actTarget = new PublishTarget(PlatformNames.WechatVideo, Guid.NewGuid(), "主号2");
+                pd.Targets.Add(actTarget);
+                pd.ParamsFor(actTarget).Activities.Add(
+                    new ActivityRef { Id = "event/aaa", Name = "event/aaa" });
+                var preAct = PublishPreflight.Validate(pd);
+                Check("视频号预检：活动只有 ID → Warning「不会挂活动」",
+                    preAct.Any(i => i.PlatformKey == PlatformNames.WechatVideo
+                        && i.Severity == PreflightSeverity.Warning
+                        && i.Message.Contains("不会挂活动", StringComparison.Ordinal)));
+
+                // 从活动列表选中（三件套齐全）→ 不再出现该提示
+                pd.ParamsFor(actTarget).Activities[0] = new ActivityRef
+                {
+                    Id = "event/aaa", Name = "萌宠日常", CreatorNickname = "朱佳航",
+                };
+                var preActOk = PublishPreflight.Validate(pd);
+                Check("视频号预检：活动三件套齐全 → 无「不会挂活动」",
+                    preActOk.All(i => !(i.PlatformKey == PlatformNames.WechatVideo
+                        && i.Message.Contains("不会挂活动", StringComparison.Ordinal))));
             }
             finally { File.Delete(wxFile); }
         }
@@ -3466,6 +4017,39 @@ public static class PublishSelfTest
         Check("新档已有 ActivityRef → 旧 ID 不迁移（以结构化活动为准）",
             already36.Activities.Count == 1 && already36.Activities[0].Id == "new-id");
 
+        // 旧档快手章节原始 JSON 一次性迁移（P3，2026-11-11）
+        var legacyKsCh = new PlatformParams
+        {
+            Kuaishou = new KuaishouExtras
+            {
+                ChaptersJson = "[{\"timeStart\":7,\"title\":\"开场\"},{\"timeStart\":45,\"title\":\"第二段\"}]",
+            },
+        };
+        legacyKsCh.MigrateLegacyKuaishouChapters();
+        Check("旧快手章节 JSON → 共享 Chapters（新 wire 形状才迁移，旧口清空）",
+            legacyKsCh.Chapters.Count == 2
+            && legacyKsCh.Chapters[0] == new PlatformChapter(7000, "开场")
+            && legacyKsCh.Chapters[1] == new PlatformChapter(45_000, "第二段")
+            && legacyKsCh.Kuaishou?.ChaptersJson is null);
+
+        var unknownKsCh = new PlatformParams
+        {
+            Kuaishou = new KuaishouExtras { ChaptersJson = "[{\"desc\":\"开场\",\"timestamp\":0}]" },
+        };
+        unknownKsCh.MigrateLegacyKuaishouChapters();
+        Check("旧快手章节 JSON 形状不认识 → 不迁移也不清空（不猜）",
+            unknownKsCh.Chapters.Count == 0
+            && unknownKsCh.Kuaishou?.ChaptersJson == "[{\"desc\":\"开场\",\"timestamp\":0}]");
+
+        var alreadyKsCh = new PlatformParams
+        {
+            Chapters = [new PlatformChapter(3000, "新章节")],
+            Kuaishou = new KuaishouExtras { ChaptersJson = "[{\"timeStart\":7,\"title\":\"旧章节\"}]" },
+        };
+        alreadyKsCh.MigrateLegacyKuaishouChapters();
+        Check("新档已有结构化章节 → 旧 JSON 不迁移（以 Chapters 为准）",
+            alreadyKsCh.Chapters.Count == 1 && alreadyKsCh.Chapters[0].Title == "新章节");
+
         // 「选活动自动带话题」与 2.6.4 映射联用：UpsertActivity 后 TopicRefs 是 activity 来源
         var upsert36 = new PlatformParams();
         upsert36.UpsertActivity(actRef36);
@@ -3741,6 +4325,47 @@ public static class PublishSelfTest
                 !biliTenIssues38.Any(i => i.Message.Contains("B站标签最多")),
                 Msg38(biliTenIssues38));
 
+            // ── 头条原创声明不可用（2026-11-10 复审：平台 GetPublishAuth 报
+            //    ClaimOriginPermission=false / 原创功能已下线，提交后被静默忽略）──
+            var ttOriginal38 = Draft38(PlatformNames.Toutiao);
+            var ttOriginalIssues38 = PublishPreflight.Validate(ttOriginal38,
+                new PlatformParams { IsOriginal = true });
+            Check("预检：头条 + 原创 → Warning「原创声明当前不可用」",
+                Has38(ttOriginalIssues38, PlatformNames.Toutiao, PreflightSeverity.Warning,
+                    "原创", "不可用", "不会生效"),
+                Msg38(ttOriginalIssues38));
+
+            var ttOriginalDraft38 = Draft38(PlatformNames.Toutiao);
+            ttOriginalDraft38.IsOriginal = true;
+            var ttOriginalDraftIssues38 = PublishPreflight.Validate(ttOriginalDraft38,
+                new PlatformParams());
+            Check("预检：头条 + 草稿级原创（预设未覆盖）同样报",
+                Has38(ttOriginalDraftIssues38, PlatformNames.Toutiao, PreflightSeverity.Warning,
+                    "原创", "不会生效"),
+                Msg38(ttOriginalDraftIssues38));
+
+            var ttNoOriginal38 = Draft38(PlatformNames.Toutiao);
+            var ttNoOriginalIssues38 = PublishPreflight.Validate(ttNoOriginal38, new PlatformParams());
+            Check("预检：头条未勾原创 → 不报原创警告",
+                !ttNoOriginalIssues38.Any(i => i.Message.Contains("原创声明当前不可用")),
+                Msg38(ttNoOriginalIssues38));
+
+            // ── 头条视频生成图文=2（2026-11-11 回读：只在视频存草稿时生效）──
+            var ttTransDraft38 = Draft38(PlatformNames.Toutiao);
+            var ttTransDraftIssues38 = PublishPreflight.Validate(ttTransDraft38,
+                new PlatformParams { Toutiao = new ToutiaoExtras { VideoTransArticleFlag = 2 } });
+            Check("预检：头条「仅保存草稿」→ Warning（当前流程立即发布视频，平台忽略该选项）",
+                Has38(ttTransDraftIssues38, PlatformNames.Toutiao, PreflightSeverity.Warning,
+                    "仅保存草稿", "忽略"),
+                Msg38(ttTransDraftIssues38));
+
+            var ttTransPublish38 = Draft38(PlatformNames.Toutiao);
+            var ttTransPublishIssues38 = PublishPreflight.Validate(ttTransPublish38,
+                new PlatformParams { Toutiao = new ToutiaoExtras { VideoTransArticleFlag = 1 } });
+            Check("预检：头条「与视频同时发布」→ 不报存草稿警告",
+                !ttTransPublishIssues38.Any(i => i.Message.Contains("仅保存草稿")),
+                Msg38(ttTransPublishIssues38));
+
             // ── 小红书标题 ≤20 与正文（含话题）总长 ──
             var xhsEdge38 = Draft38(PlatformNames.Xiaohongshu,
                 new string('房', PlatformLimits.XhsDescChars));
@@ -3818,9 +4443,10 @@ public static class PublishSelfTest
             {
                 Activities = [new ActivityRef { Id = "a38", Name = "家居活动" }],
             });
-            Check("预检：小红书只选活动、没有带 ID 话题 → Warning（活动不会生效）",
+            // A6 起活动有独立落点（ACTIVITY_COMPONENT）：缺话题只是少曝光，措辞随之改
+            Check("预检：小红书只选活动、没有带 ID 话题 → Warning（缺赛道话题曝光）",
                 Has38(xhsActivityIssues38, PlatformNames.Xiaohongshu, PreflightSeverity.Warning,
-                    "活动必须关联话题"),
+                    "ACTIVITY_COMPONENT"),
                 Msg38(xhsActivityIssues38));
 
             var xhsActivityOk38 = Draft38(PlatformNames.Xiaohongshu);
@@ -3832,8 +4458,8 @@ public static class PublishSelfTest
                     new TopicRef { Id = "t38", Name = "家居", Source = TopicRefSources.Activity },
                 ],
             });
-            Check("预检：小红书活动带关联话题 → 不报「必须关联话题」",
-                !xhsActivityOkIssues38.Any(i => i.Message.Contains("活动必须关联话题")),
+            Check("预检：小红书活动带关联话题 → 不报「缺赛道话题曝光」",
+                !xhsActivityOkIssues38.Any(i => i.Message.Contains("ACTIVITY_COMPONENT")),
                 Msg38(xhsActivityOkIssues38));
 
             // ── 结构化话题缺 ID：按平台点名「会怎么降级」──
@@ -4071,6 +4697,387 @@ public static class PublishSelfTest
                 body40NoDecl);
         }
 
+        // ── B5（2026-11-15）：字幕两步 wire / 互动卡片 / add/v3 预配置标记 ──
+        var subUploadUrl40 = BilibiliSubtitleService.BuildUploadUrl("csrfX", 1794735965420);
+        Check("B站字幕：上传 URL = api 域 + t / locale / device / csrf（抓包同形）",
+            subUploadUrl40.StartsWith(
+                "https://api.bilibili.com/x/upload/web/image?t=1794735965420", StringComparison.Ordinal)
+            && subUploadUrl40.Contains("&csrf=csrfX", StringComparison.Ordinal)
+            && subUploadUrl40.Contains("x-bili-locale-json=%7B%22c_locale%22", StringComparison.Ordinal),
+            subUploadUrl40);
+
+        var subPreUrl40 = BilibiliSubtitleService.BuildPreSaveUrl("csrfX", 1794735965544);
+        Check("B站字幕：绑定 URL = subtitle/draft/preSave",
+            subPreUrl40.StartsWith(
+                "https://api.bilibili.com/x/v2/dm/subtitle/draft/preSave?t=1794735965544",
+                StringComparison.Ordinal),
+            subPreUrl40);
+
+        using (var subForm40 = BilibiliSubtitleService.BuildUploadForm(
+            "1\n00:00:00,000 --> 00:00:02,000\n你好\n"u8, "sub.srt", "csrfX"))
+        {
+            var subFormText40 = subForm40.ReadAsStringAsync().GetAwaiter().GetResult();
+            Check("B站字幕：上传表单 bucket=subtitle / file / content_type / csrf",
+                subFormText40.Contains("name=bucket", StringComparison.Ordinal)
+                && subFormText40.Contains("subtitle", StringComparison.Ordinal)
+                && subFormText40.Contains("name=file", StringComparison.Ordinal)
+                && subFormText40.Contains("filename=sub.srt", StringComparison.Ordinal)
+                && subFormText40.Contains("application/x-subrip", StringComparison.Ordinal)
+                && subFormText40.Contains("name=csrf", StringComparison.Ordinal),
+                subFormText40);
+        }
+
+        using (var subPreForm40 = BilibiliSubtitleService.BuildPreSaveForm(
+            43485365788, "zh",
+            "http://i0.hdslb.com/bfs/subtitle/d2628adaeec59489ea9e1b8c8e50a61359edbbc8.srt",
+            "csrfX"))
+        {
+            var subPreText40 = subPreForm40.ReadAsStringAsync().GetAwaiter().GetResult();
+            Check("B站字幕：绑定表单 oid / type=1 / files / aid=0 / csrf（抓包同形）",
+                subPreText40.Contains("name=oid", StringComparison.Ordinal)
+                && subPreText40.Contains("43485365788", StringComparison.Ordinal)
+                && subPreText40.Contains("name=type", StringComparison.Ordinal)
+                && subPreText40.Contains("name=type\r\n\r\n1\r\n", StringComparison.Ordinal)
+                && subPreText40.Contains("name=files", StringComparison.Ordinal)
+                && subPreText40.Contains(
+                    "{\"url\":\"http://i0.hdslb.com/bfs/subtitle/"
+                    + "d2628adaeec59489ea9e1b8c8e50a61359edbbc8.srt\",\"lan\":\"zh\","
+                    + "\"subtitle_id\":0}",
+                    StringComparison.Ordinal)
+                && subPreText40.Contains("name=aid", StringComparison.Ordinal)
+                && subPreText40.Contains("name=csrf", StringComparison.Ordinal),
+                subPreText40);
+        }
+
+        Check("B站字幕：files JSON 与抓包逐字",
+            BilibiliSubtitleService.BuildFilesJson(
+                "http://i0.hdslb.com/bfs/subtitle/d2628adaeec59489ea9e1b8c8e50a61359edbbc8.srt", "zh")
+            == """[{"url":"http://i0.hdslb.com/bfs/subtitle/d2628adaeec59489ea9e1b8c8e50a61359edbbc8.srt","lan":"zh","subtitle_id":0}]""");
+
+        Check("B站字幕：location 解析 + https→http 归一（页面 replace 同款）",
+            BilibiliSubtitleService.ParseUploadLocation(
+                """{"code":0,"data":{"location":"https://i0.hdslb.com/bfs/subtitle/x.srt","etag":"x"}}""")
+            == "http://i0.hdslb.com/bfs/subtitle/x.srt");
+        Check("B站字幕：缺 data.location → 明确报错",
+            BiliThrows(() => BilibiliSubtitleService.ParseUploadLocation(
+                """{"code":0,"data":{}}"""), "location"));
+        Check("B站字幕：只收 .srt（大小写不敏感）/ 语言留空 = zh",
+            BiliThrows(() => BilibiliSubtitleService.RequireSrtPath("字幕.txt"), ".srt")
+            && BilibiliSubtitleService.RequireSrtPath("a.SRT") == "a.SRT"
+            && BilibiliSubtitleService.NormalizeLan(null) == "zh"
+            && BilibiliSubtitleService.NormalizeLan(" en ") == "en");
+
+        var cardData40 = BilibiliCardService.BuildGuideCardDataJson(2);
+        Check("B站卡片：data JSON 与抓包逐字（顺序也一致）",
+            cardData40 == """{"duration":5000,"posX_2":50,"posY_2":65,"type":2,"auto_create":false,"count_down":10}""",
+            cardData40);
+
+        using (var cardForm40 = BilibiliCardService.BuildGuideCardForm(43626269328, 2, 0, "csrfX"))
+        {
+            var cardFormText40 = cardForm40.ReadAsStringAsync().GetAwaiter().GetResult();
+            Check("B站卡片：表单字段齐（type=5 / cid / progress / plat=10 / data / csrf）",
+                cardFormText40.Contains("type=5", StringComparison.Ordinal)
+                && cardFormText40.Contains("cid=43626269328", StringComparison.Ordinal)
+                && cardFormText40.Contains("progress=0", StringComparison.Ordinal)
+                && cardFormText40.Contains("plat=10", StringComparison.Ordinal)
+                && cardFormText40.Contains("auto_create=false", StringComparison.Ordinal)
+                && cardFormText40.Contains("count_down=10", StringComparison.Ordinal)
+                && cardFormText40.Contains("csrf=csrfX", StringComparison.Ordinal)
+                && cardFormText40.Contains("data=%7B%22duration%22%3A5000", StringComparison.Ordinal),
+                cardFormText40);
+        }
+
+        var card40 = BilibiliCardService.ParseCardResponse(
+            """{"code":0,"data":{"id":2245170125068229600,"command":"#ATTENTION#","content":"关注弹幕"}}""");
+        Check("B站卡片：响应解析（id / command / content）",
+            card40.Id == 2245170125068229600 && card40.Command == "#ATTENTION#"
+            && card40.Content == "关注弹幕");
+        Check("B站卡片：code≠0 → 明确报错",
+            BiliThrows(() => BilibiliCardService.ParseCardResponse(
+                """{"code":-400,"message":"bad"}"""), "-400"));
+        Check("B站卡片：v1 只做 0/1/2 三种样式",
+            BilibiliCardService.FollowTypeLabel(2) == "三连+关注"
+            && BilibiliCardService.FollowTypeLabel(1) == "仅三连"
+            && BilibiliCardService.FollowTypeLabel(0) == "仅关注");
+
+        // ── 卡片 v2（2026-11-15 B5.2）：关联视频 / 投票弹幕 create 体 ──
+        var relatedData40 = BilibiliCardService.BuildRelatedVideoDataJson(
+            "BV1RFWs6XExT", "关联视频测试");
+        Check("B站关联视频：data JSON 与抓包逐字（oid / msg / duration / pos）",
+            relatedData40
+            == """{"oid":"BV1RFWs6XExT","msg":"关联视频测试","duration":10000,"posX_2":50,"posY_2":65}""",
+            relatedData40);
+
+        using (var relatedForm40 = BilibiliCardService.BuildRelatedVideoCardForm(
+            43627119174, "BV1RFWs6XExT", "关联视频测试", 3000, "csrfX"))
+        {
+            var relatedFormText40 = relatedForm40.ReadAsStringAsync().GetAwaiter().GetResult();
+            Check("B站关联视频：表单 type=2 / cid / progress / plat / data / csrf（无 auto_create / count_down）",
+                relatedFormText40.Contains("type=2", StringComparison.Ordinal)
+                && relatedFormText40.Contains("cid=43627119174", StringComparison.Ordinal)
+                && relatedFormText40.Contains("progress=3000", StringComparison.Ordinal)
+                && relatedFormText40.Contains("plat=10", StringComparison.Ordinal)
+                && relatedFormText40.Contains("csrf=csrfX", StringComparison.Ordinal)
+                && !relatedFormText40.Contains("auto_create", StringComparison.Ordinal)
+                && !relatedFormText40.Contains("count_down", StringComparison.Ordinal)
+                && relatedFormText40.Contains(
+                    "data=%7B%22oid%22%3A%22BV1RFWs6XExT%22", StringComparison.Ordinal),
+                relatedFormText40);
+        }
+
+        var voteData40 = BilibiliCardService.BuildVoteDataJson(
+            "你最喜欢哪种视频", ["长视频", "短视频"], 7000);
+        Check("B站投票弹幕：data JSON 与抓包逐字（question / duration / pos / 选项）",
+            voteData40
+            == """{"question":"你最喜欢哪种视频","duration":7000,"posX_2":97,"posY_2":85,"pub_dynamic":false,"has_self_def":"0","optionA":"长视频","optionB":"短视频"}""",
+            voteData40);
+
+        using (var voteForm40 = BilibiliCardService.BuildVoteCardForm(
+            43627119174, "你最喜欢哪种视频", ["长视频", "短视频"], 7000, 0, "csrfX"))
+        {
+            var voteFormText40 = voteForm40.ReadAsStringAsync().GetAwaiter().GetResult();
+            Check("B站投票弹幕：表单 type=9 / cid / progress / plat / data / csrf",
+                voteFormText40.Contains("type=9", StringComparison.Ordinal)
+                && voteFormText40.Contains("cid=43627119174", StringComparison.Ordinal)
+                && voteFormText40.Contains("progress=0", StringComparison.Ordinal)
+                && voteFormText40.Contains("plat=10", StringComparison.Ordinal)
+                && voteFormText40.Contains("csrf=csrfX", StringComparison.Ordinal)
+                && voteFormText40.Contains("data=%7B%22question%22%3A%22", StringComparison.Ordinal),
+                voteFormText40);
+        }
+
+        Check("B站投票弹幕：规则矩阵（问题 12/13、选项 6/7、重复 / 分号 / 数量）",
+            BilibiliCardService.ValidateVote("一二三四五六七八九十一二", ["长视频", "短视频"]).Count == 0
+            && BilibiliCardService.ValidateVote("一二三四五六七八九十一二三", ["长视频", "短视频"])
+                .Any(p => p.Contains("最多 12 个字", StringComparison.Ordinal))
+            && BilibiliCardService.ValidateVote("Q", ["一二三四五六", "短视频"]).Count == 0
+            && BilibiliCardService.ValidateVote("Q", ["一二三四五六七", "短视频"])
+                .Any(p => p.Contains("最多 6 个字", StringComparison.Ordinal))
+            && BilibiliCardService.ValidateVote("Q", ["长视频", "长视频"])
+                .Any(p => p.Contains("不能重复", StringComparison.Ordinal))
+            && BilibiliCardService.ValidateVote("Q", ["长;视频", "短视频"])
+                .Any(p => p.Contains("分号", StringComparison.Ordinal))
+            && BilibiliCardService.ValidateVote("Q", ["长视频"])
+                .Any(p => p.Contains("至少", StringComparison.Ordinal))
+            && BilibiliCardService.ValidateVote("Q", ["A1", "B1", "C1", "D1", "E1"])
+                .Any(p => p.Contains("最多 4 个", StringComparison.Ordinal)));
+
+        Check("B站投票弹幕：选项空洞（C 空不能只填 D）/ 四格映射",
+            BilibiliCardService.HasOptionGap("A", "B", "", "D")
+            && !BilibiliCardService.HasOptionGap("A", "B", "C", "D")
+            && BilibiliCardService.VoteOptionsFrom("长视频", "短视频", null, null)
+                .SequenceEqual(new[] { "长视频", "短视频" })
+            && BilibiliCardService.VoteOptionsFrom("A", "B", "C", "D").Count == 4);
+
+        // ── 卡片 / 字幕回读通道（2026-11-15 B5 抓包：创建前 data:null、创建后是数组）──
+        var cardListUrl40 = BilibiliCardService.BuildListUrl(null, 43626269328);
+        Check("B站卡片回读：列表 URL = creative/list?oid=&plat=10（抓包同形）",
+            cardListUrl40
+            == "https://api.bilibili.com/x/v2/dm/command/creative/list?oid=43626269328&plat=10",
+            cardListUrl40);
+        Check("B站卡片回读：data:null → 空列表（还没建过）",
+            BilibiliCardService.ParseCardList(
+                """{"code":0,"message":"OK","ttl":1,"data":null}""").Count == 0);
+        var cards40 = BilibiliCardService.ParseCardList(
+            """{"code":0,"message":"OK","ttl":1,"data":[{"id":2245170125068229600,"oid":43626269328,"mid":10461996,"type":5,"command":"#ATTENTION#","content":"关注弹幕","progress":0}]}""");
+        Check("B站卡片回读：列表解析（id / type / command / progress）",
+            cards40.Count == 1 && cards40[0].Id == 2245170125068229600 && cards40[0].Type == 5
+            && cards40[0].Command == "#ATTENTION#" && cards40[0].Progress == 0);
+        Check("B站卡片回读：code≠0 → 明确报错",
+            BiliThrows(() => BilibiliCardService.ParseCardList(
+                """{"code":-101,"message":"账号未登录"}"""), "-101"));
+
+        var archive40 = BilibiliArchiveService.Parse(
+            """{"code":0,"data":{"archive":{"aid":1,"bvid":"BV1x","title":"t","tid":21,"is_only_self":1,"dtime":0,"tag":"a,b"},"videos":[{"cid":43485365788}],"subtitle":{"allow":false,"lan":"zh","lan_doc":"中文","draft_list":[{"url":"x"}]}}}""");
+        Check("B站稿件回读：cid / 字幕状态（lan / lan_doc / draft_list 条数）",
+            archive40.Cid == 43485365788 && archive40.SubtitleLan == "zh"
+            && archive40.SubtitleLanDoc == "中文" && archive40.SubtitleDraftCount == 1
+            && !archive40.SubtitleAllow && archive40.IsOnlySelf);
+        Check("B站稿件回读：subtitle / videos 缺失不炸（老响应兼容）",
+            BilibiliArchiveService.Parse(
+                """{"code":0,"data":{"archive":{"aid":1,"bvid":"BV1x","title":"t","tid":21}}}""").Cid == 0);
+
+        var body40Pre = BilibiliPublishService.BuildAddV3Body(
+            addReq40 with { PreSubtitle = true, PreCommand = true });
+        using (var preDoc40 = JsonDocument.Parse(body40Pre))
+        {
+            var video40 = preDoc40.RootElement.GetProperty("videos")[0];
+            Check("add/v3 体：pre_subtitle / pre_command 落 videos[0]",
+                video40.GetProperty("pre_subtitle").GetBoolean()
+                && video40.GetProperty("pre_command").GetBoolean(), body40Pre);
+            Check("add/v3 体：挂了字幕时 subtitle 仍按页面占位（open=0 / lan 空）",
+                preDoc40.RootElement.GetProperty("subtitle").GetProperty("open").GetInt32() == 0
+                && preDoc40.RootElement.GetProperty("subtitle").GetProperty("lan").GetString() == "",
+                body40Pre);
+        }
+        Check("add/v3 体：没传字幕 / 卡片时不出现预配置标记",
+            !body40.Contains("\"pre_subtitle\"", StringComparison.Ordinal)
+            && !body40.Contains("\"pre_command\"", StringComparison.Ordinal));
+
+        // params.txt → UnitParams → 只写 B站目标
+        var biliB5Params40 = PublishParamsFile.Parse("""
+            B站字幕: 字幕.srt
+            B站字幕语言: en
+            B站互动引导: 仅三连
+            B站引导时间: 00:30
+            B站关联视频: BV1RFWs6XExT
+            B站关联视频描述: 关联视频测试
+            B站关联视频时间: 00:05
+            B站投票: 你最喜欢哪种视频
+            B站投票选项: 长视频;短视频;都可以
+            B站投票时间: 00:10
+            B站投票时长: 8
+            """);
+        Check("params：B站字幕 / 语言 / 互动引导 / 关联视频 / 投票解析",
+            biliB5Params40.BilibiliSubtitleFile == "字幕.srt"
+            && biliB5Params40.BilibiliSubtitleLan == "en"
+            && biliB5Params40.BilibiliGuideCard == true
+            && biliB5Params40.BilibiliGuideCardFollowType == 1
+            && biliB5Params40.BilibiliGuideCardStartSeconds == 30
+            && biliB5Params40.BilibiliRelatedVideo == "BV1RFWs6XExT"
+            && biliB5Params40.BilibiliRelatedVideoMsg == "关联视频测试"
+            && biliB5Params40.BilibiliRelatedVideoStartSeconds == 5
+            && biliB5Params40.BilibiliVoteQuestion == "你最喜欢哪种视频"
+            && biliB5Params40.BilibiliVoteOptions is { Count: 3 }
+            && biliB5Params40.BilibiliVoteOptions[2] == "都可以"
+            && biliB5Params40.BilibiliVoteStartSeconds == 10
+            && biliB5Params40.BilibiliVoteDurationSeconds == 8
+            && biliB5Params40.Problems.Count == 0,
+            string.Join(" | ", biliB5Params40.Problems.Select(p => p.Reason)));
+        Check("params：B站互动引导 否 → 关 / 是 → 三连+关注",
+            PublishParamsFile.Parse("B站互动引导: 否")
+                is { BilibiliGuideCard: false, BilibiliGuideCardFollowType: null }
+            && PublishParamsFile.Parse("B站互动引导: 是")
+                is { BilibiliGuideCard: true, BilibiliGuideCardFollowType: 2 });
+
+        var biliDir40 = Path.Combine(Path.GetTempPath(), $"bili_b5_t40_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(biliDir40);
+        try
+        {
+            var biliDraft40 = new PublishDraft(Path.Combine(biliDir40, "v.mp4"), biliDir40)
+            {
+                Title = "B5",
+            };
+            biliDraft40.Targets.Add(
+                new PublishTarget(PlatformNames.Bilibili, Guid.NewGuid(), "B站号"));
+            biliDraft40.Targets.Add(
+                new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "抖音号"));
+            PublishDraftFactory.ApplyUnitParams(biliDraft40, biliB5Params40);
+            var biliB5Params40Applied = biliDraft40.ParamsFor(biliDraft40.Targets[0]);
+            var dyParams40 = biliDraft40.ParamsFor(biliDraft40.Targets[1]);
+            Check("Apply：B站字幕相对路径按发布单元文件夹解析 + 三类卡片只写 B站目标",
+                biliB5Params40Applied.Bilibili?.SubtitleFile
+                    == Path.GetFullPath(Path.Combine(biliDir40, "字幕.srt"))
+                && biliB5Params40Applied.Bilibili?.SubtitleFileLan == "en"
+                && biliB5Params40Applied.Bilibili
+                    is { GuideCardEnabled: true, GuideCardFollowType: 1, GuideCardStartSeconds: 30 }
+                && biliB5Params40Applied.Bilibili
+                    is { RelatedVideoEnabled: true, RelatedVideoBvid: "BV1RFWs6XExT",
+                         RelatedVideoMsg: "关联视频测试", RelatedVideoStartSeconds: 5 }
+                && biliB5Params40Applied.Bilibili
+                    is { VoteEnabled: true, VoteQuestion: "你最喜欢哪种视频",
+                         VoteOptionA: "长视频", VoteOptionB: "短视频", VoteOptionC: "都可以",
+                         VoteOptionD: null, VoteStartSeconds: 10, VoteDurationSeconds: 8 }
+                && dyParams40.Bilibili is null,
+                biliB5Params40Applied.Bilibili?.SubtitleFile ?? "(null)");
+
+            // 预检：字幕文件缺失 / 只收 .srt → Error
+            var preflightDraft40 = new PublishDraft(Path.Combine(biliDir40, "v.mp4"), biliDir40)
+            {
+                Title = "B5",
+            };
+            preflightDraft40.Targets.Add(
+                new PublishTarget(PlatformNames.Bilibili, Guid.NewGuid(), "B站号"));
+            var pp40 = preflightDraft40.ParamsFor(preflightDraft40.Targets[0]);
+            pp40.Tags = ["家居"];
+            pp40.Bilibili = new BilibiliExtras
+            {
+                SubtitleFile = Path.Combine(biliDir40, "nope.srt"),
+            };
+            var missingIssues40 = PublishPreflight.Validate(preflightDraft40);
+            Check("预检：B站字幕文件不存在 → Error",
+                missingIssues40.Any(i => i.Severity == PreflightSeverity.Error
+                    && i.Message.Contains("字幕文件不存在", StringComparison.Ordinal)),
+                string.Join(" | ", missingIssues40.Select(i => i.Message)));
+
+            pp40.Bilibili = new BilibiliExtras
+            {
+                SubtitleFile = Path.Combine(biliDir40, "a.txt"),
+            };
+            Check("预检：B站字幕只收 .srt → Error",
+                PublishPreflight.Validate(preflightDraft40).Any(i =>
+                    i.Severity == PreflightSeverity.Error
+                    && i.Message.Contains("只支持 .srt", StringComparison.Ordinal)));
+
+            // 卡片 v2（B5.2）：关联视频缺目标 / 投票规则与选项空洞 / 同时间段提醒
+            pp40.Bilibili = new BilibiliExtras
+            {
+                RelatedVideoEnabled = true,
+                RelatedVideoBvid = "",
+            };
+            Check("预检：B站关联视频开了但没填 BVID → Error",
+                PublishPreflight.Validate(preflightDraft40).Any(i =>
+                    i.Severity == PreflightSeverity.Error
+                    && i.Message.Contains("没填目标视频 BVID", StringComparison.Ordinal)));
+
+            pp40.Bilibili = new BilibiliExtras
+            {
+                VoteEnabled = true,
+                VoteQuestion = "你最喜欢哪种视频",
+                VoteOptionA = "长视频",
+                VoteOptionB = "短视频",
+                VoteOptionC = "",
+                VoteOptionD = "都可以",
+            };
+            Check("预检：B站投票选项空洞（C 空只填 D）→ Error",
+                PublishPreflight.Validate(preflightDraft40).Any(i =>
+                    i.Severity == PreflightSeverity.Error
+                    && i.Message.Contains("从 A 开始连续", StringComparison.Ordinal)));
+
+            pp40.Bilibili = new BilibiliExtras
+            {
+                VoteEnabled = true,
+                VoteQuestion = "一二三四五六七八九十一二三",
+                VoteOptionA = "长视频",
+                VoteOptionB = "短视频",
+            };
+            Check("预检：B站投票问题超 12 字 → Error",
+                PublishPreflight.Validate(preflightDraft40).Any(i =>
+                    i.Severity == PreflightSeverity.Error
+                    && i.Message.Contains("最多 12 个字", StringComparison.Ordinal)));
+
+            pp40.Bilibili = new BilibiliExtras
+            {
+                VoteEnabled = true,
+                VoteQuestion = "你最喜欢哪种视频",
+                VoteOptionA = "长视频",
+                VoteOptionB = "短视频",
+                VoteStartSeconds = 0,
+                VoteDurationSeconds = 7,
+            };
+            Check("预检：B站投票合法配置不报 B站投票 Error",
+                PublishPreflight.Validate(preflightDraft40).All(i =>
+                    i.Severity != PreflightSeverity.Error
+                    || !i.Message.Contains("B站投票", StringComparison.Ordinal)));
+
+            pp40.Bilibili = new BilibiliExtras
+            {
+                GuideCardEnabled = true,
+                GuideCardStartSeconds = 5,
+                RelatedVideoEnabled = true,
+                RelatedVideoBvid = "BV1RFWs6XExT",
+                RelatedVideoStartSeconds = 5,
+            };
+            Check("预检：B站多张卡片同一时间段 → Warning",
+                PublishPreflight.Validate(preflightDraft40).Any(i =>
+                    i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("同一时间段", StringComparison.Ordinal)));
+        }
+        finally
+        {
+            try { Directory.Delete(biliDir40, true); } catch { /* best effort */ }
+        }
+
         // 定时 = dtime（Unix 秒）—— 抓包时开关是关的，字段按平台模型 archive.dtime 补
         var body40Scheduled = BilibiliPublishService.BuildAddV3Body(
             addReq40 with { Dtime = 1793786078 });
@@ -4234,6 +5241,8 @@ public static class PublishSelfTest
             Label = ["家居", "装修"],
             CoverTitles = ["封面标题"],
             Hashtags = [new ToutiaoHashtag("7425", "作品同步头条赢激励")],
+            // 作品声明（A1）：自行拍摄 + 城市 / 毫秒时间
+            ComplianceInfo = ToutiaoComplianceOptions.BuildInfo(1, "苏州", 1794276000000),
         };
         var horizBody42 = ToutiaoPublishService.BuildPublishBody(horiz42);
         using (var doc42 = JsonDocument.Parse(horizBody42))
@@ -4268,6 +5277,55 @@ public static class PublishSelfTest
                 && root42.GetProperty("OsType").GetString() == "09"
                 && root42.GetProperty("DevicePlatform").GetString() == "pc",
                 horizBody42);
+
+            Check("头条体：ComplianceInfo 逐字（IsAIGC / ComplianceType / CreativeInfo 毫秒）",
+                root42.GetProperty("ComplianceInfo").GetProperty("IsAIGC").GetBoolean() == false
+                && root42.GetProperty("ComplianceInfo").GetProperty("ComplianceType").GetInt32() == 1
+                && root42.GetProperty("ComplianceInfo").GetProperty("CreativeInfo")
+                    .GetProperty("City").GetString() == "苏州"
+                && root42.GetProperty("ComplianceInfo").GetProperty("CreativeInfo")
+                    .GetProperty("CreativeTime").GetInt64() == 1794276000000,
+                horizBody42);
+        }
+
+        using (var noDeclDoc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { ComplianceInfo = null })))
+        {
+            Check("头条体：不声明时 ComplianceInfo 字段完全不出现",
+                !noDeclDoc42.RootElement.TryGetProperty("ComplianceInfo", out _));
+        }
+
+        using (var draftDoc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { PublishType = 0 })))
+        {
+            Check("头条体：PublishType=0（存草稿）原样下发",
+                draftDoc42.RootElement.GetProperty("PublishType").GetInt32() == 0);
+        }
+
+        // 视频生成图文（A2）：1/2 原样出现；null / 0 不出现
+        using (var trans1Doc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { VideoTransArticleFlag = 1 })))
+        {
+            Check("头条体：视频生成图文 1（与视频同时发布）原样出现",
+                trans1Doc42.RootElement.GetProperty("VideoTransArticleFlag").GetInt32() == 1);
+        }
+        using (var trans2Doc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { VideoTransArticleFlag = 2 })))
+        {
+            Check("头条体：视频生成图文 2（仅保存草稿）原样出现",
+                trans2Doc42.RootElement.GetProperty("VideoTransArticleFlag").GetInt32() == 2);
+        }
+        using (var transNoneDoc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { VideoTransArticleFlag = null })))
+        {
+            Check("头条体：视频生成图文未选 → 字段完全不出现",
+                !transNoneDoc42.RootElement.TryGetProperty("VideoTransArticleFlag", out _));
+        }
+        using (var transZeroDoc42 = JsonDocument.Parse(ToutiaoPublishService.BuildPublishBody(
+                   horiz42 with { VideoTransArticleFlag = 0 })))
+        {
+            Check("头条体：视频生成图文 0（关闭）→ 字段完全不出现",
+                !transZeroDoc42.RootElement.TryGetProperty("VideoTransArticleFlag", out _));
         }
 
         var vert42 = horiz42 with { VideoType = 6, Width = 1080, Height = 1920, HideType = 0 };
@@ -4311,6 +5369,26 @@ public static class PublishSelfTest
             && ttParams42.ToutiaoFilter == "滤镜B"
             && ttParams42.Problems.Count == 0,
             string.Join("；", ttParams42.Problems.Select(p => p.Reason)));
+
+        // A2：头条视频生成图文 params 键（数字与中文语义都认；认不出不阻断其它字段）
+        var ttTransParams42 = PublishParamsFile.Parse("头条视频生成图文: 仅保存草稿");
+        Check("params.txt：头条视频生成图文 = 2（仅保存草稿）",
+            ttTransParams42.ToutiaoVideoTransArticle == 2
+            && ttTransParams42.Problems.Count == 0,
+            string.Join("；", ttTransParams42.Problems.Select(p => p.Reason)));
+        Check("params.txt：头条视频生成图文 = 1（同发布）/ 0（不生成）",
+            PublishParamsFile.Parse("头条视频生成图文: 同时发布").ToutiaoVideoTransArticle == 1
+            && PublishParamsFile.Parse("头条视频生成图文: 0").ToutiaoVideoTransArticle == 0);
+        Check("params.txt：头条视频生成图文写错 → Problem，不吞成默认值",
+            PublishParamsFile.Parse("头条视频生成图文: 随便")
+                .Problems.Any(p => p.Reason.Contains("认不出")));
+
+        var transApplyDraft42 = new PublishDraft(@"D:\demo\t42-trans.mp4");
+        var transApplyTarget42 = new PublishTarget(PlatformNames.Toutiao, Guid.NewGuid(), "头条号");
+        transApplyDraft42.Targets.Add(transApplyTarget42);
+        PublishDraftFactory.ApplyUnitParams(transApplyDraft42, ttTransParams42);
+        Check("params.txt：头条视频生成图文落到头条目标",
+            transApplyDraft42.ParamsFor(transApplyTarget42).Toutiao?.VideoTransArticleFlag == 2);
 
         var ttFile42 = Path.Combine(Path.GetTempPath(), "newapp-selftest-t42.mp4");
         File.WriteAllText(ttFile42, "x");
@@ -4356,6 +5434,41 @@ public static class PublishSelfTest
                 declIssues42.Count(i => i.Severity == PreflightSeverity.Warning
                     && i.Message.Contains("声明")) == 1,
                 string.Join("；", declIssues42.Select(i => i.Message)));
+
+            // 作品声明（A1）：自行拍摄 → 城市/时间缺失提示；补齐后不再提示
+            Check("预检：头条自行拍摄缺城市/时间 → Warning",
+                declIssues42.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("自行拍摄") && i.Message.Contains("缺少")),
+                string.Join("；", declIssues42.Select(i => i.Message)));
+            // 注意：ParamsFor 首次访问即固化到 draft.Overrides —— 必须用**新草稿**验另一份预设，
+            // 复用 declDraft42 会把第一次的空预设继续用下去（假失败）。
+            var selfDraft42 = TtDraft42(false, false);
+            selfDraft42.Declaration = new ContentDeclaration { Kind = DeclarationKind.SelfShot };
+            var selfComplete42 = PublishPreflight.Validate(selfDraft42, new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { ComplianceCity = "苏州", ComplianceTime = DateTime.Today },
+            });
+            Check("预检：头条自行拍摄补齐城市/时间 → 不再提示",
+                selfComplete42.All(i => !i.Message.Contains("自行拍摄")),
+                string.Join("；", selfComplete42.Select(i => i.Message)));
+
+            // 营销：头条无对应声明；平台覆盖非 null 时按覆盖走，不再报全局营销
+            var marketingDraft42 = TtDraft42(false, false);
+            marketingDraft42.Declaration = new ContentDeclaration { Kind = DeclarationKind.Marketing };
+            var marketingIssues42 = PublishPreflight.Validate(marketingDraft42, new PlatformParams());
+            Check("预检：头条 + 营销 → Warning「没有含营销推广信息声明」",
+                marketingIssues42.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("没有「含营销推广信息」声明")),
+                string.Join("；", marketingIssues42.Select(i => i.Message)));
+            var overrideDraft42 = TtDraft42(false, false);
+            overrideDraft42.Declaration = new ContentDeclaration { Kind = DeclarationKind.Marketing };
+            var overrideIssues42 = PublishPreflight.Validate(overrideDraft42, new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { DeclarationOverride = 7 },
+            });
+            Check("预检：头条平台覆盖 7 → 不再报全局营销声明",
+                overrideIssues42.All(i => !i.Message.Contains("含营销推广信息")),
+                string.Join("；", overrideIssues42.Select(i => i.Message)));
 
             // 话题无平台 ID：横版正文 #文本兜底 / 竖版连简介都没有 → 完全不会发送
             var topicParams42 = new PlatformParams
@@ -4538,6 +5651,2202 @@ public static class PublishSelfTest
             var tiny = XhsUploadService.TranscodePollCount(1, 100_000);
             Check("小红书转码：极小视频 → 61 次（基线 3 分钟，不退回归零）",
                 tiny == 61, tiny.ToString());
+        }
+
+        // ── 45. 头条发布权限解析（GetPublishAuth，2026-11-10）──
+        //   赞赏开关能否生效取决于 HasPraisePermission；解析器必须「缺字段 = 未知」，
+        //   绝不能把缺失当可用（否则用户以为赞赏开了，其实被平台静默忽略）。
+        sb.AppendLine("\n[45] 头条发布权限解析（GetPublishAuth，2026-11-10）");
+        {
+            const string auth45 = """
+            {"data":{"authorPermission":{"ClaimOriginPermission":false,"HasPraisePermission":false,
+             "DisablePublish":false,"CanNotClaimOriginReason":"原创功能已下线",
+             "TransferToArticleStatus":{"TransferToArticleSetting":0,"TransferToArticleButtonShow":true}},
+             "BaseResp":{}},"status":0}
+            """;
+            var parsed45 = ToutiaoPublishAuthParser.Parse(auth45);
+            Check("权限解析：赞赏/原创/禁发/原因/视频生成图文 五字段",
+                parsed45 is
+                {
+                    PraiseAllowed: false,
+                    ClaimOriginAllowed: false,
+                    PublishDisabled: false,
+                    NoClaimOriginReason: "原创功能已下线",
+                    TransferToArticleAllowed: true,
+                },
+                parsed45?.ToString() ?? "null");
+
+            var bools45 = ToutiaoPublishAuthParser.Parse(
+                """{"data":{"authorPermission":{"HasPraisePermission":true,"ClaimOriginPermission":1,"DisablePublish":true,"TransferToArticleStatus":{"TransferToArticleButtonShow":1}}}}""");
+            Check("权限解析：bool 与 0/1 两种写法都认",
+                bools45 is { PraiseAllowed: true, ClaimOriginAllowed: true, PublishDisabled: true,
+                             TransferToArticleAllowed: true },
+                bools45?.ToString() ?? "null");
+
+            var missing45 = ToutiaoPublishAuthParser.Parse(
+                """{"data":{"authorPermission":{"HasPraisePermission":false}}}""");
+            Check("权限解析：缺字段 → null（未知 ≠ 可用）",
+                missing45 is
+                {
+                    PraiseAllowed: false,
+                    ClaimOriginAllowed: null,
+                    PublishDisabled: null,
+                    NoClaimOriginReason: null,
+                    TransferToArticleAllowed: null,
+                },
+                missing45?.ToString() ?? "null");
+
+            Check("权限解析：没有 authorPermission / 非 JSON / null → null",
+                ToutiaoPublishAuthParser.Parse("""{"data":{}}""") is null
+                && ToutiaoPublishAuthParser.Parse("not json") is null
+                && ToutiaoPublishAuthParser.Parse(null) is null);
+        }
+
+        // ── 46. 视频号拍摄地区树解析（finder_get_object_tag_list，2026-11-10）──
+        //   发布页「拍摄地点」改成平台接口级联选择：树来自「视频标注」列表里 tagType=5
+        //   （内容为自行拍摄）的 regionInfos，国家 → 省 → 市三级。
+        //   抓包样本（object_tag_list.json）与 examples 的 shootInfo 一致：1017 / 10160 / 100032。
+        sb.AppendLine("\n[46] 视频号拍摄地区树解析（finder_get_object_tag_list，2026-11-10）");
+        {
+            static ObjectTagItem Tag46(int type, params RegionInfoItem[] regions) => new()
+                { TagType = type, TagName = "x", RegionInfos = [.. regions] };
+            static RegionInfoItem Node46(int code, string name, params RegionInfoItem[] sub) => new()
+                { Code = code, Name = name, Sub = [.. sub] };
+
+            var tags46 = new List<ObjectTagItem>
+            {
+                Tag46(1, Node46(9, "含AI生成内容")),
+                Tag46(5,
+                    Node46(1017, "中国",
+                        Node46(10160, "安徽", Node46(100032, "合肥")),
+                        Node46(10161, "北京")),
+                    Node46(1012, "俄罗斯")),
+                Tag46(7),
+            };
+
+            var tree46 = WechatVideoRegionService.ParseRegionTree(tags46);
+            Check("地区树：只取 tagType=5、其它标签不算", tree46.Count == 2, tree46.Count.ToString());
+            Check("地区树：国家 → 省 → 市三级（中国 1017 → 安徽 10160 → 合肥 100032）",
+                tree46[0] is { Code: 1017, Name: "中国", Sub.Count: 2 }
+                && tree46[0].Sub[0] is { Code: 10160, Name: "安徽", Sub.Count: 1 }
+                && tree46[0].Sub[0].Sub[0] is { Code: 100032, Name: "合肥" });
+            Check("地区树：无下级的国家 / 直辖市 → 空列表不是 null",
+                tree46[1] is { Code: 1012, Sub.Count: 0 }
+                && tree46[0].Sub[1] is { Code: 10161, Sub.Count: 0 });
+            Check("地区树：没有 tagType=5 / 列表为空 → 空树",
+                WechatVideoRegionService.ParseRegionTree([Tag46(2)]).Count == 0
+                && WechatVideoRegionService.ParseRegionTree([]).Count == 0);
+            Check("地区树：tagType=5 但 regionInfos 为 null → 空树",
+                WechatVideoRegionService.ParseRegionTree(
+                    [new ObjectTagItem { TagType = 5, RegionInfos = null }]).Count == 0);
+        }
+
+        sb.AppendLine("\n[47] 小红书 @用户（search/user_info 解析 + common.ats 组包 + 正文补 @昵称，2026-11-10）");
+        {
+            // 形状取自真账号抓包 capture-2026-11-10T08-33-18.jsonl（含两条真实用户）
+            const string searchJson = """
+            {"code":0,"success":true,"msg":"成功","data":{"result":{"success":true,"code":0,"message":""},
+             "user_info_dtos":[
+              {"user_base_dto":{"user_id":"6581a220000000002002f3b0","user_nickname":"办公技巧学习平台",
+                "red_id":"9124880334","desc":"💡 每天解锁一个办公提效技巧\n📊 Excel | PPT","image":"https://x/a.jpg"},"fans_total":0},
+              {"user_base_dto":{"user_id":"6ab249b70000000013002c01","user_nickname":"小红薯6AB3585A",
+                "red_id":"49811260760","image":"https://x/b.jpg"},"fans_total":0},
+              {"user_base_dto":{"user_nickname":"没有ID的用户"}},
+              {"user_base_dto":{"user_id":"6581a220000000002002f3b0","user_nickname":"重复条目"}}
+             ]}}
+            """;
+            var users47 = XhsMentionService.ParseUsers(JsonDocument.Parse(searchJson).RootElement);
+            Check("搜索响应：取 data.user_info_dtos[].user_base_dto（2 条有效；缺 user_id 的跳过）",
+                users47.Count == 2, users47.Count.ToString());
+            Check("搜索响应：user_id / 昵称 / 小红书号 / 简介",
+                users47[0] is
+                {
+                    UserId: "6581a220000000002002f3b0",
+                    Nickname: "办公技巧学习平台",
+                    RedId: "9124880334",
+                } && users47[0].Desc!.StartsWith("💡", StringComparison.Ordinal));
+            Check("搜索响应：重复 user_id 只留第一条（昵称「小红薯6AB3585A」而不是「重复条目」）",
+                users47[1].Nickname == "小红薯6AB3585A");
+            Check("搜索响应：空 / 非对象响应 → 空列表",
+                XhsMentionService.ParseUsers(JsonDocument.Parse("{}").RootElement).Count == 0
+                && XhsMentionService.ParseUsers(JsonDocument.Parse("[]").RootElement).Count == 0
+                && XhsMentionService.ParseUsers(JsonDocument.Parse("\"x\"").RootElement).Count == 0);
+
+            // common.ats 组包：页面**发布路径** constructData 的 {nickname, userId, name}
+            // （2026-11-15 真账号回读纠偏：旧 {nickname, userId, userid} 被平台静默忽略）
+            var ats47 = XhsMentionService.BuildAtsJson([
+                new XhsMentionUser("u1", "小花"),
+                new XhsMentionUser("u2", "阿明", "red2"),
+                new XhsMentionUser("u1", "小花重复"),
+            ]);
+            var atsDoc47 = JsonDocument.Parse(ats47!);
+            var atsArr47 = atsDoc47.RootElement;
+            Check("ats 组包：按 userId 去重剩 2 条", atsArr47.GetArrayLength() == 2);
+            Check("ats 元素：userId / nickname 两键（与发布路径 MentionList 同形）",
+                atsArr47[0].GetProperty("nickname").GetString() == "小花"
+                && atsArr47[0].GetProperty("userId").GetString() == "u1"
+                && !atsArr47[0].TryGetProperty("userid", out _)
+                && !atsArr47[0].TryGetProperty("name", out _));
+            Check("ats 组包：空列表 → null（发布体不下发）",
+                XhsMentionService.BuildAtsJson([]) is null);
+
+            // 存档回读（旧档 / 预设里已有 common.ats）
+            var back47 = XhsMentionService.ParseAts(ats47);
+            Check("ats 回读：2 条、昵称与 ID 对上",
+                back47.Count == 2 && back47[0].UserId == "u1" && back47[0].Nickname == "小花");
+            Check("ats 回读：空串 / null / 坏 JSON / 非数组 → 空列表且不抛",
+                XhsMentionService.ParseAts("").Count == 0
+                && XhsMentionService.ParseAts(null).Count == 0
+                && XhsMentionService.ParseAts("{坏").Count == 0
+                && XhsMentionService.ParseAts("{\"a\":1}").Count == 0);
+
+            // 正文补 @昵称：页面正文里一定有一行「@昵称」（编辑器把 @ 节点序列化成文本）
+            Check("正文补 @：已有话题的正文末尾追加「 @小花 @阿明」",
+                PublishPayloadBuilder.AppendMentionNames("看房日记 #装修", ats47)
+                == "看房日记 #装修 @小花 @阿明");
+            Check("正文补 @：正文已含「@小花」只补缺的「@阿明」",
+                PublishPayloadBuilder.AppendMentionNames("看房日记 @小花", ats47)
+                == "看房日记 @小花 @阿明");
+            Check("正文补 @：空正文 → 只有「@小花 @阿明」",
+                PublishPayloadBuilder.AppendMentionNames("", ats47) == "@小花 @阿明");
+            Check("正文补 @：坏 JSON / 空 ats 原样返回（不炸预检）",
+                PublishPayloadBuilder.AppendMentionNames("正文", "{坏") == "正文"
+                && PublishPayloadBuilder.AppendMentionNames("正文", null) == "正文");
+            Check("正文补 @：昵称含正则特殊字符按字面处理",
+                PublishPayloadBuilder.AppendMentionNames(
+                    "正文", XhsMentionService.BuildAtsJson([new XhsMentionUser("u9", "A.B(测试)")]))
+                == "正文 @A.B(测试)");
+        }
+
+        sb.AppendLine("\n[48] 小红书互动投票（A4，2026-11-11）");
+        {
+            // ── 规则：2~5 个选项、问题/选项非空、空行丢弃（预检与发布端共用）──
+            var none48 = XhsPollRules.Analyze(null, null);
+            Check("投票规则：未配置 → None", none48.State == XhsPollState.None);
+            Check("投票规则：空白问题 + 空行选项 → None（不建 widget）",
+                XhsPollRules.Analyze("  ", ["", " "]).State == XhsPollState.None);
+
+            var qOnly48 = XhsPollRules.Analyze("你选哪个？", null);
+            Check("投票规则：只有问题没选项 → Invalid",
+                qOnly48.State == XhsPollState.Invalid && qOnly48.Error == "没有选项",
+                qOnly48.Error ?? "(null)");
+
+            var oneOpt48 = XhsPollRules.Analyze("你选哪个？", ["A", " "]);
+            Check("投票规则：1 个有效选项 → Invalid（空行不算）",
+                oneOpt48.State == XhsPollState.Invalid && oneOpt48.Options.Count == 1,
+                oneOpt48.Error ?? "(null)");
+
+            var six48 = XhsPollRules.Analyze("你选哪个？", ["A", "B", "C", "D", "E", "F"]);
+            Check("投票规则：6 个选项 → Invalid（上限 5）",
+                six48.State == XhsPollState.Invalid, six48.Error ?? "(null)");
+
+            var ready48 = XhsPollRules.Analyze("  你选哪个？ ", [" A ", "B", "", " C"]);
+            Check("投票规则：2~5 个选项 → Ready（问题/选项 trim、空行丢弃）",
+                ready48 is { State: XhsPollState.Ready, Question: "你选哪个？" }
+                && ready48.Options.SequenceEqual(["A", "B", "C"]),
+                string.Join("|", ready48.Options));
+
+            // ── create_interact 请求体（抓包逐字形状）──
+            var body48 = XhsPollRules.BuildCreateBody("问题", ready48.Options);
+            var widget48 = (Dictionary<string, object?>)body48["widget_info"]!;
+            var opts48 = (List<Dictionary<string, object?>>)widget48["options"]!;
+            Check("create_interact 体：widget_id 空 / widget_name / interact_vote / is_creator=true",
+                (string?)widget48["widget_id"] == ""
+                && (string?)widget48["widget_name"] == "问题"
+                && (string?)widget48["widget_type"] == XhsPollRules.CreateWidgetType
+                && (bool)widget48["is_creator"]!);
+            Check("create_interact 体：option_id 从 1 连续编号、option_name 原样",
+                opts48.Count == 3
+                && (int)opts48[0]["option_id"]! == 1
+                && (string?)opts48[0]["option_name"] == "A"
+                && (int)opts48[2]["option_id"]! == 3
+                && (string?)opts48[2]["option_name"] == "C");
+
+            // ── 响应解析（抓包实测形状）──
+            Check("create_interact 响应：data.widget_id 取到（实测形状）",
+                XhsPollRules.ReadWidgetId(JsonDocument.Parse(
+                    """{"data":{"widget_id":"138189749100365837"},"code":0,"success":true,"msg":"成功"}""")
+                    .RootElement) == "138189749100365837");
+            Check("create_interact 响应：code≠0 / success=false / 缺 id / 空白 → null",
+                XhsPollRules.ReadWidgetId(JsonDocument.Parse(
+                    """{"code":-1,"msg":"失败"}""").RootElement) is null
+                && XhsPollRules.ReadWidgetId(JsonDocument.Parse(
+                    """{"data":{"widget_id":"1"},"code":0,"success":false}""").RootElement) is null
+                && XhsPollRules.ReadWidgetId(JsonDocument.Parse(
+                    """{"data":{}}""").RootElement) is null
+                && XhsPollRules.ReadWidgetId(JsonDocument.Parse(
+                    """{"data":{"widget_id":"  "}}""").RootElement) is null
+                && XhsPollRules.ReadWidgetId(JsonDocument.Parse("[]").RootElement) is null);
+
+            // ── 发布体 hash_tag：末尾追加 + 同类型先过滤 ──
+            var note48 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "投票笔记",
+                FileId = "spectrum/abc",
+                Topics =
+                [
+                    new XhsTopicItem("t1", "装修日记"),
+                    // 模拟存档里已有的同类型条目（正常路径不会出现；页面合并函数是「先过滤再 concat」）
+                    new XhsTopicItem("old-widget", "旧投票", XhsPollRules.HashTagType),
+                ],
+                PollWidgetId = "138189749100365837",
+                PollQuestion = "你更喜欢哪种装修风格？",
+            });
+            var tags48 = (List<object>)((Dictionary<string, object?>)note48["common"]!)["hash_tag"]!;
+            var votes48 = tags48.OfType<Dictionary<string, object?>>()
+                .Where(t => (string?)t["type"] == XhsPollRules.HashTagType).ToList();
+            Check("hash_tag：投票条目末尾追加、同类型旧条目被过滤（只剩 1 条）",
+                votes48.Count == 1
+                && (string?)votes48[0]["id"] == "138189749100365837"
+                && (string?)votes48[0]["name"] == "你更喜欢哪种装修风格？"
+                && ReferenceEquals(tags48[^1], votes48[0]),
+                $"tags={tags48.Count} votes={votes48.Count}");
+            Check("hash_tag：普通话题不受影响（1 条话题 + 1 条投票）",
+                tags48.Count == 2);
+
+            var noteNoPoll48 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "无投票",
+                FileId = "spectrum/abc",
+                Topics = [new XhsTopicItem("t1", "装修日记")],
+            });
+            var tagsNoPoll48 =
+                (List<object>)((Dictionary<string, object?>)noteNoPoll48["common"]!)["hash_tag"]!;
+            Check("hash_tag：没投票 → 不追加条目（行为与 A4 之前一致）",
+                tagsNoPoll48.Count == 1
+                && tagsNoPoll48.OfType<Dictionary<string, object?>>()
+                    .All(t => (string?)t["type"] != XhsPollRules.HashTagType));
+
+            // 只有问题没有 widget id（异常路径）→ 不追加（两者同时给才生效）
+            var noteNoWidget48 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "半截投票",
+                FileId = "spectrum/abc",
+                PollQuestion = "问题",
+            });
+            var tagsNoWidget48 =
+                (List<object>)((Dictionary<string, object?>)noteNoWidget48["common"]!)["hash_tag"]!;
+            Check("hash_tag：只有问题没有 widget_id → 不追加",
+                tagsNoWidget48.Count == 0);
+
+            // ── builder 透传：XhsExtras → XhsPayload ──
+            var d48 = new PublishDraft(@"D:\demo\t48.mp4")
+            {
+                Title = "投票笔记",
+                Description = "正文",
+            };
+            d48.Meta = new VideoMeta(d48.VideoPath, 1, 12, 1920, 1080);
+            var payload48 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(d48,
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras
+                        {
+                            PollQuestion = "你更喜欢哪种装修风格？",
+                            PollOptions = ["现代简约", "奶油风"],
+                        },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：XhsExtras 投票输入 → XhsPayload（问题 + 选项顺序）",
+                payload48?.PollQuestion == "你更喜欢哪种装修风格？"
+                && payload48.PollOptions is ["现代简约", "奶油风"]);
+
+            // ── 预检：配一半只提示、不拦发布 ──
+            PublishDraft Draft48()
+            {
+                var d = new PublishDraft($@"D:\demo\t48-{Guid.NewGuid():N}.mp4")
+                {
+                    Title = "投票笔记",
+                    Description = "正文",
+                };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 12, 1920, 1080);
+                d.Targets.Add(new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var pollHalf48 = PublishPreflight.Validate(Draft48(), new PlatformParams
+            {
+                Xhs = new XhsExtras { PollQuestion = "你选哪个？", PollOptions = ["只有一个"] },
+            });
+            Check("预检：投票只填 1 个选项 → Warning（不拦发布）",
+                pollHalf48.Any(i => i.PlatformKey == PlatformNames.Xiaohongshu
+                    && i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("添加投票未生效")),
+                string.Join("；", pollHalf48.Select(i => i.Message)));
+
+            var pollReady48 = PublishPreflight.Validate(Draft48(), new PlatformParams
+            {
+                Xhs = new XhsExtras { PollQuestion = "你选哪个？", PollOptions = ["A", "B"] },
+            });
+            Check("预检：投票完整 → 不报投票警告",
+                !pollReady48.Any(i => i.Message.Contains("添加投票")),
+                string.Join("；", pollReady48.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[49] 小红书引用笔记 + 关联活动（A5/A6，2026-11-11）");
+        {
+            // ── 规则：ID 校验 ──
+            Check("引用笔记：24 位十六进制才算有效",
+                XhsRelationBinds.IsValidNoteId("6a325866000000001101add3")
+                && !XhsRelationBinds.IsValidNoteId("6a325866000000001101ad")
+                && !XhsRelationBinds.IsValidNoteId("6a325866000000001101addz")
+                && !XhsRelationBinds.IsValidNoteId(null)
+                && !XhsRelationBinds.IsValidNoteId(""));
+            Check("关联活动：纯数字 ID 才算有效",
+                XhsRelationBinds.IsValidActivityId("44974")
+                && !XhsRelationBinds.IsValidActivityId("act-1")
+                && !XhsRelationBinds.IsValidActivityId("")
+                && !XhsRelationBinds.IsValidActivityId(null));
+
+            // ── merge：空 / 引用笔记 / 活动 / 与声明共存 ──
+            Check("merge：什么都没配 → 空数组",
+                XhsRelationBinds.Merge(null, null, null).Count == 0);
+
+            var refOnly49 = XhsRelationBinds.Merge(null, "6a325866000000001101add3", null);
+            Check("merge：引用笔记 → 1 条 REF_POST", refOnly49.Count == 1);
+            using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(refOnly49)))
+            {
+                var entry = doc.RootElement[0];
+                var rel = entry.GetProperty("relationList")[0];
+                Check("REF_POST wire：type/bizType/bizId（bundle 逐字）",
+                    entry.GetProperty("type").GetString() == "REF_POST"
+                    && rel.GetProperty("bizType").GetString() == "REF_POST"
+                    && rel.GetProperty("bizId").GetString() == "6a325866000000001101add3");
+                using var extra = JsonDocument.Parse(
+                    rel.GetProperty("extraInfo").GetString()!);
+                Check("REF_POST extraInfo：字符串化 JSON（ref_id/ref_type/note_id）",
+                    extra.RootElement.GetProperty("ref_id").GetString()
+                        == "6a325866000000001101add3"
+                    && extra.RootElement.GetProperty("ref_type").GetString() == "note"
+                    && extra.RootElement.GetProperty("note_id").GetString()
+                        == "6a325866000000001101add3");
+            }
+
+            Check("merge：坏笔记 ID → 跳过",
+                XhsRelationBinds.Merge(null, "not-a-note-id", null).Count == 0);
+
+            var acts49 = XhsRelationBinds.Merge(null, null,
+            [
+                new XhsActivityBind("44974", "RED11 月精选作者评选", 1793721600000, 1795536000000),
+                new XhsActivityBind("44986", "马路生活节", null, null),
+                new XhsActivityBind("act-bad", "坏活动", 1, 2),
+            ]);
+            Check("merge：3 个活动（1 个坏 ID）→ 1 条 ACTIVITY_COMPONENT", acts49.Count == 1);
+            using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(acts49)))
+            {
+                var entry = doc.RootElement[0];
+                var rel = entry.GetProperty("relationList");
+                Check("ACTIVITY_COMPONENT wire：type + 2 条 relation（坏 ID 跳过）",
+                    entry.GetProperty("type").GetString() == "ACTIVITY_COMPONENT"
+                    && rel.GetArrayLength() == 2
+                    && rel[0].GetProperty("bizType").GetString() == "ACTIVITY_COMPONENT"
+                    && rel[0].GetProperty("bizId").GetString() == "44974");
+                using (var extra = JsonDocument.Parse(
+                    rel[0].GetProperty("extraInfo").GetString()!))
+                {
+                    Check("ACTIVITY extraInfo：id 数字 / name / start_time / end_time（毫秒）",
+                        extra.RootElement.GetProperty("id").GetInt64() == 44974
+                        && extra.RootElement.GetProperty("name").GetString()
+                            == "RED11 月精选作者评选"
+                        && extra.RootElement.GetProperty("start_time").GetInt64()
+                            == 1793721600000
+                        && extra.RootElement.GetProperty("end_time").GetInt64()
+                            == 1795536000000);
+                }
+                using (var extra = JsonDocument.Parse(
+                    rel[1].GetProperty("extraInfo").GetString()!))
+                {
+                    Check("ACTIVITY extraInfo：缺起止时间 → 不写这两项（不编造）",
+                        extra.RootElement.GetProperty("id").GetInt64() == 44986
+                        && !extra.RootElement.TryGetProperty("start_time", out _)
+                        && !extra.RootElement.TryGetProperty("end_time", out _));
+                }
+            }
+
+            // 与原创声明共存 + 同类型先过滤（声明 → 引用 → 活动）
+            var originalEntry49 = new Dictionary<string, object?>
+            {
+                ["type"] = "ORIGINAL_STATEMENT",
+                ["relationList"] = new List<object>(),
+            };
+            var merged49 = XhsRelationBinds.Merge(
+                new object[]
+                {
+                    originalEntry49,
+                    XhsRelationBinds.BuildRefPostEntry("6a325866000000001101add3"),
+                },
+                "6a325866000000001101add4", null);
+            Check("merge：声明条目保留、旧 REF_POST 被过滤后追加新的（顺序：声明 → 引用）",
+                merged49.Count == 2
+                && merged49[0] is Dictionary<string, object?> d0
+                && (string?)d0["type"] == "ORIGINAL_STATEMENT"
+                && merged49[1] is Dictionary<string, object?> d1
+                && (string?)d1["type"] == "REF_POST");
+
+            // ── 发布体：business_binds.optionRelationList 集成 ──
+            var note49 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "引用笔记 + 活动",
+                FileId = "spectrum/abc",
+                IsOriginal = true,
+                CreatorUserId = "u-owner",
+                ReferencedNoteId = "6a325866000000001101add3",
+                Activities =
+                [
+                    new XhsActivityBind("44974", "RED11 月精选作者评选",
+                        1793721600000, 1795536000000),
+                ],
+            });
+            var binds49 = (string)((Dictionary<string, object?>)note49["common"]!)["business_binds"]!;
+            using (var doc = JsonDocument.Parse(binds49))
+            {
+                var types = doc.RootElement.GetProperty("optionRelationList").EnumerateArray()
+                    .Select(e => e.GetProperty("type").GetString()).ToList();
+                Check("发布体：optionRelationList = 声明 + 引用 + 活动（同一数组、三条）",
+                    types.SequenceEqual(["ORIGINAL_STATEMENT", "REF_POST", "ACTIVITY_COMPONENT"]),
+                    string.Join("|", types));
+            }
+
+            // ── builder 透传：XhsExtras.ReferencedNote + Params.Activities ──
+            var d49 = new PublishDraft(@"D:\demo\t49.mp4")
+            {
+                Title = "引用笔记",
+                Description = "正文",
+            };
+            d49.Meta = new VideoMeta(d49.VideoPath, 1, 12, 1920, 1080);
+            var params49 = new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    ReferencedNote = new XhsNoteRef
+                    {
+                        Id = "6a325866000000001101add3",
+                        Title = "冒烟旧笔记",
+                    },
+                },
+            };
+            params49.Activities.Add(new ActivityRef
+            {
+                Id = "44974",
+                Name = "RED11 月精选作者评选",
+                StartTime = DateTimeOffset.FromUnixTimeMilliseconds(1793721600000),
+                EndTime = DateTimeOffset.FromUnixTimeMilliseconds(1795536000000),
+            });
+            var payload49 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(d49,
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    params49).ExtraDataJson ?? "{}");
+            Check("builder：引用笔记快照 → XhsPayload.ReferencedNote",
+                payload49?.ReferencedNote?.Id == "6a325866000000001101add3"
+                && payload49.ReferencedNote.Title == "冒烟旧笔记");
+            Check("builder：活动快照 → XhsPayload.Activities（起止时间换 Unix 毫秒）",
+                payload49?.Activities is
+                [
+                    {
+                        Id: "44974",
+                        Name: "RED11 月精选作者评选",
+                        StartTimeMs: 1793721600000,
+                        EndTimeMs: 1795536000000,
+                    },
+                ],
+                JsonSerializer.Serialize(payload49?.Activities));
+
+            // 旧档：只有 ActivityIds → 升格成只有 ID 的活动（名字先按 ID）
+            var legacyParams49 = new PlatformParams();
+            legacyParams49.ActivityIds.Add("44986");
+            var legacyPayload49 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(d49,
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    legacyParams49).ExtraDataJson ?? "{}");
+            Check("builder：旧档 ActivityIds → Activities（回退兼容，name=ID）",
+                legacyPayload49?.Activities is [{ Id: "44986", Name: "44986" }],
+                JsonSerializer.Serialize(legacyPayload49?.Activities));
+
+            var badPayload49 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(d49,
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras { ReferencedNote = new XhsNoteRef { Id = "bad" } },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：坏笔记 ID → ReferencedNote 不透传",
+                badPayload49?.ReferencedNote is null);
+
+            // ── 预检：坏 ID / 快照不全只 Warning，不拦发布 ──
+            PublishDraft Draft49()
+            {
+                var d = new PublishDraft($@"D:\demo\t49-{Guid.NewGuid():N}.mp4")
+                {
+                    Title = "引用笔记",
+                    Description = "正文",
+                };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 12, 1920, 1080);
+                d.Targets.Add(new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var preBadRef49 = PublishPreflight.Validate(Draft49(), new PlatformParams
+            {
+                Xhs = new XhsExtras { ReferencedNote = new XhsNoteRef { Id = "bad" } },
+            });
+            Check("预检：坏引用笔记 ID → Warning（不拦发布）",
+                preBadRef49.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("引用笔记 ID 格式不对")),
+                string.Join("；", preBadRef49.Select(i => i.Message)));
+
+            var preBadActParams49 = new PlatformParams();
+            preBadActParams49.Activities.Add(new ActivityRef { Id = "act-bad", Name = "坏活动" });
+            preBadActParams49.Activities.Add(new ActivityRef { Id = "44974", Name = "缺时间活动" });
+            var preBadAct49 = PublishPreflight.Validate(Draft49(), preBadActParams49);
+            Check("预检：活动 ID 非数字 / 缺起止时间 → 两条 Warning",
+                preBadAct49.Any(i => i.Message.Contains("活动 ID 不是数字"))
+                && preBadAct49.Any(i => i.Message.Contains("缺名称或起止时间")),
+                string.Join("；", preBadAct49.Select(i => i.Message)));
+
+            var preGood49 = PublishPreflight.Validate(Draft49(), new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    ReferencedNote = new XhsNoteRef
+                    {
+                        Id = "6a325866000000001101add3",
+                        Title = "旧笔记",
+                    },
+                },
+            });
+            Check("预检：完整引用笔记 → 不报引用警告",
+                !preGood49.Any(i => i.Message.Contains("引用笔记")),
+                string.Join("；", preGood49.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[50] B站创作声明补全（A7，2026-11-11）");
+        {
+            // 选项 / ID 来自 `archive/pre` 响应的 `neutral_mark.mark_list`：
+            // -1 内容无需标注 / 1 AI / 2 虚构 / 3 营销 / 4 个人观点 / -2 转载
+            Check("B站声明映射：AI → 1、虚构 → 2、营销 → 3（原有三项不变）",
+                DeclarationMapping.BilibiliCreationStatement(DeclarationKind.AiGenerated) == 1
+                && DeclarationMapping.BilibiliCreationStatement(DeclarationKind.Fiction) == 2
+                && DeclarationMapping.BilibiliCreationStatement(DeclarationKind.Marketing) == 3);
+            Check("B站声明映射：个人观点 → 4（A7 补）",
+                DeclarationMapping.BilibiliCreationStatement(DeclarationKind.PersonalOpinion) == 4);
+            Check("B站声明映射：转载 → -2（A7 补）",
+                DeclarationMapping.BilibiliCreationStatement(DeclarationKind.Repost) == -2);
+            Check("B站声明映射：不声明 / 自行拍摄 → 0（无对应项，不下发）",
+                DeclarationMapping.BilibiliCreationStatement(DeclarationKind.None) == 0
+                && DeclarationMapping.BilibiliCreationStatement(DeclarationKind.SelfShot) == 0);
+
+            Check("B站声明能力矩阵：个人观点/转载已放行，只剩自行拍摄不支持",
+                DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.PersonalOpinion)
+                && DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.Repost)
+                && !DeclarationMapping.Supports(PlatformNames.Bilibili, DeclarationKind.SelfShot)
+                && DeclarationMapping.UnsupportedReason(
+                    PlatformNames.Bilibili, DeclarationKind.PersonalOpinion) is null
+                && DeclarationMapping.UnsupportedReason(
+                    PlatformNames.Bilibili, DeclarationKind.Repost) is null
+                && DeclarationMapping.UnsupportedReason(
+                    PlatformNames.Bilibili, DeclarationKind.SelfShot) is { } selfShotReason
+                && selfShotReason.Contains("自行拍摄"));
+
+            // builder：全局声明语义 → BilibiliPayload.CreationStatementId
+            // 真建一个空文件，免得预检顺带报「视频文件不存在」干扰本组断言
+            var file50 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t50-{Guid.NewGuid():N}.mp4");
+            File.WriteAllText(file50, "x");
+            PublishDraft BiliDraft50(DeclarationKind kind)
+            {
+                var d = new PublishDraft(file50)
+                {
+                    Title = "B站声明",
+                    Description = "正文",
+                    Declaration = new ContentDeclaration { Kind = kind },
+                };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 12, 1920, 1080);
+                d.Targets.Add(new PublishTarget(PlatformNames.Bilibili, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var params50 = new PlatformParams { Tags = ["家居"] };
+            var repostPayload50 = PublishPayload.Deserialize<BilibiliPayload>(
+                PublishPayloadBuilder.Build(BiliDraft50(DeclarationKind.Repost),
+                    new PublishTarget(PlatformNames.Bilibili, Guid.NewGuid(), "主号"),
+                    params50).ExtraDataJson ?? "{}");
+            Check("builder：转载 → BilibiliPayload.CreationStatementId = -2（版权仍按旧口径 2）",
+                repostPayload50 is { CreationStatementId: -2, Copyright: 2 },
+                JsonSerializer.Serialize(repostPayload50));
+
+            var opinionPayload50 = PublishPayload.Deserialize<BilibiliPayload>(
+                PublishPayloadBuilder.Build(BiliDraft50(DeclarationKind.PersonalOpinion),
+                    new PublishTarget(PlatformNames.Bilibili, Guid.NewGuid(), "主号"),
+                    params50).ExtraDataJson ?? "{}");
+            Check("builder：个人观点 → BilibiliPayload.CreationStatementId = 4",
+                opinionPayload50?.CreationStatementId == 4);
+
+            // add/v3：负数 ID 原样下发（BuildAddV3Body 只对 null/0 移除该键）
+            var body50 = BilibiliPublishService.BuildAddV3Body(new BilibiliPublishRequest
+            {
+                Title = "转载声明",
+                Filename = "n261111abc",
+                Cid = 43321527216,
+                Copyright = 2,
+                CreationStatementId = DeclarationMapping.BilibiliCreationStatement(
+                    DeclarationKind.Repost),
+            });
+            using (var doc50 = JsonDocument.Parse(body50))
+            {
+                Check("add/v3 体：转载声明 → creation_statement.id = -2",
+                    doc50.RootElement.GetProperty("creation_statement").GetProperty("id")
+                        .GetInt32() == -2,
+                    body50);
+            }
+
+            // 预检：这两项不再报「不支持」，自行拍摄仍报（不静默丢弃）
+            var repostIssues50 = PublishPreflight.Validate(
+                BiliDraft50(DeclarationKind.Repost), params50);
+            Check("预检：B站 + 转载 → 不再报声明不支持",
+                repostIssues50.All(i => !i.Message.Contains("声明")),
+                string.Join("；", repostIssues50.Select(i => i.Message)));
+            var opinionIssues50 = PublishPreflight.Validate(
+                BiliDraft50(DeclarationKind.PersonalOpinion), params50);
+            Check("预检：B站 + 个人观点 → 不再报声明不支持",
+                opinionIssues50.All(i => !i.Message.Contains("声明")),
+                string.Join("；", opinionIssues50.Select(i => i.Message)));
+
+            File.Delete(file50);
+        }
+
+        sb.AppendLine("\n[51] 头条互动贴纸 · 关注引导（A3，2026-11-11）");
+        {
+            // create 体逐字来自 2026-11-10 交互式抓包（capture-2026-11-10T08-45-23.jsonl）：
+            // StartTime/Duration/Margin* 都是字符串，StickerType/StickerCreateType 是数字。
+            var create51 = ToutiaoStickerService.BuildCreateFollowStickerBody(
+                "470236218793111",
+                "https://sf3-cdn-tos.toutiaostatic.com/img/user-avatar/x.image", 0, 5);
+            using (var doc51 = JsonDocument.Parse(create51))
+            {
+                var info = doc51.RootElement.GetProperty("StickerInfos")[0];
+                var baseInfo = info.GetProperty("BaseStickerInfo");
+                var follow = info.GetProperty("FollowExtraInfo");
+                Check("贴纸 create 体：StickerInfos/BaseStickerInfo 逐字（类型也对）",
+                    info.GetProperty("StickerID").GetString() == ""
+                    && baseInfo.GetProperty("URI").GetString() == ""
+                    && baseInfo.GetProperty("StickerType").GetInt32() == 1
+                    && baseInfo.GetProperty("StartTime").ValueKind == JsonValueKind.String
+                    && baseInfo.GetProperty("StartTime").GetString() == "0"
+                    && baseInfo.GetProperty("Duration").ValueKind == JsonValueKind.String
+                    && baseInfo.GetProperty("Duration").GetString() == "5"
+                    && baseInfo.GetProperty("MarginLeft").GetString() == "81"
+                    && baseInfo.GetProperty("MarginTop").GetString() == "78"
+                    && baseInfo.GetProperty("HeightRatio").GetString() == "36"
+                    && baseInfo.GetProperty("StickerCreateType").GetInt32() == 0
+                    && baseInfo.GetProperty("sticker_effect_id").GetString() == "1126344",
+                    create51);
+                Check("贴纸 create 体：ToUserID / FollowAvatar 按参数写",
+                    follow.GetProperty("ToUserID").GetString() == "470236218793111"
+                    && (follow.GetProperty("FollowAvatar").GetString() ?? "")
+                        .Contains("user-avatar", StringComparison.Ordinal),
+                    create51);
+            }
+
+            var create51b = ToutiaoStickerService.BuildCreateFollowStickerBody(
+                "u1", null, 3, 8);
+            using (var doc51b = JsonDocument.Parse(create51b))
+            {
+                var baseInfo = doc51b.RootElement.GetProperty("StickerInfos")[0]
+                    .GetProperty("BaseStickerInfo");
+                Check("贴纸 create 体：开始/时长按参数下发（仍是字符串）、头像缺省为空串",
+                    baseInfo.GetProperty("StartTime").GetString() == "3"
+                    && baseInfo.GetProperty("Duration").GetString() == "8"
+                    && doc51b.RootElement.GetProperty("StickerInfos")[0]
+                        .GetProperty("FollowExtraInfo").GetProperty("FollowAvatar").GetString() == "",
+                    create51b);
+            }
+
+            var ids51 = ToutiaoStickerService.ParseCreateResponse(
+                """{"data":{"StickerIDs":["7706462780370590755_1"],"BaseResp":{"StatusMessage":"success","StatusCode":0}},"status":0,"message":"success"}""");
+            Check("贴纸 create 响应：data.StickerIDs → id 列表",
+                ids51.Count == 1 && ids51[0] == "7706462780370590755_1",
+                string.Join(",", ids51));
+
+            var threw51 = false;
+            try
+            {
+                ToutiaoStickerService.ParseCreateResponse("""{"status":1,"message":"err"}""");
+            }
+            catch (ToutiaoStickerException)
+            {
+                threw51 = true;
+            }
+            Check("贴纸 create 响应：status 非 0 → 抛异常（调用方按非致命处理）", threw51);
+
+            // 合并：空长尾/埋点 → 生成两个键；形状逐字对齐抓包
+            var ok51 = ToutiaoStickerService.TryMergeFollowSticker(
+                null, null, ids51, 0, 5, 30, out var attrs51, out var et51);
+            Check("贴纸合并：空长尾/埋点 → 返回 true", ok51);
+            using (var docA51 = JsonDocument.Parse(attrs51.GetRawText()))
+            {
+                var v = docA51.RootElement.GetProperty("InteractStickers");
+                Check("贴纸合并：InteractStickers 是 JSON 字符串数组",
+                    v.ValueKind == JsonValueKind.String
+                    && v.GetString() == "[\"7706462780370590755_1\"]",
+                    attrs51.GetRawText());
+            }
+            using (var docE51 = JsonDocument.Parse(et51.GetRawText()))
+            {
+                var e = docE51.RootElement.GetProperty("stickerETData")[0];
+                Check("贴纸合并：stickerETData 逐字（关注引导 / 0 秒 / 0.0% / 1.0 / 5 秒 / custom）",
+                    e.GetProperty("interaction_sticker_id").GetString() == ""
+                    && e.GetProperty("interaction_sticker_name").GetString() == "关注引导"
+                    && e.GetProperty("interaction_begin_time").GetInt32() == 0
+                    && e.GetProperty("interaction_begin_percent").GetString() == "0.0"
+                    && e.GetProperty("interaction_scale").GetString() == "1.0"
+                    && e.GetProperty("interaction_duration").GetInt32() == 5
+                    && e.GetProperty("interaction_sticker_time_type").GetString() == "custom",
+                    et51.GetRawText());
+            }
+
+            // 非 0 开始：按「开始/视频时长」算百分比（30 秒视频、6 秒开始 → 20.0）
+            ToutiaoStickerService.TryMergeFollowSticker(
+                null, null, ids51, 6, 5, 30, out _, out var etStart51);
+            using (var docS51 = JsonDocument.Parse(etStart51.GetRawText()))
+            {
+                var e = docS51.RootElement.GetProperty("stickerETData")[0];
+                Check("贴纸合并：非 0 开始 → begin_time / begin_percent 按视频时长计算",
+                    e.GetProperty("interaction_begin_time").GetInt32() == 6
+                    && e.GetProperty("interaction_begin_percent").GetString() == "20.0",
+                    etStart51.GetRawText());
+            }
+
+            // 已有键必须保留，只替换两个目标键
+            using var existAttrs51 = JsonDocument.Parse(
+                """{"InteractStickers":"[]","Foo":"bar"}""");
+            using var existEt51 = JsonDocument.Parse("""{"Other":1,"stickerETData":[]}""");
+            ToutiaoStickerService.TryMergeFollowSticker(
+                existAttrs51.RootElement, existEt51.RootElement, ids51, 0, 5, 30,
+                out var attrsMerge51, out var etMerge51);
+            using (var docA = JsonDocument.Parse(attrsMerge51.GetRawText()))
+            using (var docE = JsonDocument.Parse(etMerge51.GetRawText()))
+            {
+                Check("贴纸合并：已有键保留、只替换 InteractStickers / stickerETData",
+                    docA.RootElement.GetProperty("Foo").GetString() == "bar"
+                    && docA.RootElement.GetProperty("InteractStickers").GetString()
+                        == "[\"7706462780370590755_1\"]"
+                    && docE.RootElement.GetProperty("Other").GetInt32() == 1
+                    && docE.RootElement.GetProperty("stickerETData").GetArrayLength() == 1);
+            }
+
+            using (var bad51 = JsonDocument.Parse("[1]"))
+            {
+                Check("贴纸合并：长尾属性不是对象 → false（绝不覆盖用户 JSON）",
+                    !ToutiaoStickerService.TryMergeFollowSticker(
+                        bad51.RootElement, null, ids51, 0, 5, 30, out _, out _));
+            }
+
+            // builder：开关 + 两个时间参数透传
+            var file51 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t51-{Guid.NewGuid():N}.mp4");
+            File.WriteAllText(file51, "x");
+            var draft51 = new PublishDraft(file51) { Title = "贴纸视频", Description = "正文" };
+            draft51.Meta = new VideoMeta(draft51.VideoPath, 1, 30, 1920, 1080);
+            var target51 = new PublishTarget(PlatformNames.Toutiao, Guid.NewGuid(), "主号");
+            draft51.Targets.Add(target51);
+
+            var params51 = new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras
+                {
+                    FollowSticker = true,
+                    StickerStartSec = 3,
+                    StickerDurationSec = 8,
+                },
+            };
+            var payload51 = PublishPayload.Deserialize<ToutiaoPayload>(
+                PublishPayloadBuilder.Build(draft51, target51, params51).ExtraDataJson ?? "{}");
+            Check("builder：关注引导开关/开始秒/持续秒透传",
+                payload51 is { FollowSticker: true, StickerStartSec: 3, StickerDurationSec: 8 },
+                JsonSerializer.Serialize(payload51));
+
+            var params51off = new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { FollowSticker = false, StickerStartSec = 3 },
+            };
+            var payload51off = PublishPayload.Deserialize<ToutiaoPayload>(
+                PublishPayloadBuilder.Build(draft51, target51, params51off).ExtraDataJson ?? "{}");
+            Check("builder：开关关闭 → 不透传时间参数（发布体不出现）",
+                payload51off is { FollowSticker: false, StickerStartSec: null, StickerDurationSec: null });
+
+            // PublishVideo 体：三件套形状与抓包一致
+            var body51 = ToutiaoPublishService.BuildPublishBody(new ToutiaoPublishRequest
+            {
+                Title = "贴纸视频",
+                Vid = "v1",
+                ThumbUri = "tos://x",
+                DurationSeconds = 30,
+                VideoType = 3,
+                PlayerSticker = "{\"list\":[]}",
+                AttrsValueMap = attrs51,
+                EtData = et51,
+            });
+            using (var docB51 = JsonDocument.Parse(body51))
+            {
+                var attrsEl = docB51.RootElement.GetProperty("AttrsValueMap");
+                var etEl = docB51.RootElement.GetProperty("etData");
+                Check("PublishVideo 体：PlayerSticker / InteractStickers / stickerETData 三件套齐全",
+                    docB51.RootElement.GetProperty("PlayerSticker").GetString() == "{\"list\":[]}"
+                    && attrsEl.GetProperty("InteractStickers").GetString()
+                        == "[\"7706462780370590755_1\"]"
+                    && etEl.GetProperty("stickerETData")[0]
+                        .GetProperty("interaction_sticker_name").GetString() == "关注引导",
+                    body51);
+            }
+
+            // 无贴纸：字段完全不出现（旧形状）
+            var body51none = ToutiaoPublishService.BuildPublishBody(new ToutiaoPublishRequest
+            {
+                Title = "无贴纸",
+                Vid = "v2",
+                ThumbUri = "tos://x",
+                DurationSeconds = 30,
+                VideoType = 3,
+            });
+            using (var docN51 = JsonDocument.Parse(body51none))
+            {
+                Check("PublishVideo 体：无贴纸 → PlayerSticker 键不出现",
+                    !docN51.RootElement.TryGetProperty("PlayerSticker", out _),
+                    body51none);
+            }
+
+            // 预检：竖版 / <10 秒各一条 Warning，横版 ≥10 秒不报
+            var paramsWarn51 = new PlatformParams
+            {
+                Toutiao = new ToutiaoExtras { FollowSticker = true },
+            };
+            var landscapeIssues51 = PublishPreflight.Validate(draft51, paramsWarn51);
+            // draft51 是横版 30 秒 —— 先验不报；再造竖版 / 短视频
+            Check("预检：横版 30 秒 + 关注引导 → 不报贴纸提示",
+                landscapeIssues51.All(i => !i.Message.Contains("互动贴纸")),
+                string.Join("；", landscapeIssues51.Select(i => i.Message)));
+
+            PublishDraft TtDraft51(int width, int height, double duration)
+            {
+                var d = new PublishDraft(file51) { Title = "贴纸视频" };
+                d.Meta = new VideoMeta(d.VideoPath, 1, duration, width, height);
+                d.Targets.Add(new PublishTarget(PlatformNames.Toutiao, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var shortIssues51 = PublishPreflight.Validate(TtDraft51(1920, 1080, 8), paramsWarn51);
+            Check("预检：视频 <10 秒 + 关注引导 → Warning（不拦发布）",
+                shortIssues51.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("不足 10 秒", StringComparison.Ordinal)),
+                string.Join("；", shortIssues51.Select(i => i.Message)));
+
+            var portraitIssues51b = PublishPreflight.Validate(TtDraft51(1080, 1920, 30), paramsWarn51);
+            Check("预检：竖版 + 关注引导 → Warning（不拦发布）",
+                portraitIssues51b.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("只支持横版", StringComparison.Ordinal)),
+                string.Join("；", portraitIssues51b.Select(i => i.Message)));
+
+            File.Delete(file51);
+        }
+
+        // ── 52. 抖音「添加标签」（B1 抓包 2026-11-11）──
+        sb.AppendLine("\n[52] 抖音添加标签：影视演艺 / 游戏手柄 / 标记万物（B1，2026-11-11）");
+        {
+            // wire 逐字：影视 content=null；标记万物 content 只有 anchor_id；
+            // 游戏 content 是 short_video_point 整段（内部 JSON 再转义一层）
+            Check("标签 anchor JSON：影视 type=11 / content=null",
+                DouyinAnchorService.BuildAnchorJson(11, "6531955174934577671", null)
+                    == """{"id":"6531955174934577671","type":11,"content":null}""",
+                DouyinAnchorService.BuildAnchorJson(11, "6531955174934577671", null) ?? "(null)");
+
+            Check("标签 anchor JSON：标记万物 type=13093 / content={\"anchor_id\"}",
+                DouyinAnchorService.BuildAnchorJson(13093, "7136072649343598856", null)
+                    == """{"id":"7136072649343598856","type":13093,"content":"{\"anchor_id\":\"7136072649343598856\"}"}""",
+                DouyinAnchorService.BuildAnchorJson(13093, "7136072649343598856", null) ?? "(null)");
+
+            var gamePoint52 = """{"type":13017,"anchor_title":"王者荣耀","anchor_id":"cgmo1"}""";
+            var gameAnchorJson52 = DouyinAnchorService.BuildAnchorJson(13017, "cgmo1", gamePoint52);
+            using (var gameAnchorDoc52 = JsonDocument.Parse(gameAnchorJson52!))
+            {
+                Check("标签 anchor JSON：游戏 type=13017 / content 整段透传 short_video_point",
+                    gameAnchorDoc52.RootElement.GetProperty("type").GetInt32() == 13017
+                    && gameAnchorDoc52.RootElement.GetProperty("id").GetString() == "cgmo1"
+                    && gameAnchorDoc52.RootElement.GetProperty("content").GetString() == gamePoint52,
+                    gameAnchorJson52 ?? "(null)");
+            }
+
+            // 小程序（2026-11-11 补抓）：content = 搜索结果的 extra 字符串；
+            // 发布体额外 anchor_business_type=4 + anchor_content=JSON.stringify(extra)
+            var appletExtra52 = """{"Content":"null","Query":"","Title":"猛鬼宿舍","Token":"tok"}""";
+            var appletAnchorJson52 = DouyinAnchorService.BuildAnchorJson(4, "tt3a9d4c20a5a4387002", appletExtra52);
+            using (var appletAnchorDoc52 = JsonDocument.Parse(appletAnchorJson52!))
+            {
+                Check("标签 anchor JSON：小程序 type=4 / content 透传 extra",
+                    appletAnchorDoc52.RootElement.GetProperty("type").GetInt32() == 4
+                    && appletAnchorDoc52.RootElement.GetProperty("id").GetString() == "tt3a9d4c20a5a4387002"
+                    && appletAnchorDoc52.RootElement.GetProperty("content").GetString() == appletExtra52,
+                    appletAnchorJson52 ?? "(null)");
+            }
+
+            var appletContentJson52 = DouyinAnchorService.BuildAnchorContentJson(4, appletExtra52);
+            Check("小程序 anchor_content：JSON.stringify(extra)（再包一层引号）",
+                appletContentJson52 is not null
+                && appletContentJson52 != appletExtra52
+                && JsonSerializer.Deserialize<string>(appletContentJson52) == appletExtra52
+                && DouyinAnchorService.BuildAnchorContentJson(11, appletExtra52) is null
+                && DouyinAnchorService.BuildAnchorContentJson(4, "") is null,
+                appletContentJson52 ?? "(null)");
+
+            Check("小程序链接校验：http/https 放行、非 URL / creator.douyin.com / 其它协议拒绝",
+                DouyinAnchorService.IsAppletLink("https://m.zjbyte.net/share/douyin/?token=x")
+                && DouyinAnchorService.IsAppletLink("http://v.douyin.com/abc/")
+                && !DouyinAnchorService.IsAppletLink("")
+                && !DouyinAnchorService.IsAppletLink("躺平发育")
+                && !DouyinAnchorService.IsAppletLink("https://creator.douyin.com/x")
+                && !DouyinAnchorService.IsAppletLink("ftp://m.zjbyte.net/x"));
+
+            Check("标签 anchor JSON：空 ID / 未知类型 / 游戏或小程序缺 content → null（发布体不出现）",
+                DouyinAnchorService.BuildAnchorJson(11, " ", null) is null
+                && DouyinAnchorService.BuildAnchorJson(999, "x", null) is null
+                && DouyinAnchorService.BuildAnchorJson(13017, "cgmo1", "") is null
+                && DouyinAnchorService.BuildAnchorJson(4, "tt1", "") is null);
+
+            // 搜索解析：字段名逐字来自抓包
+            var media52 = DouyinAnchorService.ParseMediaSearch(
+                """{"status_code":0,"search_list":[{"type_name":"电影","id":"6531955174934577671","name":"流浪地球","type":3,"poster":{"url_list":["https://p"]}}]}""");
+            Check("影视搜索解析：id/name/type_name/封面（search_list[].type 不是 anchor type）",
+                media52.Count == 1 && media52[0].Type == DouyinAnchorTypes.Movie
+                && media52[0].Id == "6531955174934577671" && media52[0].Title == "流浪地球"
+                && media52[0].Subtitle == "电影" && media52[0].Cover == "https://p",
+                JsonSerializer.Serialize(media52));
+
+            var game52 = DouyinAnchorService.ParseGameSearch(
+                """{"data":{"mount_games":[{"game_info":{"name":"王者荣耀","unified_game_id":"cgmo1","tag_names":["MOBA","竞技"],"icon":"https://i","short_video_point":"{\"type\":13017}"}},{"game_info":{"name":"无挂载","unified_game_id":"cgmo2"}}]}}""");
+            Check("游戏搜索解析：unified_game_id / tag_names / short_video_point；缺挂载的跳过",
+                game52.Count == 1 && game52[0].Type == DouyinAnchorTypes.Game
+                && game52[0].Id == "cgmo1" && game52[0].Subtitle == "MOBA · 竞技"
+                && game52[0].Content == """{"type":13017}""",
+                JsonSerializer.Serialize(game52));
+
+            var spu52 = DouyinAnchorService.ParseSpuList(
+                """{"status_code":0,"data":{"spu_list":[{"spu_id":"7136072649343598856","title":"手机的规矩","cover":"https://c","front_category":{"front_category_name":"童书"}}]}}""");
+            Check("SPU 搜索解析：spu_id / title / 分类",
+                spu52.Count == 1 && spu52[0].Type == DouyinAnchorTypes.Spu
+                && spu52[0].Id == "7136072649343598856" && spu52[0].Title == "手机的规矩"
+                && spu52[0].Subtitle == "童书",
+                JsonSerializer.Serialize(spu52));
+
+            // 小程序搜索解析（2026-11-11 补抓：anchor_list，无 status_code；extra 是 JSON 字符串）
+            var applet52 = DouyinAnchorService.ParseAppletSearch(
+                """{"anchor_list":[{"enable_mount":true,"extra":"{\"Content\":\"null\",\"Query\":\"\",\"Title\":\"猛鬼宿舍\",\"Token\":\"tok\"}","id":"tt3a9d4c20a5a4387002","name":"躺平发育","poster":{"url_list":["https://p"]},"summary":"猛鬼宿舍","type":4}],"extra":{"logid":"x","now":1}}""");
+            Check("小程序搜索解析：id / name / summary / poster / type=4 / extra",
+                applet52.Count == 1 && applet52[0].Type == DouyinAnchorTypes.Applet
+                && applet52[0].Id == "tt3a9d4c20a5a4387002" && applet52[0].Title == "躺平发育"
+                && applet52[0].Subtitle == "猛鬼宿舍" && applet52[0].Cover == "https://p"
+                && applet52[0].Content!.Contains("\"Token\":\"tok\"", StringComparison.Ordinal),
+                JsonSerializer.Serialize(applet52));
+
+            var appletTitleFallback52 = DouyinAnchorService.ParseAppletSearch(
+                """{"anchor_list":[{"extra":"{\"Title\":\"兜底标题\"}","id":"tt2","poster":{"url_list":[]}}]}""");
+            Check("小程序搜索解析：name 缺失时用 extra.Title 兜底",
+                appletTitleFallback52.Count == 1 && appletTitleFallback52[0].Title == "兜底标题",
+                JsonSerializer.Serialize(appletTitleFallback52));
+
+            var caps52 = DouyinAnchorService.ParseCapabilities(
+                """{"status_code":0,"availableAnchor":[2,4,11,13017,13093],"unavailableAnchor":[{"anchor":13006,"reason":"未实名或未满18周岁，无法使用{anchor_name}标签"}]}""");
+            Check("能力位：availableAnchor / unavailableAnchor.reason",
+                caps52.IsAvailable(11) && caps52.IsAvailable(13017) && caps52.IsAvailable(13093)
+                && !caps52.IsAvailable(13006)
+                && caps52.ReasonFor(13006)!.Contains("{anchor_name}", StringComparison.Ordinal),
+                JsonSerializer.Serialize(caps52));
+
+            static bool Throws52(Action action)
+            {
+                try { action(); return false; }
+                catch { return true; }
+            }
+
+            Check("anchor/check：ok=true / ok=false + reason / 业务码非 0 抛",
+                DouyinAnchorService.ParseCheck("""{"ok":true,"reason":"","status_code":0}""").Ok
+                && DouyinAnchorService.ParseCheck("""{"ok":false,"reason":"不满足条件","status_code":0}""")
+                    is { Ok: false, Reason: "不满足条件" }
+                && Throws52(() => DouyinAnchorService.ParseCheck("""{"status_code":9}""")));
+
+            // builder：选中的标签进 DouyinPayload
+            var file52 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t52-{Guid.NewGuid():N}.mp4");
+            File.WriteAllText(file52, "x");
+            var draft52 = new PublishDraft(file52) { Title = "标签视频", Description = "正文" };
+            draft52.Meta = new VideoMeta(draft52.VideoPath, 1, 30, 1920, 1080);
+            var target52 = new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "主号");
+            draft52.Targets.Add(target52);
+
+            var params52 = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    Anchor = new DouyinAnchorRef
+                    { Type = 11, Id = "6531955174934577671", Title = "流浪地球" },
+                },
+                Location = new PoiRef("poi-1", "七里山塘景区"),
+            };
+            var payload52 = PublishPayload.Deserialize<DouyinPayload>(
+                PublishPayloadBuilder.Build(draft52, target52, params52).ExtraDataJson ?? "{}");
+            Check("builder：标签快照透传（type/id/title）",
+                payload52?.Anchor is { Type: 11, Id: "6531955174934577671", Title: "流浪地球" },
+                JsonSerializer.Serialize(payload52));
+
+            // 发布体：item.anchor.anchor 一个字符串；与位置互斥（有标签就不发 POI 字段）
+            var itemAnchor52 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1",
+                AnchorJson: DouyinAnchorService.BuildAnchorJson(11, "6531955174934577671", null),
+                PoiInfo: new Dictionary<string, string> { ["poi_id"] = "poi-1", ["poi_name"] = "P" }));
+            Check("发布体：有标签 → anchor.anchor 字符串，且不再发 poi_id/poi_name",
+                itemAnchor52.Anchor.TryGetValue("anchor", out var anchorWire52)
+                && anchorWire52 as string == """{"id":"6531955174934577671","type":11,"content":null}"""
+                && !itemAnchor52.Anchor.ContainsKey("poi_id"),
+                JsonSerializer.Serialize(itemAnchor52.Anchor));
+
+            // 小程序发布体：item.anchor 下三键（页面 bundle 逐字）
+            var itemApplet52 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1",
+                AnchorJson: appletAnchorJson52,
+                AnchorBusinessType: 4,
+                AnchorContentJson: appletContentJson52));
+            Check("发布体：小程序 → anchor + anchor_business_type=4 + anchor_content",
+                itemApplet52.Anchor.GetValueOrDefault("anchor") as string == appletAnchorJson52
+                && itemApplet52.Anchor.GetValueOrDefault("anchor_business_type") is 4
+                && itemApplet52.Anchor.GetValueOrDefault("anchor_content") as string == appletContentJson52,
+                JsonSerializer.Serialize(itemApplet52.Anchor));
+
+            var itemPoi52 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1",
+                PoiInfo: new Dictionary<string, string> { ["poi_id"] = "poi-1", ["poi_name"] = "P" }));
+            Check("发布体：没标签 → 位置走旧 POI 形状（行为不变）",
+                !itemPoi52.Anchor.ContainsKey("anchor")
+                && itemPoi52.Anchor.GetValueOrDefault("poi_id") as string == "poi-1",
+                JsonSerializer.Serialize(itemPoi52.Anchor));
+
+            // 预检：互斥说明 / 游戏缺挂载 / 正常不报。
+            // 每次用**新草稿** —— ParamsFor 会把 preset 缓存进 draft.Overrides（生产语义：
+            // 用户的平台覆盖优先于预设），复用同一草稿会让后一轮读到上一轮的参数。
+            PublishDraft Draft52()
+            {
+                var d = new PublishDraft(file52) { Title = "标签视频", Description = "正文" };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 30, 1920, 1080);
+                d.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var issues52 = PublishPreflight.Validate(Draft52(), params52);
+            Check("预检：标签 + 位置 → Warning（按标签发布，位置不下发）",
+                issues52.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("互斥", StringComparison.Ordinal)),
+                string.Join("；", issues52.Select(i => i.Message)));
+
+            var paramsGameBad52 = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    Anchor = new DouyinAnchorRef { Type = 13017, Id = "cgmo1", Title = "王者荣耀" },
+                },
+            };
+            var issuesGameBad52 = PublishPreflight.Validate(Draft52(), paramsGameBad52);
+            Check("预检：游戏标签缺短链挂载 → Warning（发布时跳过）",
+                issuesGameBad52.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("游戏标签缺少平台挂载信息", StringComparison.Ordinal)),
+                string.Join("；", issuesGameBad52.Select(i => i.Message)));
+
+            var paramsAppletBad52 = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    Anchor = new DouyinAnchorRef { Type = 4, Id = "tt1", Title = "躺平发育" },
+                },
+            };
+            var issuesAppletBad52 = PublishPreflight.Validate(Draft52(), paramsAppletBad52);
+            Check("预检：小程序标签缺 extra → Warning（发布时跳过）",
+                issuesAppletBad52.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("小程序标签缺少平台挂载信息", StringComparison.Ordinal)),
+                string.Join("；", issuesAppletBad52.Select(i => i.Message)));
+
+            var paramsAppletOk52 = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    Anchor = new DouyinAnchorRef
+                    { Type = 4, Id = "tt1", Title = "躺平发育", Content = appletExtra52 },
+                },
+            };
+            var issuesAppletOk52 = PublishPreflight.Validate(Draft52(), paramsAppletOk52);
+            Check("预检：完整小程序标签 → 不报标签提示",
+                issuesAppletOk52.All(i => !i.Message.Contains("标签", StringComparison.Ordinal)),
+                string.Join("；", issuesAppletOk52.Select(i => i.Message)));
+
+            var paramsSpu52 = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    Anchor = new DouyinAnchorRef { Type = 13093, Id = "7136", Title = "手机的规矩" },
+                },
+            };
+            var issuesSpu52 = PublishPreflight.Validate(Draft52(), paramsSpu52);
+            Check("预检：完整标签（无位置）→ 不报标签提示",
+                issuesSpu52.All(i => !i.Message.Contains("标签", StringComparison.Ordinal)),
+                string.Join("；", issuesSpu52.Select(i => i.Message)));
+
+            File.Delete(file52);
+        }
+
+        // ── 53. 抖音封面双槽 · 横版 4:3（B1 抓包 2026-11-11）──
+        sb.AppendLine("\n[53] 抖音封面双槽：横版 4:3（B1，2026-11-11）");
+        {
+            var file53 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t53-{Guid.NewGuid():N}.mp4");
+            File.WriteAllText(file53, "x");
+            var landscape53 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t53-cover-{Guid.NewGuid():N}.jpg");
+            File.WriteAllText(landscape53, "x");
+
+            PublishDraft Draft53()
+            {
+                var d = new PublishDraft(file53) { Title = "封面视频", Description = "正文" };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 30, 1080, 1920);
+                d.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var params53 = new PlatformParams
+            {
+                Douyin = new DouyinExtras { CoverLandscapePath = landscape53 },
+            };
+            var draft53 = Draft53();
+            var payload53 = PublishPayload.Deserialize<DouyinPayload>(
+                PublishPayloadBuilder.Build(draft53, draft53.Targets[0], params53).ExtraDataJson ?? "{}");
+            Check("builder：横版封面路径透传（coverLandscapePath）",
+                payload53?.CoverLandscapePath == landscape53,
+                JsonSerializer.Serialize(payload53));
+
+            // 发布体：竖版 poster + 横版 horizontal_custom_cover_image_uri + tsp=0
+            var item53 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1",
+                CoverUri: "tos-vertical",
+                HorizontalCoverUri: "tos-horizontal",
+                CoverCropWidth: 788,
+                CoverCropHeight: 1051));
+            var json53 = JsonSerializer.Serialize(item53);
+            using (var doc53 = JsonDocument.Parse(json53))
+            {
+                var cover53 = doc53.RootElement.GetProperty("cover");
+                Check("发布体：poster + horizontal_custom_cover_image_uri + horizontal_cover_tsp=0",
+                    cover53.GetProperty("poster").GetString() == "tos-vertical"
+                    && cover53.GetProperty("horizontal_custom_cover_image_uri").GetString() == "tos-horizontal"
+                    && cover53.GetProperty("horizontal_cover_tsp").GetInt32() == 0
+                    && cover53.GetProperty("custom_cover_image_width").GetInt32() == 788
+                    && cover53.GetProperty("custom_cover_image_height").GetInt32() == 1051,
+                    json53);
+            }
+
+            // 没有横版封面 → 键完全不出现（旧 wire 形状不变）
+            var item53b = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1", CoverUri: "tos-vertical"));
+            var json53b = JsonSerializer.Serialize(item53b);
+            Check("发布体：没有横版封面 → horizontal_* 键不出现",
+                !json53b.Contains("horizontal_custom_cover_image_uri", StringComparison.Ordinal)
+                && !json53b.Contains("horizontal_cover_tsp", StringComparison.Ordinal),
+                json53b);
+
+            // 预检：文件不存在 → Warning（不拦发布）；文件存在 → 不报
+            var issues53 = PublishPreflight.Validate(Draft53(), new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    CoverLandscapePath = Path.Combine(Path.GetTempPath(), "不存在-横版封面.jpg"),
+                },
+            });
+            Check("预检：横版封面文件不存在 → Warning（不拦发布）",
+                issues53.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("横版 4:3", StringComparison.Ordinal))
+                && issues53.All(i => i.Severity != PreflightSeverity.Error),
+                string.Join("；", issues53.Select(i => i.Message)));
+
+            var issues53b = PublishPreflight.Validate(Draft53(), params53);
+            Check("预检：横版封面文件存在 → 不报横版提示",
+                issues53b.All(i => !i.Message.Contains("横版 4:3", StringComparison.Ordinal)),
+                string.Join("；", issues53b.Select(i => i.Message)));
+
+            File.Delete(file53);
+            File.Delete(landscape53);
+        }
+
+        // ── 54. 抖音 @好友（2026-11-11 补抓 discover/search）──
+        sb.AppendLine("\n[54] 抖音 @好友：discover/search + mentions / 正文 / text_extra（2026-11-11）");
+        {
+            var alice54 = new DouyinMentionRef { Uid = "3171453974095646", Nickname = "xuzizheng" };
+            var bob54 = new DouyinMentionRef { Uid = "42", Nickname = "小华" };
+
+            Check("mentions JSON：uid 字符串数组（去重保序）；空列表 → null",
+                DouyinMentionRules.BuildMentionsJson([alice54, bob54])
+                    == """["3171453974095646","42"]"""
+                && DouyinMentionRules.BuildMentionsJson([alice54, alice54])
+                    == """["3171453974095646"]"""
+                && DouyinMentionRules.BuildMentionsJson([]) is null
+                && DouyinMentionRules.BuildMentionsJson(
+                    [new DouyinMentionRef { Uid = "", Nickname = "空" }]) is null);
+
+            Check("正文补 @昵称：空简介 / 非空简介 / 空列表",
+                DouyinMentionRules.AppendMentionText("", [alice54]) == "@xuzizheng"
+                && DouyinMentionRules.AppendMentionText("正文", [alice54, bob54])
+                    == "正文 @xuzizheng @小华"
+                && DouyinMentionRules.AppendMentionText("正文", []) == "正文");
+
+            // B1 样本 4 逐字坐标：title="B1抓包-封面与艾特"、caption="@xuzizheng"
+            // → {start:11,end:21,type:0,user_id,caption_start:0,caption_end:10,at_source}
+            var caption54 = DouyinMentionRules.AppendMentionText("", [alice54]);
+            var text54 = "B1抓包-封面与艾特 " + caption54;
+            var extras54 = DouyinMentionRules.BuildMentionExtras(text54, caption54, [alice54]);
+            Check("@ 条目坐标：start/end 用正文坐标，caption_start/end 用简介坐标（B1 样本逐字）",
+                extras54.Count == 1
+                && extras54[0] is { Start: 11, End: 21, Type: 0, CaptionStart: 0, CaptionEnd: 10 }
+                && extras54[0].UserId == "3171453974095646"
+                && extras54[0].AtSource == "user_manual"
+                && extras54[0].HashtagName == "" && extras54[0].HashtagId == 0,
+                JsonSerializer.Serialize(extras54));
+
+            var hashtagExtra54 =
+                """[{"start":0,"end":3,"type":1,"hashtag_name":"家居","hashtag_id":123,"user_id":"","caption_start":0,"caption_end":3}]""";
+            var merged54 = DouyinMentionRules.MergeMentionExtras(hashtagExtra54, extras54);
+            using (var mergedDoc54 = JsonDocument.Parse(merged54!))
+            {
+                var arr54 = mergedDoc54.RootElement;
+                var hashtag54 = arr54[0];
+                var mention54 = arr54[1];
+                Check("text_extra 合并：话题条目保留且不带 at_source；@ 条目追加在后",
+                    arr54.GetArrayLength() == 2
+                    && !hashtag54.TryGetProperty("at_source", out _)
+                    && hashtag54.GetProperty("type").GetInt32() == 1
+                    && mention54.GetProperty("type").GetInt32() == 0
+                    && mention54.GetProperty("at_source").GetString() == "user_manual"
+                    && mention54.GetProperty("user_id").GetString() == "3171453974095646",
+                    merged54!);
+            }
+
+            Check("空话题串 / 坏话题串 → 只落 @ 条目（不丢用户选择）",
+                DouyinMentionRules.MergeMentionExtras(null, extras54) is { } onlyMention54
+                && JsonDocument.Parse(onlyMention54).RootElement.GetArrayLength() == 1
+                && DouyinMentionRules.MergeMentionExtras("not-json", extras54) is { } bad54
+                && JsonDocument.Parse(bad54).RootElement.GetArrayLength() == 1);
+
+            // discover/search 解析：uid 字符串 / 数字两种；缺昵称跳过；业务码非 0 抛
+            static bool Throws54(Action action)
+            {
+                try { action(); return false; }
+                catch { return true; }
+            }
+
+            var parsed54 = DouyinMentionService.ParseSearch(
+                """{"status_code":0,"has_more":true,"cursor":0,"scene":1,"user_list":[{"uid":"3171453974095646","nickname":"xuzizheng","unique_id":"xzz123","short_id":"55645702","signature":"签名","avatar_thumb":{"url_list":["https://a"]}},{"uid":2387735972938371,"nickname":"数字Uid"},{"uid":"1"}],"extra":{"logid":"x"}}""");
+            Check("discover/search 解析：字符串/数字 uid、抖音号、头像；缺昵称跳过",
+                parsed54.Count == 2
+                && parsed54[0] is
+                {
+                    Uid: "3171453974095646", Nickname: "xuzizheng",
+                    UniqueId: "xzz123", AvatarUrl: "https://a",
+                }
+                && parsed54[1].Uid == "2387735972938371"
+                && Throws54(() => DouyinMentionService.ParseSearch("""{"status_code":9}""")),
+                JsonSerializer.Serialize(parsed54));
+
+            // builder：正文补 @昵称 + mentions JSON + text_extra 合并进 DouyinPayload
+            var file54 = Path.Combine(Path.GetTempPath(),
+                $"newapp-selftest-t54-{Guid.NewGuid():N}.mp4");
+            File.WriteAllText(file54, "x");
+
+            PublishDraft Draft54()
+            {
+                var d = new PublishDraft(file54) { Title = "艾特视频", Description = "正文" };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 30, 1080, 1920);
+                d.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var params54 = new PlatformParams
+            {
+                Douyin = new DouyinExtras { MentionUsers = [alice54] },
+            };
+            var draft54 = Draft54();
+            var payload54 = PublishPayload.Deserialize<DouyinPayload>(
+                PublishPayloadBuilder.Build(draft54, draft54.Targets[0], params54).ExtraDataJson
+                    ?? "{}");
+            Check("builder：正文末尾补 @xuzizheng / mentions JSON / 快照保留",
+                payload54?.Caption == "正文 @xuzizheng"
+                && payload54.Mentions == """["3171453974095646"]"""
+                && payload54.MentionUsers is { Count: 1 },
+                JsonSerializer.Serialize(payload54));
+            using (var extraDoc54 = JsonDocument.Parse(payload54!.TextExtra!))
+            {
+                var at54 = extraDoc54.RootElement[0];
+                Check("builder：text_extra 带 type=0 / user_id / at_source",
+                    at54.GetProperty("type").GetInt32() == 0
+                    && at54.GetProperty("user_id").GetString() == "3171453974095646"
+                    && at54.GetProperty("at_source").GetString() == "user_manual",
+                    payload54.TextExtra!);
+            }
+
+            // 旧 raw mentions（无结构化列表）→ 原样透传，正文不补
+            var params54b = new PlatformParams
+            {
+                Douyin = new DouyinExtras { Mentions = """["777"]""" },
+            };
+            var draft54b = Draft54();
+            var payload54b = PublishPayload.Deserialize<DouyinPayload>(
+                PublishPayloadBuilder.Build(draft54b, draft54b.Targets[0], params54b)
+                    .ExtraDataJson ?? "{}");
+            Check("旧 raw mentions：原样透传且正文不补（兼容旧档/开发者选项）",
+                payload54b?.Mentions == """["777"]""" && payload54b.Caption == "正文",
+                JsonSerializer.Serialize(payload54b));
+
+            // 发布体三件套：common.mentions + text 里的 @昵称 + text_extra
+            var item54 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1", Title: "艾特视频", Description: payload54.Caption,
+                Mentions: payload54.Mentions, TextExtra: payload54.TextExtra));
+            Check("发布体：common.mentions + text 里的 @昵称 + text_extra",
+                item54.Common.Mentions == """["3171453974095646"]"""
+                && item54.Common.Text == "艾特视频 正文 @xuzizheng"
+                && item54.Common.TextExtra!.Contains("\"type\":0", StringComparison.Ordinal),
+                JsonSerializer.Serialize(item54));
+
+            // 预检：坏条目 Warning（不拦发布）/ 完整不报
+            var params54c = new PlatformParams
+            {
+                Douyin = new DouyinExtras
+                {
+                    MentionUsers = [alice54, new DouyinMentionRef { Uid = "", Nickname = "" }],
+                },
+            };
+            var issues54 = PublishPreflight.Validate(Draft54(), params54c);
+            Check("预检：@好友坏条目 → Warning（不拦发布）",
+                issues54.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("@好友", StringComparison.Ordinal))
+                && issues54.All(i => i.Severity != PreflightSeverity.Error),
+                string.Join("；", issues54.Select(i => i.Message)));
+
+            var issues54b = PublishPreflight.Validate(Draft54(), params54);
+            Check("预检：@好友完整 → 不报 @好友提示",
+                issues54b.All(i => !i.Message.Contains("@好友", StringComparison.Ordinal)),
+                string.Join("；", issues54b.Select(i => i.Message)));
+
+            File.Delete(file54);
+        }
+
+        // ── 55. params.txt：抖音横版封面 / 章节（D1，2026-11-14）──
+        sb.AppendLine("\n[55] params.txt：抖音横版封面 / 章节（D1，2026-11-14）");
+        {
+            // 章节：排序 + 同一时间点只留第一条 + 非法行跳过，全在 PublishFieldText.ParseChapters
+            var text55 = string.Join("\n",
+                "标题: 横版封面测试",
+                "抖音横版封面: 横版.jpg",
+                "章节: 00:45 配套",
+                "章节: 00:00 开场",
+                "章节: 00:15 户型",
+                "章节: 00:15 同一时间点应被丢弃",
+                "章节: 不是时间 这行要跳过");
+            var p55 = PublishParamsFile.Parse(text55);
+            Check("params：抖音横版封面读得回 / 章节升序 + 同时间点去重 + 非法行跳过 / 零警告",
+                p55.DouyinLandscapeCover == "横版.jpg"
+                && p55.Chapters.Count == 3
+                && p55.Chapters[0] == new PlatformChapter(0, "开场")
+                && p55.Chapters[1] == new PlatformChapter(15_000, "户型")
+                && p55.Chapters[2] == new PlatformChapter(45_000, "配套")
+                && p55.Problems.Count == 0,
+                $"{p55.DouyinLandscapeCover ?? "(空)"} / {string.Join("|", p55.Chapters)}"
+                + $" / {p55.Problems.Count} 条问题");
+
+            var abs55 = Path.Combine(Path.GetTempPath(), "newapp-selftest-t55-横版.jpg");
+            Check("params：绝对路径原样保留（值里的盘符冒号不被切成键）",
+                PublishParamsFile.Parse($"抖音横版封面: {abs55}").DouyinLandscapeCover == abs55,
+                PublishParamsFile.Parse($"抖音横版封面: {abs55}").DouyinLandscapeCover ?? "(null)");
+
+            Check("params：两个键都没写 → null / 空列表",
+                UnitParams.Empty.DouyinLandscapeCover is null && UnitParams.Empty.Chapters.Count == 0);
+
+            // —— 落到草稿：相对路径按发布单元目录解析；只写消费该字段的平台 ——
+            var dir55 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t55-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir55);
+            var video55 = Path.Combine(dir55, "v.mp4");
+            File.WriteAllText(video55, "x");
+
+            PublishDraft Draft55()
+            {
+                var d = new PublishDraft(video55, dir55) { Title = "横版封面测试" };
+                d.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "抖音号"));
+                d.Targets.Add(new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "快手号"));
+                d.Targets.Add(new PublishTarget(PlatformNames.WechatVideo, Guid.NewGuid(), "视频号"));
+                return d;
+            }
+
+            var draft55 = Draft55();
+            PublishDraftFactory.ApplyUnitParams(draft55, p55);
+            var dy55 = draft55.ParamsFor(draft55.Targets[0]);
+            var ks55 = draft55.ParamsFor(draft55.Targets[1]);
+            Check("Apply：相对路径按发布单元文件夹解析成绝对路径",
+                dy55.Douyin?.CoverLandscapePath
+                    == Path.GetFullPath(Path.Combine(dir55, "横版.jpg")),
+                dy55.Douyin?.CoverLandscapePath ?? "(null)");
+            Check("Apply：章节落到抖音 / 快手",
+                dy55.Chapters.Count == 3 && ks55.Chapters.Count == 3
+                && ks55.Chapters[1] == new PlatformChapter(15_000, "户型"),
+                $"抖音 {dy55.Chapters.Count} / 快手 {ks55.Chapters.Count}");
+            // 视频号既不消费横版封面也不消费章节 —— 不能给它造一份与预设相同的空覆盖
+            Check("Apply：视频号不造空覆盖（否则 UI 莫名显示「已覆盖预设」）",
+                !draft55.Overrides.ContainsKey(draft55.Targets[2].Key),
+                string.Join(",", draft55.Overrides.Keys));
+
+            var absDraft55 = Draft55();
+            PublishDraftFactory.ApplyUnitParams(absDraft55,
+                PublishParamsFile.Parse($"抖音横版封面: {abs55}"));
+            Check("Apply：绝对路径原样写入",
+                absDraft55.ParamsFor(absDraft55.Targets[0]).Douyin?.CoverLandscapePath == abs55,
+                absDraft55.ParamsFor(absDraft55.Targets[0]).Douyin?.CoverLandscapePath ?? "(null)");
+
+            var emptyDraft55 = Draft55();
+            PublishDraftFactory.ApplyUnitParams(emptyDraft55, UnitParams.Empty);
+            Check("Apply：两个键都没写 → 一条覆盖都不造",
+                emptyDraft55.Overrides.Count == 0,
+                string.Join(",", emptyDraft55.Overrides.Keys));
+
+            // —— 章节确实进了发布体（wire 侧钉住；平台是否回传是另一回事）——
+            var item55 = DouyinVideoService.BuildCreateItem(new CreateDouyinWorkRequest(
+                VideoId: "v1",
+                Chapters: [new DouyinChapter(0, "开场"), new DouyinChapter(5_000, "户型")]));
+            using (var chapterDoc55 = JsonDocument.Parse(item55.Chapter.Chapter))
+            {
+                var root55 = chapterDoc55.RootElement;
+                var details55 = root55.GetProperty("chapter_details");
+                Check("发布体：有章节 → item.chapter.chapter 带 chapter_type=1 + 毫秒时间戳",
+                    root55.GetProperty("chapter_type").GetInt32() == 1
+                    && details55.GetArrayLength() == 2
+                    && details55[0].GetProperty("desc").GetString() == "开场"
+                    && details55[0].GetProperty("timestamp").GetInt64() == 0
+                    && details55[1].GetProperty("desc").GetString() == "户型"
+                    && details55[1].GetProperty("timestamp").GetInt64() == 5_000,
+                    item55.Chapter.Chapter);
+            }
+
+            var itemNoChapter55 = DouyinVideoService.BuildCreateItem(
+                new CreateDouyinWorkRequest(VideoId: "v1"));
+            using (var noChapterDoc55 = JsonDocument.Parse(itemNoChapter55.Chapter.Chapter))
+            {
+                var noRoot55 = noChapterDoc55.RootElement;
+                Check("发布体：没章节 → 仍是默认空章节（chapter_type=0，与抓包同形）",
+                    noRoot55.GetProperty("chapter_type").GetInt32() == 0
+                    && noRoot55.GetProperty("chapter_details").GetArrayLength() == 0,
+                    itemNoChapter55.Chapter.Chapter);
+            }
+
+            // —— 两处参数样板都要列出来（缺了用户就不知道有这个键）——
+            Check("两个参数样板都列了 抖音横版封面 / 章节，且仍能零警告解析",
+                PublishUnitTemplate.ParamsText.Contains("# 抖音横版封面: ", StringComparison.Ordinal)
+                && PublishUnitTemplate.ParamsText.Contains("# 章节: ", StringComparison.Ordinal)
+                && ComposeUnitWriter.OptionalGuide.Contains("# 抖音横版封面: ", StringComparison.Ordinal)
+                && ComposeUnitWriter.OptionalGuide.Contains("# 章节: ", StringComparison.Ordinal)
+                && PublishParamsFile.Parse(PublishUnitTemplate.ParamsText).Problems.Count == 0
+                && PublishParamsFile.Parse(ComposeUnitWriter.BuildParamsText("x")).Problems.Count == 0);
+
+            try { Directory.Delete(dir55, recursive: true); } catch { }
+        }
+
+        // ── 56. params.txt：视频号好友（W5，2026-11-14）──
+        sb.AppendLine("\n[56] params.txt：视频号好友（W5）");
+        {
+            var p56 = PublishParamsFile.Parse(string.Join("\n",
+                "标题: 好友测试",
+                "视频号好友: 全国找房, 知鸭",
+                "视频号好友: 知鸭、温史知新"));
+            Check("params：视频号好友逗号/顿号切分 + 多行累加 + 去重",
+                p56.WechatMentionUsers.SequenceEqual(["全国找房", "知鸭", "温史知新"])
+                && p56.Problems.Count == 0,
+                string.Join("|", p56.WechatMentionUsers));
+
+            Check("params：昵称里的空格不被切开（同话题ID口径）",
+                PublishParamsFile.Parse("视频号好友: 房 小 淘")
+                    .WechatMentionUsers.SequenceEqual(["房 小 淘"]));
+
+            var dir56 = Path.Combine(Path.GetTempPath(), $"newapp-selftest-t56-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(dir56);
+            var video56 = Path.Combine(dir56, "v.mp4");
+            File.WriteAllText(video56, "x");
+            try
+            {
+                var draft56 = new PublishDraft(video56, dir56) { Title = "好友测试" };
+                draft56.Targets.Add(new PublishTarget(PlatformNames.WechatVideo, Guid.NewGuid(), "视频号"));
+                draft56.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "抖音号"));
+                PublishDraftFactory.ApplyUnitParams(draft56, p56);
+
+                var wx56 = draft56.ParamsFor(draft56.Targets[0]);
+                Check("Apply：视频号好友只写视频号目标",
+                    wx56.WechatVideo?.MentionUsers.Select(m => m.Nickname)
+                        .SequenceEqual(["全国找房", "知鸭", "温史知新"]) == true
+                    && !draft56.Overrides.ContainsKey(draft56.Targets[1].Key),
+                    $"{wx56.WechatVideo?.MentionUsers.Count ?? 0} 个 / 覆盖 {draft56.Overrides.Count}");
+
+                var payload56 = PublishPayload.Deserialize<WechatVideoPayload>(
+                    PublishPayloadBuilder.Build(draft56, draft56.Targets[0], wx56).ExtraDataJson);
+                Check("builder：视频号好友 → 载荷 MentionUsers（昵称）",
+                    payload56?.MentionUsers is ["全国找房", "知鸭", "温史知新"],
+                    string.Join("|", payload56?.MentionUsers ?? []));
+            }
+            finally { try { Directory.Delete(dir56, recursive: true); } catch { } }
+
+            Check("两处参数样板都列了 视频号好友，且仍能零警告解析",
+                PublishUnitTemplate.ParamsText.Contains("# 视频号好友: ", StringComparison.Ordinal)
+                && ComposeUnitWriter.OptionalGuide.Contains("# 视频号好友: ", StringComparison.Ordinal)
+                && PublishParamsFile.Parse(PublishUnitTemplate.ParamsText).Problems.Count == 0
+                && PublishParamsFile.Parse(ComposeUnitWriter.BuildParamsText("x")).Problems.Count == 0);
+        }
+
+        sb.AppendLine("\n[57] 小红书选择群聊（B4，2026-11-15）");
+        {
+            // ── 解析：snake_case data.group_list + admin_group_list 合并去重 ──
+            const string raw57 = """
+            {"code":0,"success":true,"data":{
+              "group_list":[
+                {"group_id":"g1","group_name":"自媒体群聊","desc":"互赞互评",
+                 "avatar":"https://x/a.png","linkable":true},
+                {"group_id":"g2","group_name":"已解散群","linkable":false}
+              ],
+              "admin_group_list":[
+                {"group_id":"g1","group_name":"自媒体群聊"},
+                {"group_name":"没有ID"}
+              ]}}
+            """;
+            var (items57, ok57, _) = XhsGroupService.ParseGroupsWithStatus(raw57);
+            Check("parse：snake_case 两组合并去重、缺 ID/群名丢弃",
+                ok57 && items57.Count == 2
+                && items57[0] is { GroupId: "g1", GroupName: "自媒体群聊", Linkable: true }
+                && items57[0].Desc == "互赞互评"
+                && items57[0].Avatar == "https://x/a.png"
+                && items57[1] is { GroupId: "g2", Linkable: false },
+                JsonSerializer.Serialize(items57));
+
+            // ── 解析：camelCase 变体（页面 transform 后的形状）──
+            var items57c = XhsGroupService.ParseGroups("""
+            {"success":true,"data":{"groupList":[
+              {"groupId":"g3","groupName":"群三","avatarUrl":"https://x/b.png"}]}}
+            """);
+            Check("parse：camelCase 变体（groupList / groupId / avatarUrl）",
+                items57c is [{ GroupId: "g3", GroupName: "群三", Avatar: "https://x/b.png" }],
+                JsonSerializer.Serialize(items57c));
+
+            // ── 解析：失败信封 ──
+            var (bad57, ok57b, msg57) =
+                XhsGroupService.ParseGroupsWithStatus("""{"code":100,"msg":"未登录"}""");
+            Check("parse：code≠0 → Ok=false + 平台原因",
+                !ok57b && bad57.Count == 0 && msg57 == "未登录", msg57 ?? "");
+
+            // ── 发布体：business_binds.groupBind 四字段 ──
+            static string Binds57(Dictionary<string, object?> payload) =>
+                (string)((Dictionary<string, object?>)payload["common"]!)["business_binds"]!;
+
+            var note57 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "群聊测试",
+                FileId = "spectrum/abc",
+                GroupBind = new XhsGroupBind("g1", "自媒体群聊", "互赞互评", "https://x/a.png"),
+            });
+            using (var doc = JsonDocument.Parse(Binds57(note57)))
+            {
+                var g = doc.RootElement.GetProperty("groupBind");
+                Check("发布体：groupBind = {groupId,groupName,desc,avatar}（bundle 逐字）",
+                    g.GetProperty("groupId").GetString() == "g1"
+                    && g.GetProperty("groupName").GetString() == "自媒体群聊"
+                    && g.GetProperty("desc").GetString() == "互赞互评"
+                    && g.GetProperty("avatar").GetString() == "https://x/a.png",
+                    g.GetRawText());
+            }
+
+            var note57b = XhsPublishService.BuildNotePayload(
+                new XhsPublishRequest { Title = "不关联", FileId = "spectrum/abc" });
+            Check("发布体：未选群聊 → 不带 groupBind 键（旧发布体逐字）",
+                !Binds57(note57b).Contains("\"groupBind\"", StringComparison.Ordinal));
+
+            // ── builder 透传 + 坏快照丢弃 ──
+            PublishDraft Draft57() => new($@"D:\demo\t57-{Guid.NewGuid():N}.mp4")
+            {
+                Title = "群聊",
+                Description = "正文",
+            };
+
+            var params57 = new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    GroupBind = new XhsGroupRef("g1", "自媒体群聊", "互赞互评", "https://x/a.png"),
+                },
+            };
+            var payload57 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(Draft57(),
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    params57).ExtraDataJson ?? "{}");
+            Check("builder：群聊快照 → XhsPayload.GroupBind",
+                payload57?.GroupBind is
+                { GroupId: "g1", GroupName: "自媒体群聊", Desc: "互赞互评" },
+                JsonSerializer.Serialize(payload57?.GroupBind));
+
+            var badPayload57 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(Draft57(),
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras
+                        {
+                            GroupBind = new XhsGroupRef("", "没有 ID 的群"),
+                        },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：坏快照（缺群 ID）→ GroupBind 不透传",
+                badPayload57?.GroupBind is null);
+
+            // ── 预检：快照不全只 Warning，不拦发布 ──
+            PublishDraft draft57 = Draft57();
+            draft57.Targets.Add(
+                new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+            var preBad57 = PublishPreflight.Validate(draft57, new PlatformParams
+            {
+                Xhs = new XhsExtras { GroupBind = new XhsGroupRef("g1", "") },
+            });
+            Check("预检：群聊快照缺群名 → Warning（不拦发布）",
+                preBad57.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("群聊快照不完整")),
+                string.Join("；", preBad57.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[58] 小红书 PK 封面（B4，2026-11-15）");
+        {
+            // ── 没有附加图 → []（页面同款：主封面单独一条不构成 PK 封面）──
+            Check("PK 封面：没有附加图 → \"[]\"",
+                XhsPublishService.BuildPkCoverRelationsJson("spectrum/main", 1080, 1440, null) == "[]"
+                && XhsPublishService.BuildPkCoverRelationsJson("spectrum/main", 1080, 1440, []) == "[]");
+
+            // ── 主封面 index=0 + 附加图 index=1..n（bundle 逐字）──
+            var pkJson58 = XhsPublishService.BuildPkCoverRelationsJson(
+                "spectrum/main", 1080, 1440,
+                [
+                    new XhsPkCoverEntry("spectrum/pk1", 800, 600),
+                    new XhsPkCoverEntry("spectrum/pk2", 720, 960),
+                ]);
+            using (var doc = JsonDocument.Parse(pkJson58))
+            {
+                var arr = doc.RootElement;
+                var e0 = arr[0];
+                var e1 = arr[1];
+                var e2 = arr[2];
+                using var x0 = JsonDocument.Parse(e0.GetProperty("extra_info").GetString()!);
+                using var x1 = JsonDocument.Parse(e1.GetProperty("extra_info").GetString()!);
+                Check("PK 封面：三条 = 主封面(user,index 0) + 两张附加图(user,index 1/2)",
+                    arr.GetArrayLength() == 3
+                    && e0.GetProperty("biz_id").GetString() == "spectrum/main"
+                    && e1.GetProperty("biz_id").GetString() == "spectrum/pk1"
+                    && e2.GetProperty("biz_id").GetString() == "spectrum/pk2"
+                    && e0.GetProperty("biz_type").GetString() == "PK_COVER"
+                    && x0.RootElement.GetProperty("type").GetString() == "user"
+                    && x0.RootElement.GetProperty("index").GetInt32() == 0
+                    && x1.RootElement.GetProperty("type").GetString() == "user"
+                    && x1.RootElement.GetProperty("index").GetInt32() == 1
+                    && x1.RootElement.GetProperty("width").GetInt32() == 800
+                    && x1.RootElement.GetProperty("height").GetInt32() == 600,
+                    pkJson58);
+
+                Check("PK 封面：extraInfo 其余键 audit_status=0 / final_cover=false / url=\"\"",
+                    x1.RootElement.GetProperty("audit_status").GetInt32() == 0
+                    && !x1.RootElement.GetProperty("final_cover").GetBoolean()
+                    && x1.RootElement.GetProperty("url").GetString() == "");
+            }
+
+            // 主封面来自首帧（没上传封面图）→ type="frame"（页面 C6 口径）
+            using (var doc = JsonDocument.Parse(XhsPublishService.BuildPkCoverRelationsJson(
+                       "spectrum/frame", 1080, 1920,
+                       [new XhsPkCoverEntry("spectrum/pk1", 800, 600)], mainType: "frame")))
+            {
+                using var x0f = JsonDocument.Parse(
+                    doc.RootElement[0].GetProperty("extra_info").GetString()!);
+                Check("PK 封面：主封面未上传时 type=frame",
+                    x0f.RootElement.GetProperty("type").GetString() == "frame");
+            }
+
+            // ── common.biz_relations = 现有（滤 AI_VIDEO_COVER）+ PK 封面 ──
+            var note58 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "PK",
+                FileId = "spectrum/abc",
+                BizRelationsJson = "[{\"bizType\":\"AI_VIDEO_COVER\",\"bizId\":\"ai\"},{\"bizType\":\"REF_POST\",\"bizId\":\"n1\"}]",
+                PkCoverBizRelationsJson = "[{\"biz_id\":\"pk\",\"biz_type\":\"PK_COVER\"}]",
+            });
+            var common58 = (Dictionary<string, object?>)note58["common"]!;
+            using (var doc = JsonDocument.Parse(
+                       JsonSerializer.Serialize(common58["biz_relations"])))
+            {
+                var arr = doc.RootElement;
+                Check("发布体：common.biz_relations = 原有(滤掉 AI_VIDEO_COVER) + PK 封面(snake_case)",
+                    arr.GetArrayLength() == 2
+                    && arr[0].GetProperty("bizId").GetString() == "n1"   // 用户原始 JSON 原样
+                    && arr[1].GetProperty("biz_id").GetString() == "pk"
+                    && arr[1].GetProperty("biz_type").GetString() == "PK_COVER",
+                    JsonSerializer.Serialize(common58["biz_relations"]));
+            }
+
+            // ── builder 透传：开关 + 图列表 → XhsPayload ──
+            PublishDraft Draft58() => new($@"D:\demo\t58-{Guid.NewGuid():N}.mp4")
+            {
+                Title = "PK 封面",
+            };
+
+            var payload58 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(Draft58(),
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras
+                        {
+                            PkCoverEnabled = true,
+                            PkCoverImages = [@"D:\pk\a.jpg", @"D:\pk\b.png"],
+                        },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：PK 封面开关 + 图列表 → 载荷（Enabled=true / 两张）",
+                payload58?.PkCoverEnabled == true
+                && payload58.PkCoverImages is [@"D:\pk\a.jpg", @"D:\pk\b.png"],
+                JsonSerializer.Serialize(payload58?.PkCoverImages));
+
+            var payload58b = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(Draft58(),
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras { PkCoverEnabled = true, PkCoverImages = [] },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：开关开但没有图 → 不透传（平台不会生成）",
+                payload58b?.PkCoverEnabled is false or null
+                && payload58b.PkCoverImages is null);
+
+            // ── 预检：没图 / 图不存在 / 原始 JSON 被覆盖 三态 ──
+            // 注意：每个 CASE 都要新草稿 —— ParamsFor 会把首轮的克隆缓存进 Overrides，
+            // 复用同一个草稿时后两次的 preset 根本不会被读（2026-11-15 自检踩到）。
+            PublishDraft Draft58WithTarget()
+            {
+                var d = Draft58();
+                d.Targets.Add(
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var preNoImg58 = PublishPreflight.Validate(Draft58WithTarget(), new PlatformParams
+            {
+                Xhs = new XhsExtras { PkCoverEnabled = true, PkCoverImages = [] },
+            });
+            Check("预检：PK 封面开但没图 → Warning",
+                preNoImg58.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("没有选附加图")),
+                string.Join("；", preNoImg58.Select(i => i.Message)));
+
+            var preMissing58 = PublishPreflight.Validate(Draft58WithTarget(), new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    PkCoverEnabled = true,
+                    PkCoverImages = [@"D:\不存在的目录\pk.jpg"],
+                },
+            });
+            Check("预检：PK 封面图片不存在 → Warning",
+                preMissing58.Any(i => i.Message.Contains("图片不存在")),
+                string.Join("；", preMissing58.Select(i => i.Message)));
+
+            var preOverride58 = PublishPreflight.Validate(Draft58WithTarget(), new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    PkCoverEnabled = true,
+                    PkCoverImages = [@"D:\不存在的目录\pk.jpg"],
+                    PkCoverBizRelations = "[{\"bizId\":\"raw\"}]",
+                },
+            });
+            Check("预检：结构化附加图 + 原始 JSON 共存 → 提示原始 JSON 被覆盖",
+                preOverride58.Any(i => i.Message.Contains("覆盖开发者选项")),
+                string.Join("；", preOverride58.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[59] 小红书视频标记（B4，2026-11-15）");
+        {
+            // ── 线上 bundle d001adc9 逐字：新建标记 → 发布体 ──
+            var markerJson59 = JsonSerializer.Serialize(
+                XhsPublishService.BuildMarkers(
+                [
+                    new XhsMarkerInput("u-1", "小红薯", "user", 0, 5),
+                    new XhsMarkerInput("poi-9", "外滩", "location", 3, 8),
+                ], 1920, 1080));
+            using (var doc = JsonDocument.Parse(markerJson59))
+            {
+                var arr = doc.RootElement;
+                var first = arr[0];
+                var detail = first.GetProperty("detail");
+                Check("标记：外层 {type:video_marks_v2, start/end 毫秒}",
+                    arr.GetArrayLength() == 2
+                    && first.GetProperty("type").GetString() == "video_marks_v2"
+                    && first.GetProperty("start").GetInt64() == 0
+                    && first.GetProperty("end").GetInt64() == 5_000
+                    && arr[1].GetProperty("start").GetInt64() == 3_000
+                    && arr[1].GetProperty("end").GetInt64() == 8_000,
+                    markerJson59);
+
+                Check("标记 detail：id/style=1/type=user/event.value{id,name}",
+                    detail.GetProperty("id").GetString() == "u-1"
+                    && detail.GetProperty("style").GetInt32() == 1
+                    && detail.GetProperty("type").GetString() == "user"
+                    && detail.GetProperty("event").GetProperty("value")
+                        .GetProperty("id").GetString() == "u-1"
+                    && detail.GetProperty("event").GetProperty("value")
+                        .GetProperty("name").GetString() == "小红薯");
+
+                Check("标记 detail：container_size = \"{高, 宽}\" / unit_center / anchor_center=null / markY=0.5",
+                    detail.GetProperty("container_size").GetString() == "{1080, 1920}"
+                    && detail.GetProperty("unit_center").GetString() == "{0.5, 0.5}"
+                    && detail.GetProperty("anchor_center").ValueKind == JsonValueKind.Null
+                    && detail.GetProperty("markY").GetDouble() == 0.5);
+
+                Check("标记：地点 type=location（外层 location → LOCATION 之外只存小写）",
+                    arr[1].GetProperty("detail").GetProperty("type").GetString() == "location"
+                    && arr[1].GetProperty("detail").GetProperty("id").GetString() == "poi-9");
+            }
+
+            // 发布体：标记进 video_info.timelines（**不是 markers** —— 2026-11-15 实测
+            // `video_info.markers` 被平台静默忽略；线上 bundle 的构造字段是 timelines）
+            var noteMarkers59 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "标记",
+                FileId = "spectrum/abc",
+                Width = 1280,
+                Height = 720,
+                Markers = [new XhsMarkerInput("u-1", "小红薯", "user", 1, 6)],
+            });
+            var viMarkers59 = (Dictionary<string, object?>)noteMarkers59["video_info"]!;
+            Check("发布体：标记进 video_info.timelines（不是 markers）",
+                viMarkers59["timelines"] is List<object> { Count: 1 }
+                && !viMarkers59.ContainsKey("markers"),
+                JsonSerializer.Serialize(viMarkers59["timelines"]));
+
+            Check("标记：缺 ID/名称、未知类型 → 跳过；空表 → []",
+                JsonSerializer.Serialize(XhsPublishService.BuildMarkers(
+                    [
+                        new XhsMarkerInput("", "没 ID", "user", 0, 5),
+                        new XhsMarkerInput("x", "", "user", 0, 5),
+                        new XhsMarkerInput("g", "商品", "goods_v2", 0, 5),
+                    ], 1080, 1920)) == "[]"
+                && JsonSerializer.Serialize(XhsPublishService.BuildMarkers(null, 1080, 1920)) == "[]");
+
+            // ── 解析朋友搜索结果（2026-11-15 探针真实响应形状）──
+            using (var doc = JsonDocument.Parse("""
+            {"data":{"result":{"success":true},"users":[
+              {"type":"user","user_base_dto":{"user_id":"u1","user_nickname":"小红薯",
+                "desc":"简介","image":"https://x/a.png"}},
+              {"type":"user","user_base_dto":{"user_id":"u1","user_nickname":"重复"}},
+              {"type":"user","user_base_dto":{"user_nickname":"缺ID"}}]}}
+            """))
+            {
+                var items59 = XhsLabelService.ParseFriends(doc.RootElement);
+                Check("标记搜索解析：data.users[].user_base_dto → 去重 / 缺 ID 跳过",
+                    items59 is [{ Id: "u1", Name: "小红薯", Type: "USER", Desc: "简介" }],
+                    JsonSerializer.Serialize(items59));
+            }
+
+            // ── builder 透传 + 预检 ──
+            PublishDraft Draft59()
+            {
+                var d = new PublishDraft($@"D:\demo\t59-{Guid.NewGuid():N}.mp4")
+                {
+                    Title = "视频标记",
+                };
+                d.Meta = new VideoMeta(d.VideoPath, 1, 10, 1920, 1080);
+                d.Targets.Add(
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+                return d;
+            }
+
+            var payload59 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(Draft59(),
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras
+                        {
+                            Markers =
+                            [
+                                new XhsVideoMarker
+                                {
+                                    Id = "u-1", Name = "小红薯", Type = "user",
+                                    StartSeconds = 1, EndSeconds = 6,
+                                },
+                            ],
+                        },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：标记快照 → XhsPayload.Markers",
+                payload59?.Markers is [{ Id: "u-1", Name: "小红薯", Type: "user",
+                    StartSeconds: 1, EndSeconds: 6 }],
+                JsonSerializer.Serialize(payload59?.Markers));
+
+            var preMarker59 = PublishPreflight.Validate(Draft59(), new PlatformParams
+            {
+                Xhs = new XhsExtras
+                {
+                    Markers =
+                    [
+                        new XhsVideoMarker { Id = "", Name = "坏标记", Type = "user" },
+                        new XhsVideoMarker
+                        {
+                            Id = "u2", Name = "倒序", Type = "user",
+                            StartSeconds = 8, EndSeconds = 3,
+                        },
+                        new XhsVideoMarker
+                        {
+                            Id = "u3", Name = "超时长", Type = "user",
+                            StartSeconds = 99, EndSeconds = 100,
+                        },
+                    ],
+                },
+            });
+            Check("预检：标记缺 ID / 倒序 / 超过时长 → 三条 Warning（不拦发布）",
+                preMarker59.Count(i => i.Severity == PreflightSeverity.Warning
+                    && (i.Message.Contains("视频标记快照不完整")
+                        || i.Message.Contains("结束时间早于开始时间")
+                        || i.Message.Contains("超过视频时长"))) >= 3,
+                string.Join("；", preMarker59.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[60] 小红书添加路线（B4，2026-11-15）");
+        {
+            // ── 建路线请求体（探针已验：snake_case / 空 polygon / 不带 selected_route_type）──
+            var body60 = XhsRouteService.BuildSaveTravelBody(
+                "uid-1", "我的路线",
+                [
+                    new XhsRoutePoint("p1", "外滩", 121.49, 31.24),
+                    new XhsRoutePoint("p2", "豫园", 121.49, 31.23),
+                ]);
+            var bodyJson60 = JsonSerializer.Serialize(body60);
+            using (var doc = JsonDocument.Parse(bodyJson60))
+            {
+                var r = doc.RootElement;
+                Check("路线请求体：snake_case（save_type=2 / travel_id 空 / singleRoute / polygon 空）",
+                    r.GetProperty("save_type").GetInt32() == 2
+                    && r.GetProperty("travel_id").GetString() == ""
+                    && r.GetProperty("travel_type").GetString() == "singleRoute"
+                    && r.GetProperty("travel_name").GetString() == "我的路线"
+                    && r.GetProperty("user_id").GetString() == "uid-1"
+                    && r.GetProperty("polygon").GetArrayLength() == 0,
+                    bodyJson60);
+
+                var plan = r.GetProperty("plans")[0];
+                var e0 = plan.GetProperty("elements")[0];
+                Check("路线请求体：plans[].elements[] = {id,type:poi,lon,lat}，不带 selected_route_type",
+                    plan.GetProperty("plan_name").GetString() == "DAY 1"
+                    && e0.GetProperty("id").GetString() == "p1"
+                    && e0.GetProperty("type").GetString() == "poi"
+                    && Math.Abs(e0.GetProperty("lon").GetDouble() - 121.49) < 0.0001
+                    && !e0.TryGetProperty("selected_route_type", out _),
+                    bodyJson60);
+            }
+
+            // ── 解析：POI 搜索 / 坐标 / travelId（探针真实响应形状）──
+            var (poiItems60, okPoi60, _) = XhsRouteService.ParsePoiListWithStatus("""
+            {"code":0,"success":true,"msg":"成功","data":{"poi_list":[
+              {"poi_id":"p1","poi_name":"外滩","address":"中山东一路"},
+              {"poi_id":"","poi_name":"缺 ID"},
+              {"poi_id":"p2","poi_name":"豫园","address":"福佑路"}]}}
+            """);
+            Check("地点解析：data.poi_list → 缺 ID 跳过",
+                okPoi60
+                && poiItems60 is [{ PoiId: "p1", Name: "外滩", Address: "中山东一路" }, { PoiId: "p2" }],
+                JsonSerializer.Serialize(poiItems60));
+
+            var (_, okReject60, msgReject60) = XhsRouteService.ParsePoiListWithStatus(
+                """{"code":-9000,"success":false,"msg":"pageNo invalid"}""");
+            Check("地点解析：-9000 → Ok=false + 平台原因",
+                !okReject60 && msgReject60 == "pageNo invalid", msgReject60);
+
+            Check("坐标解析：markers[0].latitude/longitude + poi.poi_name",
+                XhsRouteService.ParseMarkerPoint(
+                    """{"markers":[{"latitude":31.24,"longitude":121.49,"poi":{"poi_id":"p1","poi_name":"外滩"}}]}""",
+                    "p1", "兜底") is { PoiId: "p1", Name: "外滩", Lon: 121.49, Lat: 31.24 });
+
+            Check("travelId 解析：data.travel_id",
+                XhsRouteService.ParseTravelId(
+                    """{"code":0,"success":true,"data":{"travel_id":"7708247288499404803"}}""")
+                == "7708247288499404803");
+
+            // ── 发布体：hash_tag + 正文 token + biz_relations 两处 ──
+            var note60 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "路线",
+                Description = "看看我的路线",
+                FileId = "spectrum/abc",
+                RouteBind = new XhsRouteBind("travel-1", "杭州一日游", "singleRoute", 1),
+            });
+            var common60 = (Dictionary<string, object?>)note60["common"]!;
+
+            using (var doc = JsonDocument.Parse(
+                       JsonSerializer.Serialize(common60["hash_tag"])))
+            {
+                var arr = doc.RootElement;
+                Check("发布体：hash_tag 追加 {id,name,type:\"map_traver\"}",
+                    arr.GetArrayLength() == 1
+                    && arr[0].GetProperty("id").GetString() == "travel-1"
+                    && arr[0].GetProperty("name").GetString() == "杭州一日游"
+                    && arr[0].GetProperty("type").GetString() == "map_traver",
+                    JsonSerializer.Serialize(common60["hash_tag"]));
+            }
+
+            var desc60 = (string)common60["desc"]!;
+            Check("发布体：正文补 #路线名[map_traver]#",
+                desc60.Contains("#杭州一日游[map_traver]#", StringComparison.Ordinal), desc60);
+
+            using (var doc = JsonDocument.Parse(
+                       JsonSerializer.Serialize(common60["biz_relations"])))
+            {
+                var e = doc.RootElement[0];
+                using var extra = JsonDocument.Parse(e.GetProperty("extra_info").GetString()!);
+                var x = extra.RootElement;
+                Check("发布体：biz_relations 追加 POI_MAP_TRAVEL（snake 外层 / camel extra_info）",
+                    e.GetProperty("biz_type").GetString() == "POI_MAP_TRAVEL"
+                    && e.GetProperty("biz_id").GetString() == "travel-1"
+                    && x.GetProperty("travelId").GetString() == "travel-1"
+                    && x.GetProperty("travelType").GetString() == "singleRoute"
+                    && x.GetProperty("title").GetString() == "杭州一日游 包含1条路线"
+                    && x.GetProperty("link").GetString()
+                        == "xhsdiscover://rn/poi/map?pageMode=travel_publish"
+                    && x.GetProperty("mapTravels")[0].GetProperty("travelId").GetString()
+                        == "travel-1"
+                    && x.GetProperty("capaPoiRich").GetInt32() == 0,
+                    e.GetRawText());
+            }
+
+            // 原始 JSON 里的 POI_MAP_TRAVEL 被结构化条目覆盖（页面 insertBizRelation 同款）
+            var noteDup60 = XhsPublishService.BuildNotePayload(new XhsPublishRequest
+            {
+                Title = "路线去重",
+                FileId = "spectrum/abc",
+                BizRelationsJson = """
+                [{"biz_type":"POI_MAP_TRAVEL","biz_id":"raw"},{"bizType":"REF_POST","bizId":"n1"}]
+                """,
+                RouteBind = new XhsRouteBind("travel-2", "路线二"),
+            });
+            using (var doc = JsonDocument.Parse(JsonSerializer.Serialize(
+                       ((Dictionary<string, object?>)noteDup60["common"]!)["biz_relations"])))
+            {
+                var arr = doc.RootElement;
+                Check("发布体：原始 JSON 的 POI_MAP_TRAVEL 被结构化条目覆盖（不重复）",
+                    arr.GetArrayLength() == 2
+                    && arr[0].GetProperty("bizId").GetString() == "n1"
+                    && arr[1].GetProperty("biz_id").GetString() == "travel-2",
+                    arr.GetRawText());
+            }
+
+            // ── builder / clone / 预检 ──
+            var extras60 = new XhsExtras { Route = new XhsRouteRef("t1", "路线一") };
+            Check("XhsExtras.Clone 带 Route",
+                extras60.Clone().Route == extras60.Route);
+
+            var payload60 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(
+                    new PublishDraft($@"D:\demo\t60-{Guid.NewGuid():N}.mp4")
+                    {
+                        Title = "路线",
+                    },
+                    new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"),
+                    new PlatformParams
+                    {
+                        Xhs = new XhsExtras
+                        {
+                            Route = new XhsRouteRef("t1", "路线一", "singleRoute", 1),
+                        },
+                    }).ExtraDataJson ?? "{}");
+            Check("builder：路线快照 → XhsPayload.Route",
+                payload60?.Route is { TravelId: "t1", RouteName: "路线一" },
+                JsonSerializer.Serialize(payload60?.Route));
+
+            var draft60 = new PublishDraft($@"D:\demo\t60b-{Guid.NewGuid():N}.mp4")
+            {
+                Title = "路线预检",
+            };
+            draft60.Targets.Add(
+                new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "主号"));
+            var pre60 = PublishPreflight.Validate(draft60, new PlatformParams
+            {
+                Xhs = new XhsExtras { Route = new XhsRouteRef("", "") },
+            });
+            Check("预检：路线快照不完整 → Warning（不拦发布）",
+                pre60.Any(i => i.Severity == PreflightSeverity.Warning
+                    && i.Message.Contains("路线快照不完整")),
+                string.Join("；", pre60.Select(i => i.Message)));
+        }
+
+        sb.AppendLine("\n[61] params.txt：小红书@用户 / 快手领域（P5，2026-11-15）");
+        {
+            var p61 = PublishParamsFile.Parse(string.Join("\n",
+                "小红书@用户: 办公技巧学习平台=6581a220000000002002f3b0; 温史知新=5f2b0c1d000000000100abcd",
+                "快手领域: 舞蹈",
+                "快手二级领域: 舞蹈民族舞"));
+            Check("params：小红书@用户「昵称=userId」分号切分 / 快手领域两键",
+                p61.XhsMentions.Count == 2
+                && p61.XhsMentions[0] is { UserId: "6581a220000000002002f3b0", Nickname: "办公技巧学习平台" }
+                && p61.XhsMentions[1] is { UserId: "5f2b0c1d000000000100abcd", Nickname: "温史知新" }
+                && p61.KuaishouDomain == "舞蹈"
+                && p61.KuaishouSecondDomain == "舞蹈民族舞"
+                && p61.Problems.Count == 0,
+                string.Join("|", p61.XhsMentions.Select(u => $"{u.Nickname}={u.UserId}")));
+
+            var p61bad = PublishParamsFile.Parse(
+                "小红书@用户: 没有等号; 昵称=; =6581a220000000002002f3b0; 有效=5f2b0c1d000000000100abcd");
+            Check("params：小红书@用户缺等号 / 昵称或 ID 空 → Problem，不吞掉其它条目",
+                p61bad.XhsMentions.Count == 1
+                && p61bad.Problems.Count(q => q.Reason.Contains("认不出")) == 3,
+                string.Join("；", p61bad.Problems.Select(q => q.Reason)));
+
+            Check("params：昵称里带等号时按最后一个等号切",
+                PublishParamsFile.Parse("小红书@用户: a=b=5f2b0c1d000000000100abcd")
+                    .XhsMentions is [{ Nickname: "a=b", UserId: "5f2b0c1d000000000100abcd" }]);
+
+            var draft61 = new PublishDraft($@"D:\demo\t61-{Guid.NewGuid():N}.mp4") { Title = "at 测试" };
+            draft61.Targets.Add(new PublishTarget(PlatformNames.Xiaohongshu, Guid.NewGuid(), "小红书"));
+            draft61.Targets.Add(new PublishTarget(PlatformNames.Kuaishou, Guid.NewGuid(), "快手"));
+            draft61.Targets.Add(new PublishTarget(PlatformNames.Douyin, Guid.NewGuid(), "抖音"));
+            PublishDraftFactory.ApplyUnitParams(draft61, p61);
+
+            var xhs61 = draft61.ParamsFor(draft61.Targets[0]);
+            var atsDecl61 = xhs61.Xhs?.Ats is { Length: > 0 } atsRaw61
+                ? JsonDocument.Parse(atsRaw61).RootElement
+                : default;
+            Check("Apply：小红书@用户 → XhsExtras.Ats（发布路径条目形状 userId/nickname）",
+                xhs61.Xhs?.Ats is { Length: > 0 } ats61
+                && XhsMentionService.ParseAts(ats61).Count == 2
+                && atsDecl61[0].GetProperty("userId").GetString() == "6581a220000000002002f3b0"
+                && atsDecl61[0].GetProperty("nickname").GetString() == "办公技巧学习平台"
+                && !atsDecl61[0].TryGetProperty("userid", out _)
+                && !atsDecl61[0].TryGetProperty("name", out _),
+                xhs61.Xhs?.Ats);
+
+            var ks61 = draft61.ParamsFor(draft61.Targets[1]);
+            Check("Apply：快手领域只写快手目标（抖音不产生覆盖）",
+                ks61.Kuaishou is { Domain: "舞蹈", SecondDomain: "舞蹈民族舞" }
+                && !draft61.Overrides.ContainsKey(draft61.Targets[2].Key),
+                $"{ks61.Kuaishou?.Domain}/{ks61.Kuaishou?.SecondDomain} / 覆盖 {draft61.Overrides.Count}");
+
+            var xhsPayload61 = PublishPayload.Deserialize<XhsPayload>(
+                PublishPayloadBuilder.Build(draft61, draft61.Targets[0], xhs61).ExtraDataJson);
+            Check("builder：小红书@用户 → 载荷 Ats + 正文末尾补「@昵称」",
+                xhsPayload61?.Ats is { Length: > 0 } atsJson61
+                && XhsMentionService.ParseAts(atsJson61).Count == 2
+                && PublishPayloadBuilder.XhsCaption(draft61, xhs61)
+                    .EndsWith("@办公技巧学习平台 @温史知新", StringComparison.Ordinal),
+                PublishPayloadBuilder.XhsCaption(draft61, xhs61));
+
+            Check("两处参数样板都列了 小红书@用户 / 快手领域，且仍能零警告解析",
+                PublishUnitTemplate.ParamsText.Contains("# 小红书@用户: ", StringComparison.Ordinal)
+                && ComposeUnitWriter.OptionalGuide.Contains("# 小红书@用户: ", StringComparison.Ordinal)
+                && PublishUnitTemplate.ParamsText.Contains("# 快手领域: ", StringComparison.Ordinal)
+                && ComposeUnitWriter.OptionalGuide.Contains("# 快手领域: ", StringComparison.Ordinal)
+                && PublishParamsFile.Parse(PublishUnitTemplate.ParamsText).Problems.Count == 0
+                && PublishParamsFile.Parse(ComposeUnitWriter.BuildParamsText("x")).Problems.Count == 0);
         }
 
         sb.AppendLine();

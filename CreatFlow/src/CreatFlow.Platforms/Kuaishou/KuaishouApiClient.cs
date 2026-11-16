@@ -172,7 +172,17 @@ internal sealed class KuaishouApiClient : IDisposable
     }
 
     /// <summary>POST JSON — 无 envelope（用于 poi/search、submit）。</summary>
-    public async Task<T> PostRawAsync<T>(string path, object? body, CancellationToken ct = default)
+    public Task<T> PostRawAsync<T>(string path, object? body, CancellationToken ct = default)
+        where T : class
+        => PostRawAsync<T>(path, body, referer: null, ct);
+
+    /// <summary>
+    /// 同 <see cref="PostRawAsync{T}(string, object?, CancellationToken)"/>，但可指定 Referer。
+    /// 发布页发出的接口（如 <c>at/choose</c>）按抓包原文用发布页 Referer ——
+    /// <see cref="GetRefererForPath"/> 只认得 upload/submit 两条路径，这里需要显式给。
+    /// </summary>
+    public async Task<T> PostRawAsync<T>(
+        string path, object? body, string? referer, CancellationToken ct = default)
         where T : class
     {
         var url = $"{_options.KuaishouCpHost}{path}";
@@ -184,7 +194,7 @@ internal sealed class KuaishouApiClient : IDisposable
             content.Headers.TryAddWithoutValidation("Content-Type", "application/json;charset=UTF-8");
         }
 
-        using var request = CreateRequest(HttpMethod.Post, url, content, path);
+        using var request = CreateRequest(HttpMethod.Post, url, content, path, referer);
         var response = await _http.SendAsync(request, ct);
         var bodyText = await response.Content.ReadAsStringAsync(ct);
 

@@ -78,7 +78,7 @@ public sealed class ToutiaoPublishService
             ["ClaimOrigin"] = r.ClaimOrigin,
             ["SyncPlatform"] = r.SyncPlatform ?? EmptyObject(),
             ["Praise"] = r.Praise,
-            ["PublishType"] = 1,
+            ["PublishType"] = r.PublishType,
             ["From"] = "mp",
             ["EnterFrom"] = 5,
             ["IsNew"] = true,
@@ -110,6 +110,21 @@ public sealed class ToutiaoPublishService
             if (!string.IsNullOrWhiteSpace(r.PrependPSeriesId))
                 body["PrependPSeriesId"] = r.PrependPSeriesId;
         }
+
+        // 作品声明（A1，2026-11-10 抓包）：有值才发；不声明（null）时字段完全不出现
+        if (r.ComplianceInfo is { } complianceInfo)
+            body["ComplianceInfo"] = complianceInfo;
+
+        // 视频生成图文（A2，2026-11-10 抓包）：0 / 未选完全不出现；1/2 原样下发。
+        // 页面同时会写 preference/set（纯 UI 记忆）—— 那是页面偏好，不是发布体字段，不下发。
+        if (r.VideoTransArticleFlag is 1 or 2)
+            body["VideoTransArticleFlag"] = r.VideoTransArticleFlag.Value;
+
+        // 互动贴纸（A3，2026-11-10 抓包）：带贴纸时页面固定发字符串 "{\"list\":[]}"，
+        // 真正的贴纸配置在 etData.stickerETData（见 <see cref="ToutiaoStickerService"/>）。
+        // 无贴纸（null）时字段完全不出现 —— 发布体保持真账号验过的旧形状。
+        if (r.PlayerSticker is not null)
+            body["PlayerSticker"] = r.PlayerSticker;
 
         // 结构化话题：有值才发，空表不出现。
         // ⚠️ 2026-11-09 真账号两轮实测（字符串 / 数字两种 HashtagId）：
@@ -266,6 +281,13 @@ public sealed record ToutiaoPublishRequest
     /// <summary>可见性 —— <c>HideInfo.HideType</c>（0 公开 / 1 仅我 / 2 粉丝可见）</summary>
     public int HideType { get; init; }
 
+    /// <summary>
+    /// 发布类型 —— <c>PublishType</c>：1 = 立即发布（默认），0 = 存草稿
+    /// （2026-11-10 抓包：页面「存草稿」按钮发 <c>PublishType=0</c>，
+    /// 此时 <c>VideoTransArticleFlag=2</c> 才会生成图文草稿）。
+    /// </summary>
+    public int PublishType { get; init; } = 1;
+
     /// <summary>定时（Unix 秒）—— <c>TimerTime</c>，仅横版</summary>
     public long? TimerTime { get; init; }
 
@@ -291,9 +313,24 @@ public sealed record ToutiaoPublishRequest
     public JsonElement? CompassVideo { get; init; }
     /// <summary>同步平台（原始 JSON 对象）</summary>
     public JsonElement? SyncPlatform { get; init; }
-    /// <summary>长尾属性（原始 JSON 对象）</summary>
+    /// <summary>
+    /// 作品声明 —— <c>ComplianceInfo</c>（PascalCase 键，见 <see cref="ToutiaoComplianceOptions"/>）。
+    /// null = 不声明（字段完全不出现）。
+    /// </summary>
+    public Dictionary<string, object?>? ComplianceInfo { get; init; }
+    /// <summary>
+    /// 视频生成图文 —— <c>VideoTransArticleFlag</c>：
+    /// null / 0 = 字段不下发；1 = 与视频同时发布；2 = 仅保存草稿。
+    /// </summary>
+    public int? VideoTransArticleFlag { get; init; }
+    /// <summary>
+    /// 互动贴纸（A3）—— <c>PlayerSticker</c>：抓包里带「关注引导」时固定为字符串
+    /// <c>{"list":[]}</c>；null = 不下发该字段（无贴纸的旧形状）。
+    /// </summary>
+    public string? PlayerSticker { get; init; }
+    /// <summary>长尾属性（原始 JSON 对象；互动贴纸会并入 <c>InteractStickers</c> 键）</summary>
     public JsonElement? AttrsValueMap { get; init; }
-    /// <summary>埋点扩展（原始 JSON 对象）</summary>
+    /// <summary>埋点扩展（原始 JSON 对象；互动贴纸会并入 <c>stickerETData</c> 键）</summary>
     public JsonElement? EtData { get; init; }
 
     /// <summary>客户端 UA 串 —— 抓包 <c>chrome 156.0.0.0</c></summary>

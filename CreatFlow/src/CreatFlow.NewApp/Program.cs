@@ -108,6 +108,45 @@ internal sealed class Program
             }
         }
 
+        // --probe-wechat-list：视频号 post_list 原样回读（诊断工具，不进业务路径）——
+        // 回答「新作品进没进列表 / urlCdnTaskId 还对得上 clipKey 吗 / desc.event 活动挂上没有」，
+        // 供发布回查 objectId 失败与官方活动 attach 核对使用。只读，不发布不改不删。
+        // 可选 --pages N（默认 3）、--session <guid>；报告写 %TEMP%\wechat_list_probe.txt。
+        {
+            if (args.Contains("--probe-wechat-list"))
+            {
+                var pages = 3;
+                var pagesIndex = Array.IndexOf(args, "--pages");
+                if (pagesIndex >= 0 && pagesIndex + 1 < args.Length
+                    && int.TryParse(args[pagesIndex + 1], out var parsedPages) && parsedPages > 0)
+                {
+                    pages = parsedPages;
+                }
+                else
+                {
+                    var inline = args.FirstOrDefault(a =>
+                        a.StartsWith("--pages=", StringComparison.Ordinal));
+                    if (inline is not null
+                        && int.TryParse(inline["--pages=".Length..], out var inlinePages) && inlinePages > 0)
+                        pages = inlinePages;
+                }
+
+                string? ProbeArg(string name)
+                {
+                    var i = Array.IndexOf(args, name);
+                    if (i >= 0 && i + 1 < args.Length) return args[i + 1];
+                    var prefix = name + "=";
+                    var inlineArg = args.FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal));
+                    return inlineArg?[prefix.Length..];
+                }
+
+                var code = Services.WechatListProbe.RunAsync(
+                        App.ProbeSessionId, pages, ProbeArg("--clip-key"), ProbeArg("--md5"))
+                    .GetAwaiter().GetResult();
+                Environment.Exit(code);
+            }
+        }
+
         // --probe-bilibili <bvid>：B站稿件详情回查（诊断工具，不进业务路径）——
         // 拉 /x/vupre/web/archive/view，确认 add/v3 下发的 topic_id / mission_id / dtime
         // 是否真的落到稿件上；报告写 %TEMP%\bilibili_probe.txt。可选 --session <guid>。
@@ -161,6 +200,32 @@ internal sealed class Program
             }
         }
 
+        // --probe-douyin-anchor <小程序分享链接>：抖音「添加标签」探针 —— 诊断工具，不进业务路径。
+        // 三步全打：能力位（账号能不能挂小程序）→ 搜索（链接解析出哪个小程序）→ 选中确认，
+        // 最后把将要下发的 item.anchor 片段拼出来。报告写 %TEMP%\douyin_anchor_probe.txt。
+        {
+            var anchorIndex = Array.IndexOf(args, "--probe-douyin-anchor");
+            string? douyinAnchorLink = null;
+            if (anchorIndex >= 0 && anchorIndex + 1 < args.Length
+                && !args[anchorIndex + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                douyinAnchorLink = args[anchorIndex + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-douyin-anchor=", StringComparison.Ordinal));
+                if (inline is not null) douyinAnchorLink = inline["--probe-douyin-anchor=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(douyinAnchorLink))
+            {
+                var code = Services.DouyinAnchorProbe
+                    .RunAsync(douyinAnchorLink!, App.ProbeSessionId).GetAwaiter().GetResult();
+                Environment.Exit(code);
+            }
+        }
+
         // --probe-toutiao-item <itemId>：头条作品详情（EditItem）回读 —— 诊断工具，不进业务路径。
         // 回读 HashtagList（结构化话题是否真的挂上）与 VideoInfo.Vid（hashtag/rec 推荐要用），
         // 报告写 %TEMP%\toutiao_item_probe.txt，原始 JSON 另存 .json。
@@ -181,18 +246,185 @@ internal sealed class Program
 
             if (!string.IsNullOrWhiteSpace(toutiaoItem))
             {
+                // 可选诊断清理：--delete-drafts 3:gid[,3:gid]（草稿测试数据删完即走）
+                string? deleteDrafts = null;
+                var ddIndex = Array.IndexOf(args, "--delete-drafts");
+                if (ddIndex >= 0 && ddIndex + 1 < args.Length
+                    && !args[ddIndex + 1].StartsWith("--", StringComparison.Ordinal))
+                {
+                    deleteDrafts = args[ddIndex + 1];
+                }
                 var code = Services.ToutiaoItemProbe
-                    .RunAsync(toutiaoItem!, App.ProbeSessionId).GetAwaiter().GetResult();
+                    .RunAsync(toutiaoItem!, App.ProbeSessionId, deleteDrafts)
+                    .GetAwaiter().GetResult();
                 Environment.Exit(code);
             }
         }
 
+        // --probe-delete <platform:videoId,…>：真账号删除探针 —— 诊断工具，不进业务路径。
+        // 走「视频管理」页同一条删除路径（VideoArchiveDeleteService）；B站需人机验证 → 不支持。
+        // 视频号用 `wechatvideo:clip:<clipKey>` 先反查 objectId。报告写 %TEMP%\delete_probe.txt。
+        {
+            var delIndex = Array.IndexOf(args, "--probe-delete");
+            string? delSpec = null;
+            if (delIndex >= 0 && delIndex + 1 < args.Length
+                && !args[delIndex + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                delSpec = args[delIndex + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-delete=", StringComparison.Ordinal));
+                if (inline is not null) delSpec = inline["--probe-delete=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(delSpec))
+                App.ProbeDeleteSpec = delSpec;
+        }
+
+        // --probe-publish <发布单元目录>：真账号发布探针 —— 诊断工具，不进业务路径。
+        // 把一份发布单元（mp4 + params.txt + cover.jpg）按自动发布同一份组装逻辑提交并立即执行，
+        // 供字段落地核对制造「提交字段已知」的新作品。--platforms douyin,bilibili 可只发部分；
+        // 抖音/快手/小红书各自开隐藏 WebView 注册页面宿主。报告写 %TEMP%\publish_probe.txt。
+        // 诊断开关：--toutiao-draft（头条存草稿）、--wechat-event 名称|创建者昵称|活动ID。
+        {
+            var pubIndex = Array.IndexOf(args, "--probe-publish");
+            string? pubUnit = null;
+            if (pubIndex >= 0 && pubIndex + 1 < args.Length
+                && !args[pubIndex + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                pubUnit = args[pubIndex + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-publish=", StringComparison.Ordinal));
+                if (inline is not null) pubUnit = inline["--probe-publish=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(pubUnit))
+            {
+                string? ArgOf(string name)
+                {
+                    var i = Array.IndexOf(args, name);
+                    if (i >= 0 && i + 1 < args.Length) return args[i + 1];
+                    var prefix = name + "=";
+                    var inl = args.FirstOrDefault(a => a.StartsWith(prefix, StringComparison.Ordinal));
+                    return inl?[prefix.Length..];
+                }
+
+                App.ProbePublishUnit = pubUnit;
+                App.ProbePublishPlatforms = ArgOf("--platforms");
+                // 诊断：头条存草稿（验证「视频生成图文 = 仅保存草稿」）
+                App.ProbePublishToutiaoDraft = args.Any(a =>
+                    a.Equals("--toutiao-draft", StringComparison.OrdinalIgnoreCase));
+                // 诊断：视频号官方活动三件套（正常路径从活动列表选中时自动带全，
+                // 探针没有选择器 → 显式注入；格式 名称|创建者昵称|活动ID）
+                App.ProbeWechatEvent = ArgOf("--wechat-event");
+                // 诊断：快手 @好友（探针没有选择器 → 显式注入；格式 昵称|userId，
+                // userId 用 --probe-kuaishou-work --mention 搜到的值）
+                App.ProbeKuaishouMention = ArgOf("--kuaishou-mention");
+                // 诊断：小红书群聊 / PK 封面 / 视频标记（探针没有选择器 → 显式注入）
+                App.ProbeXhsGroup = ArgOf("--xhs-group");
+                App.ProbeXhsPkCover = ArgOf("--xhs-pk-cover");
+                App.ProbeXhsRouteBind = ArgOf("--xhs-route");
+                for (var i = 0; i + 1 < args.Length; i++)
+                {
+                    if (args[i] == "--xhs-marker"
+                        && !args[i + 1].StartsWith("--", StringComparison.Ordinal))
+                        App.ProbeXhsMarkers.Add(args[i + 1]);
+                }
+            }
+        }
+
+        // --probe-xhs-note <noteId>：小红书笔记详情回读 —— 诊断工具，不进业务路径。
+        // 回读 hash_tag（发布体下发的话题是否真的挂上）/ privacy / post_time / post_locs；
+        // x-s 需要签名宿主 → Avalonia 启动后由 App 开隐藏 WebView（XhsPageSigner），
+        // 报告写 %TEMP%\xhs_note_probe.txt，原始 JSON 另存 .json。可选 --session <guid>。
+        {
+            var xhsIndex = Array.IndexOf(args, "--probe-xhs-note");
+            string? xhsNoteId = null;
+            if (xhsIndex >= 0 && xhsIndex + 1 < args.Length
+                && !args[xhsIndex + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                xhsNoteId = args[xhsIndex + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-xhs-note=", StringComparison.Ordinal));
+                if (inline is not null) xhsNoteId = inline["--probe-xhs-note=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(xhsNoteId))
+                App.ProbeXhsNote = xhsNoteId;
+        }
+
+        // --probe-xhs-label <关键词> [--label-type user|poi]：小红书视频标记的标签搜索 ——
+        // 诊断工具（响应结构还没抓到，先看原文）；同一套隐藏 WebView 签名宿主。
+        {
+            var idx = Array.IndexOf(args, "--probe-xhs-label");
+            string? keyword = null;
+            if (idx >= 0 && idx + 1 < args.Length
+                && !args[idx + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                keyword = args[idx + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-xhs-label=", StringComparison.Ordinal));
+                if (inline is not null) keyword = inline["--probe-xhs-label=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(keyword))
+            {
+                App.ProbeXhsLabel = keyword;
+                var typeIdx = Array.IndexOf(args, "--label-type");
+                App.ProbeXhsLabelType =
+                    typeIdx >= 0 && typeIdx + 1 < args.Length && !args[typeIdx + 1].StartsWith("--")
+                        ? args[typeIdx + 1] : null;
+            }
+        }
+
+        // --probe-xhs-route <关键词1,关键词2[,关键词3]> [--route-name <名字>]：
+        // 小红书「添加路线」探针 —— POI 搜索 → simple/markers 换坐标 → route/v2 →
+        // save/travel（先试空 polygon）。回答「账号能不能建路线 / polygon 能不能省」，
+        // 同一套隐藏 WebView 签名宿主（x-s 只在页面里）。
+        {
+            var idx = Array.IndexOf(args, "--probe-xhs-route");
+            string? keywords = null;
+            if (idx >= 0 && idx + 1 < args.Length
+                && !args[idx + 1].StartsWith("--", StringComparison.Ordinal))
+            {
+                keywords = args[idx + 1];
+            }
+            else
+            {
+                var inline = args.FirstOrDefault(a =>
+                    a.StartsWith("--probe-xhs-route=", StringComparison.Ordinal));
+                if (inline is not null) keywords = inline["--probe-xhs-route=".Length..];
+            }
+
+            if (!string.IsNullOrWhiteSpace(keywords))
+            {
+                App.ProbeXhsRoute = keywords;
+                var nameIdx = Array.IndexOf(args, "--route-name");
+                App.ProbeXhsRouteName =
+                    nameIdx >= 0 && nameIdx + 1 < args.Length
+                    && !args[nameIdx + 1].StartsWith("--", StringComparison.Ordinal)
+                        ? args[nameIdx + 1] : null;
+            }
+        }
+
         // --probe-kuaishou-work：快手作品列表/分享页回查 —— 诊断工具，不进业务路径。
+        // --probe-kuaishou-domains：快手「专属领域 / 二级领域」列表回查（同一宿主）。
         // Avalonia 启动后由 App 开一个隐藏 WebView（快手签名模块只在页面里），
         // 跑完写 %TEMP%\kuaishou_work_probe.txt 再退出。
         // 可选 --keyword <词> / --publish-id <id> / --photo <photoId>（分享页 INIT_STATE）。
         {
-            if (args.Contains("--probe-kuaishou-work"))
+            if (args.Contains("--probe-kuaishou-work") || args.Contains("--probe-kuaishou-domains"))
             {
                 string? Arg(string name)
                 {
@@ -204,9 +436,12 @@ internal sealed class Program
                 }
 
                 App.ProbeKuaishou = true;
+                App.ProbeKuaishouDomains = args.Contains("--probe-kuaishou-domains");
                 App.ProbeKuaishouKeyword = Arg("--keyword");
                 App.ProbeKuaishouPublishId = long.TryParse(Arg("--publish-id"), out var pid) ? pid : null;
                 App.ProbeKuaishouPhoto = Arg("--photo");
+                // 诊断：@好友候选搜索（只读；at/search），报告里打印 userId/昵称/粉丝数
+                App.ProbeKuaishouMentionKeyword = Arg("--mention");
             }
         }
 

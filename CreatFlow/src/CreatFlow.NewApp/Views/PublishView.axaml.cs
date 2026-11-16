@@ -86,6 +86,7 @@ public partial class PublishView : UserControl
         vm.ParentFolderPicker = PickParentFolderAsync;
         vm.VideoPicker = PickVideosAsync;
         vm.CoverPicker = PickCoverAsync;
+        vm.SubtitlePicker = PickSubtitleAsync;
         _vm = vm;
     }
 
@@ -96,6 +97,7 @@ public partial class PublishView : UserControl
         _vm.ParentFolderPicker = null;
         _vm.VideoPicker = null;
         _vm.CoverPicker = null;
+        _vm.SubtitlePicker = null;
         _vm = null;
     }
 
@@ -208,6 +210,35 @@ public partial class PublishView : UserControl
         catch (Exception ex)
         {
             Log.Warning(ex, "封面选择器打开失败");
+            return null;
+        }
+    }
+
+    /// <summary>选 B站字幕（只收 .srt —— 平台 input 的 accept 同款）</summary>
+    private async Task<string?> PickSubtitleAsync()
+    {
+        var top = TopLevel.GetTopLevel(this);
+        if (top is null) return null;
+
+        try
+        {
+            var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+            {
+                Title = "选择B站字幕（.srt）",
+                AllowMultiple = false,
+                FileTypeFilter =
+                [
+                    new FilePickerFileType("B站字幕文件")
+                    {
+                        Patterns = ["*.srt"],
+                    }
+                ],
+            });
+            return files.Count > 0 ? files[0].TryGetLocalPath() : null;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "B站字幕选择器打开失败");
             return null;
         }
     }

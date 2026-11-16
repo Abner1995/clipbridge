@@ -82,8 +82,12 @@ internal static class TopicSelection
         // 活动名缺失时退回 ID 显示：芯片得有东西可看，不能是空白
         Name = string.IsNullOrWhiteSpace(activity.Name) ? activity.Id : activity.Name.Trim(),
         Cover = string.IsNullOrWhiteSpace(activity.CoverUrl) ? null : activity.CoverUrl,
+        StartTime = activity.StartTime,
         EndTime = activity.EndTime,
         Reward = string.IsNullOrWhiteSpace(activity.Reward) ? null : activity.Reward.Trim(),
+        // 视频号活动提交体需要的发起人昵称（eventCreatorNickname）—— 随快照落盘
+        CreatorNickname = string.IsNullOrWhiteSpace(activity.CreatorNickname)
+            ? null : activity.CreatorNickname.Trim(),
         Topics = [.. Dedupe(activity.Topics)
             .Select(t => ToRef(t, TopicRefSources.Activity))],
     };

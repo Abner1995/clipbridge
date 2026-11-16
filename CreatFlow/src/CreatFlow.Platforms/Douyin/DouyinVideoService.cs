@@ -358,8 +358,26 @@ public sealed partial class DouyinVideoService
         if (!string.IsNullOrWhiteSpace(r.Challenges))
             common.Challenges = r.Challenges;
 
+        // 添加标签（2026-11-11 抓包）—— 单选项：item.anchor.anchor 是**字符串化 JSON**
+        //   {"id":"6531…","type":11,"content":null}                  影视演艺
+        //   {"id":"cgmo…","type":13017,"content":"{…short_video_point…}"}  游戏手柄
+        //   {"id":"7136…","type":13093,"content":"{\"anchor_id\":\"7136…\"}"}  标记万物
+        //   {"id":"tt…","type":4,"content":"{…extra…}"}              小程序（额外两键）
+        // 与位置互斥（页面同一个 anchor）：有标签时**不再下发 POI 字段**。
+        if (!string.IsNullOrWhiteSpace(r.AnchorJson))
+        {
+            item.Anchor["anchor"] = r.AnchorJson;
+
+            // 小程序（页面 bundle 逐字）：item.anchor 下兄弟键
+            //   anchor_business_type = 4
+            //   anchor_content = JSON.stringify(extra)（对 extra 字符串再包一层引号）
+            if (r.AnchorBusinessType is { } anchorBizType)
+                item.Anchor["anchor_business_type"] = anchorBizType;
+            if (!string.IsNullOrWhiteSpace(r.AnchorContentJson))
+                item.Anchor["anchor_content"] = r.AnchorContentJson;
+        }
         // POI 位置 — 在 anchor 里（对标浏览器 anchor: {poi_id, poi_name, anchor_content}）
-        if (r.PoiInfo is { Count: > 0 })
+        else if (r.PoiInfo is { Count: > 0 })
         {
             item.Anchor["poi_id"] = r.PoiInfo.GetValueOrDefault("poi_id", "");
             item.Anchor["poi_name"] = r.PoiInfo.GetValueOrDefault("poi_name", "");
@@ -399,6 +417,13 @@ public sealed partial class DouyinVideoService
             item.Cover.PosterDelay = (int)Math.Max(0, frameMs / 1000);
         if (r.CoverCropWidth is > 0) item.Cover.CustomCoverImageWidth = r.CoverCropWidth;
         if (r.CoverCropHeight is > 0) item.Cover.CustomCoverImageHeight = r.CoverCropHeight;
+        // 横版 4:3 封面（2026-11-11 B1 抓包）—— 与竖版 poster 成对的第二张图。
+        // 页面只在「竖版 / 横版各设一张」时下发；只有一张封面时该键不出现（保持旧形状）。
+        if (!string.IsNullOrWhiteSpace(r.HorizontalCoverUri))
+        {
+            item.Cover.HorizontalCustomCoverImageUri = r.HorizontalCoverUri;
+            item.Cover.HorizontalCoverTsp = 0;
+        }
         if (!string.IsNullOrWhiteSpace(r.CoverToolsInfo))
             item.Cover.CoverToolsInfo = r.CoverToolsInfo;
         if (!string.IsNullOrWhiteSpace(r.CoverToolsExtendInfo))
@@ -774,7 +799,32 @@ public sealed record CreateDouyinWorkRequest(
     string? CoverToolsInfo = null,
 
     /// <summary>封面工具扩展信息（原始 JSON 串）— <c>cover.cover_tools_extend_info</c></summary>
-    string? CoverToolsExtendInfo = null
+    string? CoverToolsExtendInfo = null,
+
+    /// <summary>
+    /// 添加标签（2026-11-11 抓包）— <c>item.anchor.anchor</c> 的字符串化 JSON
+    /// <c>{"id","type","content"}</c>（由 <see cref="DouyinAnchorService.BuildAnchorJson"/> 生成）。
+    /// 与 <see cref="PoiInfo"/> 互斥：有标签时位置不下发（页面同一个 anchor 单选）。
+    /// </summary>
+    string? AnchorJson = null,
+
+    /// <summary>
+    /// 小程序标签 — <c>item.anchor.anchor_business_type</c>（仅 <c>type=4</c> 下发，页面 bundle 逐字）。
+    /// null = 该键不出现（影视 / 游戏 / 标记万物都不带）。
+    /// </summary>
+    int? AnchorBusinessType = null,
+
+    /// <summary>
+    /// 小程序标签 — <c>item.anchor.anchor_content</c>（<c>JSON.stringify(extra)</c> 的字符串，
+    /// 由 <see cref="DouyinAnchorService.BuildAnchorContentJson"/> 生成）。
+    /// </summary>
+    string? AnchorContentJson = null,
+
+    /// <summary>
+    /// 横版 4:3 封面图 TOS URI（2026-11-11 B1 抓包）——
+    /// <c>cover.horizontal_custom_cover_image_uri</c>，与竖版 <see cref="CoverUri"/> 成对下发。
+    /// </summary>
+    string? HorizontalCoverUri = null
 );
 
 /// <summary>

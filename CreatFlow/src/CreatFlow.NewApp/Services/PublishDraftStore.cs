@@ -105,6 +105,8 @@ public sealed class PublishDraftStore
                 p?.MigrateLegacyTopics();
                 // 2.6.4：旧「官方活动 ID」升成活动快照（界面才看得见、清得掉）
                 p?.MigrateLegacyActivities();
+                // P3：快手章节原始 JSON → 共享 Chapters（只认新 wire 形状，其它不猜）
+                p?.MigrateLegacyKuaishouChapters();
             }
             return defaults;
         }
@@ -273,6 +275,8 @@ public sealed class PublishDraftStore
                 p.MigrateLegacyTopics();
                 // 2.6.4：旧「官方活动 ID」升成活动快照（与预设路径同口径）
                 p.MigrateLegacyActivities();
+                // P3：快手章节原始 JSON → 共享 Chapters（与预设路径同口径）
+                p.MigrateLegacyKuaishouChapters();
 
                 foreach (var topic in p.Topics)
                     if (topic.Name.Length > 0 && !d.Topics.Contains(topic.Name)) d.Topics.Add(topic.Name);

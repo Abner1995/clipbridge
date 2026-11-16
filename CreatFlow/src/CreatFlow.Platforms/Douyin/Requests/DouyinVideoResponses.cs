@@ -266,6 +266,19 @@ public sealed class DouyinCoverInfo
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? CustomCoverImageHeight { get; set; }
 
+    /// <summary>
+    /// 横版 4:3 封面（TOS key）—— <c>horizontal_custom_cover_image_uri</c>
+    /// （2026-11-11 B1 抓包：与竖版 <c>poster</c> 成对出现；只有一张封面时不下发）
+    /// </summary>
+    [JsonPropertyName("horizontal_custom_cover_image_uri")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? HorizontalCustomCoverImageUri { get; set; }
+
+    /// <summary>横版封面时间戳参数 —— <c>horizontal_cover_tsp</c>（抓包为 0）</summary>
+    [JsonPropertyName("horizontal_cover_tsp")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? HorizontalCoverTsp { get; set; }
+
     /// <summary>封面工具信息（原始 JSON 串）—— <c>cover_tools_info</c>（裁剪框/来源等）</summary>
     [JsonPropertyName("cover_tools_info")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -407,6 +420,14 @@ public sealed class HashtagExtraEntry
 
     [JsonPropertyName("user_id")]
     public string UserId { get; set; } = "";
+
+    /// <summary>
+    /// @好友条目的来源标记（2026-11-11 B1 抓包：<c>"at_source":"user_manual"</c>）。
+    /// **只有 type=0 的 @ 条目才带** —— 话题条目保持 null，不写进 wire（旧形状逐字不变）。
+    /// </summary>
+    [JsonPropertyName("at_source")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? AtSource { get; set; }
 
     [JsonPropertyName("caption_start")]
     public int CaptionStart { get; set; }

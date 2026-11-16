@@ -174,7 +174,10 @@ public static class TopicProbe
                 sb.AppendLine($"  [活动] {r.Items.Count} 条");
                 foreach (var a in r.Items.Take(20))
                 {
-                    sb.AppendLine($"    · {a.Id}  {a.Name}  奖励={a.Reward ?? "-"}  "
+                    // 创建者：视频号官方活动（objectDesc.event）需要「活动名 / 发起人昵称 / 活动ID」
+                    // 三件套，发起人从这条搜索结果里取 —— 没有该概念的平台打「-」。
+                    sb.AppendLine($"    · {a.Id}  {a.Name}  创建者={a.CreatorNickname ?? "-"}  "
+                                  + $"奖励={a.Reward ?? "-"}  "
                                   + $"截止={a.EndTime:yyyy-MM-dd HH:mm}  已结束={a.IsEnded}  "
                                   + $"话题={a.Topics.Count}"
                                   + (a.Topics.Count > 0

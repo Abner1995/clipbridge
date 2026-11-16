@@ -1,6 +1,10 @@
+using CreatFlow.Platforms.Bilibili;
 using CreatFlow.Platforms.Core;
 using CreatFlow.Platforms.Douyin;
+using CreatFlow.Platforms.Kuaishou;
 using CreatFlow.Platforms.Topics;
+using CreatFlow.Platforms.Toutiao;
+using CreatFlow.Platforms.WechatVideo;
 using CreatFlow.Platforms.Xiaohongshu;
 
 namespace CreatFlow.NewApp.ViewModels;
@@ -46,6 +50,10 @@ public sealed partial class PublishViewModel
         OnPropertyChanged(nameof(DouyinRepostPickedText));
         OnPropertyChanged(nameof(HasDouyinRepostItem));
         OnPropertyChanged(nameof(IsOriginal));
+        // 视频号拍摄地区：面板收起；地区树已加载过的，把新条目的已存编码回填到三个下拉
+        IsWechatShootRegionPanelOpen = false;
+        if (WechatShootCountries.Count > 0) RestoreWechatShootRegionSelection();
+        NotifyWechatShootRegionChanged();
         RefreshCoverSize();
         NotifyEditorComputed();
     }
@@ -226,6 +234,53 @@ public sealed partial class PublishViewModel
     public string? CoverPathForPreview =>
         SelectedDraft?.CoverPath ?? SelectedDraft?.Meta?.ThumbPath;
 
+    // ── 抖音封面双槽（B1 抓包 2026-11-11）──
+    // 竖版 3:4 用左栏主封面（poster + 裁剪宽高）；这里选横版 4:3，
+    // 上传后落 cover.horizontal_custom_cover_image_uri。选图复用同一个 CoverPicker。
+
+    [RelayCommand]
+    private async Task PickDouyinLandscapeCoverAsync(TargetRowViewModel? row)
+    {
+        if (row is null || SelectedDraft is null || CoverPicker is null) return;
+        var path = await CoverPicker();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        row.ApplyDouyinLandscapeCover(path);
+        RunPreflight(SelectedDraft);
+    }
+
+    [RelayCommand]
+    private void ClearDouyinLandscapeCover(TargetRowViewModel? row)
+    {
+        if (row is null || SelectedDraft is null) return;
+        row.ClearDouyinLandscapeCover();
+        RunPreflight(SelectedDraft);
+    }
+
+    // ── B站字幕（B5 抓包 2026-11-15）──
+    // 与封面不同：选的是本地 .srt，发布时才上传（upload/web/image → preSave）。
+    // 文件选择器由 View 注入（.srt 过滤器），与 CoverPicker 同一套机制。
+
+    /// <summary>选字幕文件回调（View 挂载时注入；null = 视图还没准备好）</summary>
+    public Func<Task<string?>>? SubtitlePicker { get; set; }
+
+    [RelayCommand]
+    private async Task PickBilibiliSubtitleAsync(TargetRowViewModel? row)
+    {
+        if (row is null || SelectedDraft is null || SubtitlePicker is null || !row.IsBilibili) return;
+        var path = await SubtitlePicker();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        row.ApplyBilibiliSubtitleFile(path);
+        RunPreflight(SelectedDraft);
+    }
+
+    [RelayCommand]
+    private void ClearBilibiliSubtitle(TargetRowViewModel? row)
+    {
+        if (row is null || SelectedDraft is null) return;
+        row.ClearBilibiliSubtitleFile();
+        RunPreflight(SelectedDraft);
+    }
+
     // ── 封面图实际像素（选图/换条目时读一次文件头；不在每次键击的 NotifyEditorComputed 里读盘）──
     private string _coverSizeText = "";
 
@@ -384,8 +439,8 @@ public sealed partial class PublishViewModel
     public bool HasPlatformRecommendRows => RecommendRows.Count > 0;
 
     /// <summary>
-    /// 左栏全局「官方活动」区（2.6.9）：**每平台一行**（抖音/快手/小红书/B站），
-    /// 与话题一样合并到公共区；头条/视频号没有活动接口，不出现行。
+    /// 左栏全局「官方活动」区（2.6.9）：**每平台一行**（抖音/快手/小红书/B站/视频号），
+    /// 与话题一样合并到公共区；头条没有活动接口，不出现行。
     /// </summary>
     public ObservableCollection<PlatformActivityRowViewModel> ActivityRows { get; } = [];
     public bool HasActivityRows => ActivityRows.Count > 0;
@@ -415,12 +470,30 @@ public sealed partial class PublishViewModel
                 IsOn = draft.IsTargetEnabled(t),
                 GlobalVisibility = draft.Visibility,
                 GlobalIsOriginal = draft.IsOriginal,
+                // 头条「跟随全局」预览（A1）
+                GlobalDeclarationKind = draft.DeclarationKind,
                 // 话题能力（2.6.3）：六平台统一目录，视频号也会返回一个「无接口」的能力对象
                 TopicCapability = TopicServiceCatalog.CapabilityOf(t.PlatformKey),
             };
+            // 头条作品声明（A1）：单选态从 Params.Toutiao 种子化（无覆盖 = 选中「跟随全局」）
+            row.SyncToutiaoDeclarationSelection();
+            // 头条视频生成图文（A2）：单选态从 Params.Toutiao 种子化（未选 = 不生成）
+            row.SyncToutiaoTransArticleSelection();
             row.RefreshTopicChips();
             // 已选活动（2.6.4）：草稿/预设里已有的活动（params.txt 导入、旧档迁移）装配时就要显示
             row.RefreshActivityChips();
+            // 已选 @用户（2026-11-10）：存档里可能已有 common.ats（旧档 / 预设），装配时种子化
+            row.RefreshXhsMentions();
+            // 已选 @好友（2026-11-11 抖音）：结构化列表或旧 mentions JSON 都要在装配时显示
+            row.RefreshDouyinMentions();
+            // 已选 @好友（2026-11-14 视频号）：存档 / 预设里的 mentionedUser 装配即显示
+            row.RefreshWechatMentions();
+            // 已选 @好友（快手，B3 抓包 2026-11-11）：存档 / 预设里的 MentionUsers 装配即显示
+            row.RefreshKsMentions();
+            // 已选共创（2026-11-15 页面 bundle）：存档 / 预设里的 CoPublishUsers 装配即显示
+            row.RefreshKsCoPublishUsers();
+            // 投票输入（A4）：存档里已有问题/选项时装配即显示
+            row.RefreshXhsPoll();
             row.RefreshSummary();
             row.VisibilityNote = VisibilityMapping.FallbackNote(t.PlatformKey, draft.Visibility);
             TargetRows.Add(row);
@@ -565,6 +638,2532 @@ public sealed partial class PublishViewModel
         row.TopicStatusIsError = false;
         RunPreflight(draft);
         NotifyKuaishouTopicLimit();
+    }
+
+    // ═══ 抖音热点词选择器（2026-11-10：接平台 hotspot/search 接口）═══
+    // 「热点词」不是自由文本 —— 平台只认它自己的热词（common.hot_sentence），
+    // 所以做成「搜索 / 热门 → 点选」；不选 = 不参与热点（hashtag_source 走默认推荐）。
+
+    /// <summary>展开 / 收起热点选择器；首次展开自动拉推荐热点（点开即有内容）。</summary>
+    [RelayCommand]
+    private async Task ToggleHotspotPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsHotspotPanelOpen = !row.IsHotspotPanelOpen;
+        if (row.IsHotspotPanelOpen && !row.HasHotspotCandidates && !row.IsHotspotBusy)
+            await FetchHotspotsAsync(row, trending: true);
+    }
+
+    /// <summary>按关键词搜索热点（空关键词不请求，提示改用「热门」）。</summary>
+    [RelayCommand]
+    private async Task SearchHotspotsAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        if (string.IsNullOrWhiteSpace(row.HotspotQuery))
+        {
+            row.HotspotStatusText = "先输入关键词，或点「热门」直接看推荐";
+            row.HotspotStatusIsError = false;
+            return;
+        }
+        await FetchHotspotsAsync(row, trending: false);
+    }
+
+    /// <summary>拉推荐热点（不传关键词）。</summary>
+    [RelayCommand]
+    private async Task FetchTrendingHotspotsAsync(TargetRowViewModel? row) =>
+        await FetchHotspotsAsync(row, trending: true);
+
+    /// <summary>选中一个热点词 → 写 <c>common.hot_sentence</c> 并收起面板。</summary>
+    [RelayCommand]
+    private void PickHotspot(HotspotPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.HotspotCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.HotspotSentence = pick.Word;
+        row.IsHotspotPanelOpen = false;
+        row.HotspotStatusText = $"已选热点「{pick.Word}」";
+        row.HotspotStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选热点（回到不参与热点）。</summary>
+    [RelayCommand]
+    private void ClearHotspot(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasHotspot) return;
+        row.HotspotSentence = null;
+        row.HotspotStatusText = "已清除热点 —— 本条不参与热点";
+        row.HotspotStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉一批热点候选（搜索 / 推荐）。**永不抛** —— 失败写状态行，不打断编辑
+    /// （热点是可选曝光项，接口挂了不该拦发布）。
+    /// </summary>
+    private async Task FetchHotspotsAsync(TargetRowViewModel? row, bool trending)
+    {
+        if (row is null || row.IsHotspotBusy || !row.IsDouyin) return;
+
+        var keyword = row.HotspotQuery.Trim();
+
+        row.IsHotspotBusy = true;
+        row.HotspotStatusText = trending ? "正在获取热门热点…" : "正在搜索热点…";
+        row.HotspotStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.HotspotStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选热点也不影响发布）";
+                row.HotspotStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var service = new DouyinHotspotService(options);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            // 「热门」走 recommend（search 不传关键词平台回空列表，2026-11-10 实测）
+            var result = trending
+                ? await service.QueryTrendingSignedAsync(creds.Cookie, count: 30, ct: cts.Token)
+                : await service.QuerySignedAsync(creds.Cookie, keyword, count: 30, ct: cts.Token);
+
+            row.SetHotspotCandidates(result.Items);
+            row.HotspotStatusText = result.Items.Count > 0
+                ? trending ? $"热门热点 {result.Items.Count} 个" : $"找到 {result.Items.Count} 个热点"
+                : trending ? "平台这次没有返回热门热点 —— 可换个关键词搜" : "没有搜到热点 —— 换个关键词再试";
+            row.HotspotStatusIsError = false;
+        }
+        catch (OperationCanceledException)
+        {
+            row.HotspotStatusText = "请求超时 —— 可点按钮重试（不选热点也不影响发布）";
+            row.HotspotStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.HotspotStatusText = "拉取失败：" + ex.Message + " —— 稍后重试（不选热点也不影响发布）";
+            row.HotspotStatusIsError = true;
+            Log.Warning(ex, "[Publish] 抖音热点拉取失败");
+        }
+        finally
+        {
+            row.IsHotspotBusy = false;
+        }
+    }
+
+    // ═══ 抖音背景音乐选择器（2026-11-10：接平台 music/list + tsearch music/search）═══
+    // 与热点词同一套交互：展开面板 → 搜索 / 推荐 → 点选；选中后只写 common.music_id。
+
+    /// <summary>展开 / 收起音乐选择器；首次展开自动拉「推荐」（分类面板第一页）。</summary>
+    [RelayCommand]
+    private async Task ToggleMusicPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsMusicPanelOpen = !row.IsMusicPanelOpen;
+        if (row.IsMusicPanelOpen && !row.HasMusicCandidates && !row.IsMusicBusy)
+            await FetchMusicAsync(row, useSearch: false);
+    }
+
+    /// <summary>按关键词搜索音乐（空关键词不请求，提示改用「推荐」）。</summary>
+    [RelayCommand]
+    private async Task SearchMusicAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        if (string.IsNullOrWhiteSpace(row.MusicQuery))
+        {
+            row.MusicStatusText = "先输入歌名 / 歌手，或点「推荐」直接看列表";
+            row.MusicStatusIsError = false;
+            return;
+        }
+        await FetchMusicAsync(row, useSearch: true);
+    }
+
+    /// <summary>
+    /// 拉推荐音乐：刷新**当前分类页签**（没选过任何页签时落到平台下发的第一个分类，
+    /// 与发布页默认页签一致）。
+    /// </summary>
+    [RelayCommand]
+    private async Task FetchRecommendedMusicAsync(TargetRowViewModel? row) =>
+        await FetchMusicAsync(row, useSearch: false);
+
+    /// <summary>
+    /// 候选列表底部的「加载更多」—— 用上一页响应的 cursor 追加下一页。
+    /// 来源（分类 / 关键词搜索）沿用上一次列表请求，不读当前输入框
+    /// （用户可能已经在改关键词，但列表里还是旧关键词的结果）。
+    /// </summary>
+    [RelayCommand]
+    private async Task LoadMoreMusicAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsMusicBusy || !row.MusicHasMore) return;
+        await FetchMusicAsync(row, useSearch: row.MusicSourceIsSearch, loadMore: true);
+    }
+
+    /// <summary>切换音乐分类页签 → 重拉该分类第一页（分类列表已拉过就不重复拉）。</summary>
+    [RelayCommand]
+    private async Task PickMusicCategoryAsync(MusicCategoryPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.MusicCategories.Contains(pick));
+        if (row is null || row.IsMusicBusy) return;
+        await FetchMusicAsync(row, useSearch: false, category: pick.Category);
+    }
+
+    /// <summary>选中一首歌 → 写 <c>common.music_id</c> 并收起面板。</summary>
+    [RelayCommand]
+    private void PickMusic(MusicPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.MusicCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyPickedMusic(pick.Item);
+        row.IsMusicPanelOpen = false;
+        row.MusicStatusText = $"已选「{pick.Title}」";
+        row.MusicStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选音乐（回到不配乐）。</summary>
+    [RelayCommand]
+    private void ClearMusic(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasMusic) return;
+        row.ClearMusic();
+        row.MusicStatusText = "已清除背景音乐 —— 本条不配乐";
+        row.MusicStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉一批音乐候选（搜索 / 推荐 / 切换分类）。**永不抛** —— 失败写状态行，不打断编辑
+    /// （配乐是可选项，接口挂了不该拦发布）。超时 30s：首次推荐要连打「分类 + 列表」两枪。
+    /// </summary>
+    /// <param name="category">
+    /// 指定分类页签（切换页签时传）；null = 用当前已选页签，没选过则用平台下发的第一个分类。
+    /// 关键词搜索忽略该参数。
+    /// </param>
+    private async Task FetchMusicAsync(
+        TargetRowViewModel? row, bool useSearch, MusicCategory? category = null,
+        bool loadMore = false)
+    {
+        if (row is null || row.IsMusicBusy || !row.IsDouyin) return;
+        if (loadMore && !row.MusicHasMore) return;
+
+        // 首页用输入框；加载更多沿用**上一页的来源**（关键词 / 分类），不受期间输入改动影响
+        var keyword = loadMore ? row.MusicSourceKeyword : row.MusicQuery.Trim();
+
+        row.IsMusicBusy = true;
+        row.MusicStatusText = loadMore
+            ? "正在加载更多音乐…"
+            : useSearch
+                ? "正在搜索音乐…"
+                : category is null ? "正在获取推荐音乐…" : $"正在切换分类「{category.Name}」…";
+        row.MusicStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.MusicStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选音乐也不影响发布）";
+                row.MusicStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var service = new DouyinMusicService(options);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            MusicListPage page;
+            string? categoryName = null;
+            MusicCategory? chosenCategory = null;
+            if (useSearch)
+            {
+                page = await service.SearchAsync(
+                    creds.Cookie, keyword, loadMore ? row.MusicNextCursor : 0, ct: cts.Token);
+                // 搜索结果不属于任何分类 → 页签取消高亮（下次「推荐」回落到第一个分类）
+                if (!loadMore) row.ClearMusicCategorySelection();
+            }
+            else
+            {
+                // 页签拉过一次就复用（切换分类不再重复拉分类接口）；首次展开才拉分类，
+                // 默认停在平台下发的第一个分类（与发布页默认页签一致）。
+                if (row.MusicCategories.Count == 0)
+                {
+                    var categories = await service.GetCategoriesAsync(creds.Cookie, cts.Token);
+                    if (categories.Count == 0)
+                    {
+                        row.SetMusicCandidates([]);
+                        row.MusicStatusText = "平台没有返回音乐分类 —— 可输入歌名搜索";
+                        row.MusicStatusIsError = true;
+                        return;
+                    }
+                    row.SetMusicCategories(categories);
+                }
+
+                // 加载更多按**上一页的来源分类**重放（页签已在上一次拉列表时记在行上）
+                chosenCategory = loadMore
+                    ? row.MusicSourceCategory
+                        ?? row.MusicCategories.FirstOrDefault(c => c.IsSelected)?.Category
+                        ?? row.MusicCategories[0].Category
+                    : category
+                        ?? row.MusicCategories.FirstOrDefault(c => c.IsSelected)?.Category
+                        ?? row.MusicCategories[0].Category;
+                categoryName = chosenCategory.Name;
+                page = await service.ListAsync(
+                    creds.Cookie, chosenCategory, loadMore ? row.MusicNextCursor : 0,
+                    ct: cts.Token);
+                if (!loadMore) row.MarkMusicCategory(chosenCategory);
+            }
+
+            if (loadMore)
+            {
+                var added = row.AppendMusicCandidates(page.Items, page.Cursor, page.HasMore);
+                if (added > 0)
+                {
+                    row.MusicStatusText = $"已加载 {row.MusicCandidates.Count} 首"
+                        + (row.MusicHasMore ? "（还有更多）" : "（已全部加载）");
+                    row.MusicStatusIsError = false;
+                }
+                else if (row.MusicHasMore)
+                {
+                    // 平台说还有下一页，但这一页没带新条目（游标原地打转）——
+                    // 给个了断，别让「加载更多」变成无限点击；用户可重新搜索 / 点「推荐」
+                    row.MusicHasMore = false;
+                    row.MusicStatusText =
+                        $"没有拿到新的歌曲（共 {row.MusicCandidates.Count} 首）—— 可重新搜索 / 点「推荐」";
+                    row.MusicStatusIsError = true;
+                }
+                else
+                {
+                    row.MusicStatusText = $"没有更多音乐了（共 {row.MusicCandidates.Count} 首）";
+                    row.MusicStatusIsError = false;
+                }
+            }
+            else
+            {
+                row.SetMusicCandidates(
+                    page.Items, page.Cursor, page.HasMore,
+                    sourceIsSearch: useSearch,
+                    sourceKeyword: useSearch ? keyword : "",
+                    sourceCategory: useSearch ? null : chosenCategory);
+                row.MusicStatusText = page.Items.Count > 0
+                    ? (useSearch
+                        ? $"找到 {page.Items.Count} 首"
+                        : $"{categoryName} · {page.Items.Count} 首")
+                      + (row.MusicHasMore ? "（还有更多）" : "")
+                    : useSearch
+                        ? "没有搜到音乐 —— 换个关键词再试"
+                        : $"{categoryName} 暂无内容 —— 可输入歌名搜索";
+                row.MusicStatusIsError = false;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            row.MusicStatusText = loadMore
+                ? "加载更多超时 —— 已加载的歌曲保留，可重新搜索 / 点「推荐」"
+                : "请求超时 —— 可重试（不选音乐也不影响发布）";
+            row.MusicStatusIsError = true;
+            if (loadMore) row.MusicHasMore = false;
+        }
+        catch (Exception ex)
+        {
+            row.MusicStatusText = loadMore
+                ? "加载更多失败：" + ex.Message + " —— 已加载的歌曲保留，可重新搜索 / 点「推荐」"
+                : "拉取失败：" + ex.Message + " —— 稍后重试（不选音乐也不影响发布）";
+            row.MusicStatusIsError = true;
+            if (loadMore) row.MusicHasMore = false;
+            Log.Warning(ex, "[Publish] 抖音音乐拉取失败");
+        }
+        finally
+        {
+            row.IsMusicBusy = false;
+        }
+    }
+
+    // ═══ 抖音「添加标签」选择器（2026-11-11 抓包：影视演艺 / 游戏手柄 / 标记万物 / 小程序）═══
+    // 页面同一个 anchor 是单选（位置也在其中）；本选择器做四类。
+    // 小程序输入的是分享链接（anchor/search，anchor_type=4），UI 先按页面同款规则拦链接格式。
+    // 选中前先过平台 anchor/check —— 平台说不行就不进发布体；
+    // 能力位 anchor/list 只拉一次，拉不到就 fail-open（四类都可点，不拦功能）。
+
+    /// <summary>展开 / 收起标签选择器；首次展开拉能力位（SPU 默认给一页推荐）。</summary>
+    [RelayCommand]
+    private async Task ToggleAnchorPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsAnchorPanelOpen = !row.IsAnchorPanelOpen;
+        if (!row.IsAnchorPanelOpen) return;
+
+        await EnsureAnchorCapabilitiesAsync(row);
+
+        // 标记万物空关键词也返回推荐（页面首屏同款）；影视/游戏要用户先输入
+        if (row.SelectedAnchorType == DouyinAnchorTypes.Spu
+            && !row.HasAnchorCandidates && !row.IsAnchorBusy)
+        {
+            await FetchAnchorsAsync(row, DouyinAnchorTypes.Spu, "");
+        }
+    }
+
+    /// <summary>
+    /// 按关键词搜索当前类型的标签（影视 / 游戏 / 小程序空值先拦；SPU 允许空 = 推荐）。
+    /// 小程序按页面同款规则校验链接（http/https、非 creator.douyin.com）。
+    /// </summary>
+    [RelayCommand]
+    private async Task SearchAnchorsAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        var type = row.SelectedAnchorType;
+        var keyword = row.AnchorQuery.Trim();
+
+        if (type == DouyinAnchorTypes.Applet)
+        {
+            if (keyword.Length == 0)
+            {
+                row.AnchorStatusText = "先粘贴抖音小程序分享链接，再点「搜索」";
+                row.AnchorStatusIsError = false;
+                return;
+            }
+            if (!DouyinAnchorService.IsAppletLink(keyword))
+            {
+                row.AnchorStatusText = "链接格式不对 —— 粘贴抖音小程序分享链接（http/https，不能是创作中心地址）";
+                row.AnchorStatusIsError = true;
+                return;
+            }
+        }
+        else if (type != DouyinAnchorTypes.Spu && keyword.Length == 0)
+        {
+            row.AnchorStatusText = type == DouyinAnchorTypes.Movie
+                ? "先输入影视名称，再点「搜索」"
+                : "先输入游戏名称，再点「搜索」";
+            row.AnchorStatusIsError = false;
+            return;
+        }
+        await FetchAnchorsAsync(row, type, keyword);
+    }
+
+    /// <summary>切换标签类型（清空上一类候选；SPU 切过去立即拉推荐）。</summary>
+    [RelayCommand]
+    private async Task PickAnchorTypeAsync(AnchorTypePickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.AnchorTypes.Contains(pick));
+        if (row is null || row.IsAnchorBusy) return;
+
+        if (!pick.IsEnabled)
+        {
+            row.AnchorStatusText = pick.Reason.Length > 0
+                ? pick.Reason.Replace("{anchor_name}", pick.Name)
+                : $"「{pick.Name}」本账号暂不可用";
+            row.AnchorStatusIsError = true;
+            return;
+        }
+
+        if (row.SelectedAnchorType == pick.Type && row.HasAnchorCandidates) return;
+        row.SelectAnchorType(pick.Type);
+        row.SetAnchorCandidates([]);
+        row.AnchorStatusText = "";
+        row.AnchorStatusIsError = false;
+
+        if (pick.Type == DouyinAnchorTypes.Spu)
+            await FetchAnchorsAsync(row, pick.Type, row.AnchorQuery.Trim());
+    }
+
+    /// <summary>选中一个标签：先 anchor/check，通过才写进抖音长尾并收起面板。</summary>
+    [RelayCommand]
+    private async Task PickAnchorAsync(AnchorPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.AnchorCandidates.Contains(pick));
+        if (row is null || row.IsAnchorBusy) return;
+
+        row.IsAnchorBusy = true;
+        row.AnchorStatusText = "正在确认标签…";
+        row.AnchorStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.AnchorStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试";
+                row.AnchorStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var service = new DouyinAnchorService(options);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var check = await service.CheckAsync(
+                creds.Cookie, pick.Item.Type, pick.Item.Id, cts.Token);
+            if (!check.Ok)
+            {
+                row.AnchorStatusText = "平台未通过该标签：" + (check.Reason ?? "未给出原因");
+                row.AnchorStatusIsError = true;
+                return;
+            }
+
+            row.ApplyPickedAnchor(pick.Item);
+            row.IsAnchorPanelOpen = false;
+            row.AnchorStatusText = $"已选{DouyinAnchorTypes.Label(pick.Item.Type)}「{pick.Item.Title}」";
+            row.AnchorStatusIsError = false;
+            if (SelectedDraft is { } draft) RunPreflight(draft);
+        }
+        catch (OperationCanceledException)
+        {
+            row.AnchorStatusText = "确认超时 —— 可重试";
+            row.AnchorStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.AnchorStatusText = "确认失败：" + ex.Message + " —— 稍后重试";
+            row.AnchorStatusIsError = true;
+            Log.Warning(ex, "[Publish] 抖音标签确认失败");
+        }
+        finally
+        {
+            row.IsAnchorBusy = false;
+        }
+    }
+
+    /// <summary>清除已选标签。</summary>
+    [RelayCommand]
+    private void ClearAnchor(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasAnchor) return;
+        row.ClearAnchor();
+        row.AnchorStatusText = "已清除标签";
+        row.AnchorStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>能力位只拉一次（失败不置位）；拿不到就 fail-open —— 不因门控接口挂了禁用功能。</summary>
+    private async Task EnsureAnchorCapabilitiesAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsAnchorBusy || !row.IsDouyin || row.AnchorCapabilitiesLoaded) return;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null) return;   // 静默：真正搜索时会给出凭证提示
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var service = new DouyinAnchorService(options);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var caps = await service.GetCapabilitiesAsync(creds.Cookie, cts.Token);
+            row.SetAnchorCapabilities(caps);
+            row.AnchorCapabilitiesLoaded = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[Publish] 抖音标签能力位拉取失败（按全部可用处理）");
+        }
+    }
+
+    /// <summary>
+    /// 拉一批标签候选。**永不抛** —— 失败写状态行，不打断编辑
+    /// （标签是可选曝光项，接口挂了不该拦发布）。类型在请求期间被切换 → 丢弃这批结果。
+    /// </summary>
+    private async Task FetchAnchorsAsync(TargetRowViewModel? row, int type, string keyword)
+    {
+        if (row is null || row.IsAnchorBusy || !row.IsDouyin) return;
+
+        row.IsAnchorBusy = true;
+        row.AnchorStatusText = $"正在搜索{DouyinAnchorTypes.Label(type)}…";
+        row.AnchorStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.AnchorStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选标签也不影响发布）";
+                row.AnchorStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var service = new DouyinAnchorService(options);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var items = await service.SearchAsync(creds.Cookie, type, keyword, cts.Token);
+
+            // 期间切了类型 → 这批结果属于上一类，别塞进当前页签
+            if (row.SelectedAnchorType != type) return;
+
+            row.SetAnchorCandidates(items);
+            row.AnchorStatusText = items.Count > 0
+                ? $"{DouyinAnchorTypes.Label(type)} · {items.Count} 个"
+                    + (type == DouyinAnchorTypes.Spu ? "（可继续输入关键词筛选）" : "")
+                : type == DouyinAnchorTypes.Applet
+                    ? "没有搜到小程序 —— 检查链接是否有效，或在抖音 App 里重新复制分享链接"
+                    : $"没有搜到{DouyinAnchorTypes.Label(type)} —— 换个关键词再试";
+            row.AnchorStatusIsError = false;
+        }
+        catch (OperationCanceledException)
+        {
+            row.AnchorStatusText = "请求超时 —— 可重试（不选标签也不影响发布）";
+            row.AnchorStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.AnchorStatusText = "拉取失败：" + ex.Message + " —— 稍后重试（不选标签也不影响发布）";
+            row.AnchorStatusIsError = true;
+            Log.Warning(ex, "[Publish] 抖音标签搜索失败");
+        }
+        finally
+        {
+            row.IsAnchorBusy = false;
+        }
+    }
+
+    // ═══ 小红书速览合集选择器（2026-11-10：接平台 collection/pc/list?type=1）═══
+    // 速览合集只认账号自己的列表 —— 手填 24 位 ID 既记不住也验证不了。
+    // 选中后只写 noteSketchCollectionBind.id（与音乐选择器同一套交互）。
+
+    /// <summary>展开 / 收起速览合集选择器；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleSketchPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsSketchPanelOpen = !row.IsSketchPanelOpen;
+        if (row.IsSketchPanelOpen && !row.HasSketchCandidates && !row.IsSketchBusy)
+            await FetchSketchCollectionsAsync(row);
+    }
+
+    /// <summary>重新拉一次速览合集列表（账号侧新建合集后不用关面板重开）。</summary>
+    [RelayCommand]
+    private async Task RefreshSketchCollectionsAsync(TargetRowViewModel? row) =>
+        await FetchSketchCollectionsAsync(row);
+
+    /// <summary>
+    /// 候选列表底部的「加载更多」—— 用上一页最后一条的 cursor 追加下一页。
+    /// 速览合集超过一页的账号不多，但页面同款接口确实带游标（cursor 变成空串 = 到底了）。
+    /// </summary>
+    [RelayCommand]
+    private async Task LoadMoreSketchCollectionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsSketchBusy || !row.SketchHasMore) return;
+        await FetchSketchCollectionsAsync(row, loadMore: true);
+    }
+
+    /// <summary>选中一个速览合集 → 写 <c>noteSketchCollectionBind.id</c> 并收起面板。</summary>
+    [RelayCommand]
+    private void PickSketch(SketchPickViewModel? pick)
+    {
+        if (pick is null || pick.IsFull) return;
+        var row = TargetRows.FirstOrDefault(r => r.SketchCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyPickedSketch(pick.Item);
+        row.IsSketchPanelOpen = false;
+        row.SketchStatusText = $"已选「{pick.Name}」";
+        row.SketchStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选速览合集（回到不绑定）。</summary>
+    [RelayCommand]
+    private void ClearSketch(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasSketch) return;
+        row.ClearSketch();
+        row.SketchStatusText = "已清除速览合集 —— 本条不绑定短剧合集";
+        row.SketchStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉该账号的速览合集列表。**永不抛** —— 失败写状态行，不打断编辑
+    /// （速览合集是可选项，账号没有该能力/接口挂了都不该拦发布）。
+    /// 预算 120s：小红书签名宿主冷启动实测可达 60s+（同 XhsSignerService 的预热上限）。
+    /// <paramref name="loadMore"/> = 用上一页游标追加（不清空已加载候选）。
+    /// </summary>
+    private async Task FetchSketchCollectionsAsync(TargetRowViewModel? row, bool loadMore = false)
+    {
+        if (row is null || row.IsSketchBusy || !row.IsXhs) return;
+        if (loadMore && !row.SketchHasMore) return;
+
+        row.IsSketchBusy = true;
+        row.SketchStatusText = loadMore
+            ? "正在加载更多速览合集…"
+            : "正在获取速览合集…（首次要等平台签名准备，可能要几十秒）";
+        row.SketchStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.SketchStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选速览合集也不影响发布）";
+                row.SketchStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var signerReady = await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var page = await new XhsCollectionService(options)
+                .ListSketchCollectionsAsync(
+                    creds.Cookie, loadMore ? row.SketchNextCursor : null, ct: cts.Token);
+
+            if (loadMore)
+            {
+                var added = row.AppendSketchCandidates(page.Items, page.NextCursor);
+                if (added > 0)
+                {
+                    row.SketchStatusText = $"已加载 {row.SketchCandidates.Count} 个速览合集"
+                        + (row.SketchHasMore ? "（还有更多）" : "（已全部加载）");
+                    row.SketchStatusIsError = false;
+                }
+                else if (row.SketchHasMore)
+                {
+                    // 平台说还有下一页，但这一页没带新条目（游标原地打转）——
+                    // 给个了断，别让「加载更多」变成无限点击；用户可「刷新」重来
+                    row.SketchHasMore = false;
+                    row.SketchStatusText =
+                        $"没有拿到新的速览合集（共 {row.SketchCandidates.Count} 个）—— 可点「刷新」重来";
+                    row.SketchStatusIsError = true;
+                }
+                else
+                {
+                    row.SketchStatusText = $"没有更多速览合集了（共 {row.SketchCandidates.Count} 个）";
+                    row.SketchStatusIsError = false;
+                }
+            }
+            else
+            {
+                row.SetSketchCandidates(page.Items, page.NextCursor);
+                row.SketchStatusText = page.Items.Count > 0
+                    ? $"共 {row.SketchCandidates.Count} 个速览合集"
+                      + (row.SketchHasMore ? "（还有更多）" : "")
+                    : signerReady
+                        ? "该账号没有速览合集 —— 可留空（发布页同款下拉也是空的）"
+                        : "平台没返回速览合集，且签名宿主未就绪 —— 稍后重试";
+                row.SketchStatusIsError = page.Items.Count == 0 && !signerReady;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            row.SketchStatusText = loadMore
+                ? "加载更多超时 —— 已加载的候选保留，可点「刷新」重来"
+                : "请求超时 —— 可重试（不选速览合集也不影响发布）";
+            row.SketchStatusIsError = true;
+            if (loadMore) row.SketchHasMore = false;
+        }
+        catch (Exception ex)
+        {
+            row.SketchStatusText = loadMore
+                ? "加载更多失败：" + ex.Message + " —— 已加载的候选保留，可点「刷新」重来"
+                : "拉取失败：" + ex.Message + " —— 稍后重试（不选速览合集也不影响发布）";
+            row.SketchStatusIsError = true;
+            if (loadMore) row.SketchHasMore = false;
+            Log.Warning(ex, "[Publish] 小红书速览合集拉取失败");
+        }
+        finally
+        {
+            row.IsSketchBusy = false;
+        }
+    }
+
+    // ═══ 小红书「选择群聊」选择器（2026-11-15：接平台 group_list）═══
+    // 账号在 App 端创建的群聊才会出现在这里（页面同款：先去 App 消息-发现群聊创建）。
+    // 选中写 business_binds.groupBind（bundle 逐字四字段）；失败只写状态行，不拦发布。
+
+    /// <summary>展开 / 收起群聊选择器；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleXhsGroupPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsXhsGroupPanelOpen = !row.IsXhsGroupPanelOpen;
+        if (row.IsXhsGroupPanelOpen && !row.HasXhsGroupCandidates && !row.IsXhsGroupBusy)
+            await FetchXhsGroupsAsync(row);
+    }
+
+    /// <summary>重新拉一次群聊列表（刚在 App 里建群后不用关面板重开）。</summary>
+    [RelayCommand]
+    private async Task RefreshXhsGroupsAsync(TargetRowViewModel? row) =>
+        await FetchXhsGroupsAsync(row);
+
+    /// <summary>选中一个群聊 → 写快照并收起面板。</summary>
+    [RelayCommand]
+    private void PickXhsGroup(XhsGroupPickViewModel? pick)
+    {
+        if (pick is null || !pick.IsLinkable) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsGroupCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyXhsGroup(pick.Item);
+        row.IsXhsGroupPanelOpen = false;
+        row.XhsGroupStatusText = $"已选「{pick.Name}」";
+        row.XhsGroupStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选群聊（回到不关联）。</summary>
+    [RelayCommand]
+    private void ClearXhsGroup(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsGroup) return;
+        row.ClearXhsGroup();
+        row.XhsGroupStatusText = "已清除群聊 —— 本条不关联群聊";
+        row.XhsGroupStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉该账号可绑定的群聊。**永不抛** —— 失败写状态行，不打断编辑
+    /// （群聊是可选项，账号没有群 / 接口挂了都不该拦发布）。
+    /// 预算 120s：小红书签名宿主冷启动实测可达 60s+（同速览合集选择器）。
+    /// </summary>
+    private async Task FetchXhsGroupsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsGroupBusy || !row.IsXhs) return;
+
+        row.IsXhsGroupBusy = true;
+        row.XhsGroupStatusText = "正在获取群聊…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsGroupStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsGroupStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不关联群聊也不影响发布）";
+                row.XhsGroupStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var signerReady = await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var page = await new XhsGroupService(options)
+                .ListAsync(creds.Cookie, noteId: "", ct: cts.Token);
+
+            row.SetXhsGroupCandidates(page.Items);
+            row.XhsGroupStatusText = page.Items.Count > 0
+                ? $"共 {page.Items.Count} 个群聊"
+                : signerReady
+                    ? "该账号还没有可绑定的群聊 —— 先在 App 消息页创建群聊（不关联也不影响发布）"
+                    : "平台没返回群聊，且签名宿主未就绪 —— 稍后重试";
+            row.XhsGroupStatusIsError = page.Items.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsGroupStatusText = "请求超时 —— 可重试（不关联群聊也不影响发布）";
+            row.XhsGroupStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsGroupStatusText =
+                "拉取失败：" + ex.Message + " —— 稍后重试（不关联群聊也不影响发布）";
+            row.XhsGroupStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书群聊列表拉取失败");
+        }
+        finally
+        {
+            row.IsXhsGroupBusy = false;
+        }
+    }
+
+    // ═══ 小红书 PK 封面（2026-11-15）═══
+    // 附加图逐张选（复用封面选图回调），发布时逐张上传；
+    // 主封面自动用发布封面/首帧当 index=0（wire 见 XhsPublishService.BuildPkCoverRelationsJson）。
+
+    /// <summary>追加一张 PK 封面附加图。</summary>
+    [RelayCommand]
+    private async Task PickXhsPkCoverAsync(TargetRowViewModel? row)
+    {
+        if (row is null || SelectedDraft is null || CoverPicker is null || !row.IsXhs) return;
+        var path = await CoverPicker();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        row.AddXhsPkCover(path);
+        RunPreflight(SelectedDraft);
+    }
+
+    /// <summary>移除一张 PK 封面附加图。</summary>
+    [RelayCommand]
+    private void RemoveXhsPkCover(XhsPkCoverItemViewModel? item)
+    {
+        if (item is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsPkCovers.Contains(item));
+        if (row is null) return;
+        row.RemoveXhsPkCover(item);
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空全部 PK 封面附加图（开关保留）。</summary>
+    [RelayCommand]
+    private void ClearXhsPkCovers(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsPkCovers) return;
+        row.ClearXhsPkCovers();
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    // ═══ 小红书视频标记（2026-11-15：标记地点 / 标记朋友）═══
+    // 朋友走 search/label?type=user；地点复用 POI 搜索。选中写 video_info.markers。
+
+    /// <summary>展开 / 收起标记选择器（不自动搜 —— 需要关键词）。</summary>
+    [RelayCommand]
+    private void ToggleXhsMarkerPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsXhsMarkerPanelOpen = !row.IsXhsMarkerPanelOpen;
+    }
+
+    /// <summary>搜索可标记的朋友 / 地点。</summary>
+    [RelayCommand]
+    private async Task SearchXhsMarkersAsync(TargetRowViewModel? row) =>
+        await FetchXhsMarkersAsync(row);
+
+    /// <summary>选中一个可标记对象 → 加入已选（默认 0–5 秒）。</summary>
+    [RelayCommand]
+    private void PickXhsMarker(XhsMarkerPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsMarkerCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.AddXhsMarker(new XhsVideoMarker
+        {
+            Id = pick.Id,
+            Name = pick.Name,
+            Type = pick.Type,
+            Avatar = pick.Avatar,
+            StartSeconds = 0,
+            EndSeconds = 5,
+        });
+        row.XhsMarkerStatusText = $"已标记「{pick.Name}」";
+        row.XhsMarkerStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>移除一个已选标记。</summary>
+    [RelayCommand]
+    private void RemoveXhsMarker(XhsMarkerRowViewModel? item)
+    {
+        if (item is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsMarkers.Contains(item));
+        if (row is null) return;
+        row.RemoveXhsMarker(item);
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空全部标记。</summary>
+    [RelayCommand]
+    private void ClearXhsMarkers(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsMarkers) return;
+        row.ClearXhsMarkers();
+        row.XhsMarkerStatusText = "已清空标记";
+        row.XhsMarkerStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 搜索可标记对象。**永不抛** —— 失败写状态行，不打断编辑
+    /// （标记是可选项，接口挂了不拦发布）。预算 120s（小红书签名宿主冷启动）。
+    /// </summary>
+    private async Task FetchXhsMarkersAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsMarkerBusy || !row.IsXhs) return;
+
+        var keyword = (row.XhsMarkerQuery ?? "").Trim();
+        if (keyword.Length == 0)
+        {
+            row.XhsMarkerStatusText = "先输入关键词再搜索（空关键词平台不返回结果）";
+            row.XhsMarkerStatusIsError = true;
+            return;
+        }
+
+        row.IsXhsMarkerBusy = true;
+        row.XhsMarkerStatusText = "正在搜索…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsMarkerStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsMarkerStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不加标记也不影响发布）";
+                row.XhsMarkerStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var candidates = new List<XhsMarkerPickViewModel>();
+            if (row.XhsMarkerTypeIndex == 1)
+            {
+                var pois = await new XhsPoiService(options)
+                    .SearchAsync(creds.Cookie, keyword, ct: cts.Token);
+                foreach (var poi in pois)
+                {
+                    if (string.IsNullOrWhiteSpace(poi.PoiId)
+                        || string.IsNullOrWhiteSpace(poi.Name)) continue;
+                    candidates.Add(new XhsMarkerPickViewModel
+                    {
+                        Id = poi.PoiId,
+                        Name = poi.Name,
+                        Type = "location",
+                        Subtitle = poi.Subname,
+                    });
+                }
+            }
+            else
+            {
+                var users = await new XhsLabelService(options)
+                    .SearchFriendsAsync(creds.Cookie, keyword, cts.Token);
+                foreach (var user in users)
+                {
+                    candidates.Add(new XhsMarkerPickViewModel
+                    {
+                        Id = user.Id,
+                        Name = user.Name,
+                        Type = "user",
+                        Subtitle = user.Desc,
+                        Avatar = user.Avatar,
+                    });
+                }
+            }
+
+            row.SetXhsMarkerCandidates(candidates);
+            row.XhsMarkerStatusText = candidates.Count > 0
+                ? $"找到 {candidates.Count} 个可标记对象"
+                : "没有找到相关结果 —— 换个关键词试试";
+            row.XhsMarkerStatusIsError = candidates.Count == 0;
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsMarkerStatusText = "请求超时 —— 可重试（不加标记也不影响发布）";
+            row.XhsMarkerStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsMarkerStatusText =
+                "搜索失败：" + ex.Message + " —— 稍后重试（不加标记也不影响发布）";
+            row.XhsMarkerStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书视频标记搜索失败");
+        }
+        finally
+        {
+            row.IsXhsMarkerBusy = false;
+        }
+    }
+
+    // ═══ 小红书添加路线（2026-11-15）═══
+    // 流程：搜 POI → 点选换坐标 → 保存路线（save/travel，空 polygon）→ 快照 travelId。
+    // 发布只带快照（hash_tag 的 map_traver + biz_relations 的 POI_MAP_TRAVEL）。
+    // 失败只写状态行；路线是可选项，接口挂了不拦发布。
+
+    /// <summary>展开 / 收起路线编辑器（已建路线时由 UI 隐藏编辑器）。</summary>
+    [RelayCommand]
+    private void ToggleXhsRoutePanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsXhsRoutePanelOpen = !row.IsXhsRoutePanelOpen;
+    }
+
+    /// <summary>搜索可加入路线的地点。</summary>
+    [RelayCommand]
+    private async Task SearchXhsRoutePoisAsync(TargetRowViewModel? row) =>
+        await FetchXhsRoutePoisAsync(row);
+
+    /// <summary>选中一个地点候选 → 换坐标 → 加入草稿。</summary>
+    [RelayCommand]
+    private async Task AddXhsRoutePoiAsync(XhsRoutePickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsRouteCandidates.Contains(pick));
+        if (row is null || row.IsXhsRouteBusy || !row.IsXhs) return;
+
+        row.IsXhsRouteBusy = true;
+        row.XhsRouteStatusText = "正在定位地点…";
+        row.XhsRouteStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsRouteStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试";
+                row.XhsRouteStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var point = await new XhsRouteService(options).ResolvePointAsync(
+                creds.Cookie, pick.Item.PoiId, pick.Item.Name, cts.Token);
+            row.AddXhsRoutePoint(point);
+            row.XhsRouteStatusText =
+                $"已添加「{point.Name}」 · 共 {row.XhsRoutePoints.Count} 个地点（至少 2 个才能保存）";
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsRouteStatusText = "定位超时 —— 可重试（不加路线也不影响发布）";
+            row.XhsRouteStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsRouteStatusText = "定位失败：" + ex.Message + " —— 稍后重试";
+            row.XhsRouteStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书路线地点定位失败");
+        }
+        finally
+        {
+            row.IsXhsRouteBusy = false;
+        }
+    }
+
+    /// <summary>从草稿里移除一个地点。</summary>
+    [RelayCommand]
+    private void RemoveXhsRoutePoi(XhsRoutePointViewModel? item)
+    {
+        if (item is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsRoutePoints.Contains(item));
+        if (row is null) return;
+        row.RemoveXhsRoutePoint(item);
+    }
+
+    /// <summary>保存路线（平台 save/travel）→ 写快照，发布体两处落点由快照驱动。</summary>
+    [RelayCommand]
+    private async Task SaveXhsRouteAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsRouteBusy || !row.IsXhs) return;
+
+        var points = row.XhsRoutePoints.Select(p => p.Point).ToList();
+        if (points.Count < 2)
+        {
+            row.XhsRouteStatusText = "路线至少需要 2 个地点（页面同款校验）";
+            row.XhsRouteStatusIsError = true;
+            return;
+        }
+
+        var name = (row.XhsRouteName ?? "").Trim();
+        if (name.Length == 0)
+        {
+            row.XhsRouteStatusText = "请填写路线名（页面同款必填）";
+            row.XhsRouteStatusIsError = true;
+            return;
+        }
+
+        row.IsXhsRouteBusy = true;
+        row.XhsRouteStatusText = "正在保存路线…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsRouteStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsRouteStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试";
+                row.XhsRouteStatusIsError = true;
+                return;
+            }
+
+            var userId = CredentialFields.CookieValue(
+                creds.Cookie, "x-user-id-creator.xiaohongshu.com") ?? creds.PlatformUid;
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var saved = await new XhsRouteService(options).SaveRouteAsync(
+                creds.Cookie, userId ?? "", name, points, cts.Token);
+
+            row.ApplyXhsRoute(new XhsRouteRef(
+                saved.TravelId, saved.RouteName, saved.TravelType, saved.PlanAmount));
+            row.IsXhsRoutePanelOpen = false;
+            row.XhsRouteStatusText =
+                $"路线已保存：「{saved.RouteName}」 · {points.Count} 个地点";
+            row.XhsRouteStatusIsError = false;
+            if (SelectedDraft is { } draft) RunPreflight(draft);
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsRouteStatusText = "保存超时 —— 可重试（不加路线也不影响发布）";
+            row.XhsRouteStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsRouteStatusText = "保存失败：" + ex.Message + " —— 稍后重试";
+            row.XhsRouteStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书路线保存失败");
+        }
+        finally
+        {
+            row.IsXhsRouteBusy = false;
+        }
+    }
+
+    /// <summary>清除已建路线（回到不关联；草稿一并清）。</summary>
+    [RelayCommand]
+    private void ClearXhsRoute(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsRoute) return;
+        row.ClearXhsRoute();
+        row.XhsRouteStatusText = "已清除路线 —— 本条不关联路线";
+        row.XhsRouteStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 搜索地点（query/poi/by/keyword）。**永不抛** —— 失败写状态行（路线可选，
+    /// 不拦发布）。预算 120s（小红书签名宿主冷启动）。
+    /// </summary>
+    private async Task FetchXhsRoutePoisAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsRouteBusy || !row.IsXhs) return;
+
+        var keyword = (row.XhsRouteQuery ?? "").Trim();
+        if (keyword.Length == 0)
+        {
+            row.XhsRouteStatusText = "先输入地点关键词再搜索";
+            row.XhsRouteStatusIsError = true;
+            return;
+        }
+
+        row.IsXhsRouteBusy = true;
+        row.XhsRouteStatusText = "正在搜索地点…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsRouteStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsRouteStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试";
+                row.XhsRouteStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var items = await new XhsRouteService(options)
+                .SearchPoiAsync(creds.Cookie, keyword, cts.Token);
+            row.SetXhsRouteCandidates(items);
+            row.XhsRouteStatusText = items.Count > 0
+                ? $"找到 {items.Count} 个地点"
+                : "没有找到相关地点 —— 换个关键词试试";
+            row.XhsRouteStatusIsError = items.Count == 0;
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsRouteStatusText = "搜索超时 —— 可重试（不加路线也不影响发布）";
+            row.XhsRouteStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsRouteStatusText = "搜索失败：" + ex.Message + " —— 稍后重试";
+            row.XhsRouteStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书路线地点搜索失败");
+        }
+        finally
+        {
+            row.IsXhsRouteBusy = false;
+        }
+    }
+
+    // ═══ 小红书引用笔记选择器（A5，2026-11-11：接平台 note/user/posted）═══
+    // 平台页面同一时间只允许引用一条笔记。列表只在打开面板时拉
+    // （签名宿主冷启动可达 60s+，不拖慢进页）；失败只写状态行，不打断编辑。
+
+    /// <summary>展开 / 收起引用笔记选择器；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleXhsNotePanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsXhsNotePanelOpen = !row.IsXhsNotePanelOpen;
+        if (row.IsXhsNotePanelOpen && !row.HasXhsNoteCandidates && !row.IsXhsNoteBusy)
+            await FetchXhsNotesAsync(row);
+    }
+
+    /// <summary>重新拉一次已发布笔记列表（刚在平台发过笔记后不用关面板重开）。</summary>
+    [RelayCommand]
+    private async Task RefreshXhsNotesAsync(TargetRowViewModel? row) =>
+        await FetchXhsNotesAsync(row);
+
+    /// <summary>选中一条引用笔记 → 写快照并收起面板。</summary>
+    [RelayCommand]
+    private void PickXhsNote(XhsNotePickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsNoteCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyPickedNote(pick.Item);
+        row.IsXhsNotePanelOpen = false;
+        row.XhsNoteStatusText = $"已引用「{pick.Name}」";
+        row.XhsNoteStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选引用笔记（回到不引用）。</summary>
+    [RelayCommand]
+    private void ClearXhsNote(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsNote) return;
+        row.ClearXhsNote();
+        row.XhsNoteStatusText = "已清除引用笔记 —— 本条不引用其它笔记";
+        row.XhsNoteStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉该账号的已发布笔记列表。**永不抛** —— 失败写状态行，不打断编辑
+    /// （引用笔记是可选项，账号没有笔记 / 接口挂了都不该拦发布）。
+    /// 预算 120s：小红书签名宿主冷启动实测可达 60s+（同速览合集选择器）。
+    /// </summary>
+    private async Task FetchXhsNotesAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsNoteBusy || !row.IsXhs) return;
+
+        row.IsXhsNoteBusy = true;
+        row.XhsNoteStatusText = "正在获取已发布笔记…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsNoteStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsNoteStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不引用也不影响发布）";
+                row.XhsNoteStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var signerReady = await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var notes = await new XhsNoteService(options)
+                .ListPostedAsync(creds.Cookie, tab: 1, page: 0, ct: cts.Token);
+
+            row.SetXhsNoteCandidates(notes);
+            row.XhsNoteStatusText = notes.Count > 0
+                ? $"找到 {notes.Count} 条已发布笔记（只显示最近一批）"
+                : signerReady
+                    ? "该账号还没有已发布笔记 —— 可留空（发布页同款面板也是空的）"
+                    : "平台没返回笔记，且签名宿主未就绪 —— 稍后重试";
+            row.XhsNoteStatusIsError = notes.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsNoteStatusText = "请求超时 —— 可重试（不引用笔记也不影响发布）";
+            row.XhsNoteStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsNoteStatusText =
+                "拉取失败：" + ex.Message + " —— 稍后重试（不引用笔记也不影响发布）";
+            row.XhsNoteStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书引用笔记列表拉取失败");
+        }
+        finally
+        {
+            row.IsXhsNoteBusy = false;
+        }
+    }
+
+    // ═══ 小红书 @用户选择器（2026-11-10：接平台 search/user_info）═══
+    // 平台正文里的 @ 是结构化字段（common.ats）—— 手填 JSON 难写也验证不了；
+    // 按昵称搜账号（带小红书号 / 简介片段）后点选。可多选，点 × 移除。
+    // 选中只写 XhsExtras.Ats；正文缺「@昵称」由 XhsCaption 补（预检与组装同一份）。
+
+    /// <summary>
+    /// 展开 / 收起 @用户选择器。**不自动搜索** —— 空关键词虽然有效（页面同款返回推荐用户），
+    /// 但一展开就打一次签名接口太贵；用户输入后点「搜索」。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleXhsMentionPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsXhsMentionPanelOpen = !row.IsXhsMentionPanelOpen;
+    }
+
+    /// <summary>按昵称搜索用户（空词 = 页面同款，平台回推荐用户）。</summary>
+    [RelayCommand]
+    private async Task SearchXhsMentionsAsync(TargetRowViewModel? row) =>
+        await FetchXhsMentionsAsync(row);
+
+    /// <summary>加入一个 @用户（面板保持展开 —— 多选是常态）。</summary>
+    [RelayCommand]
+    private void PickXhsMention(XhsMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsMentionCandidates.Contains(pick));
+        if (row is null) return;
+
+        if (!row.AddXhsMention(pick.User))
+        {
+            row.XhsMentionStatusText = $"「{pick.Nickname}」已在 @ 列表里";
+            row.XhsMentionStatusIsError = false;
+            return;
+        }
+
+        row.XhsMentionStatusText = $"已添加 @{pick.Nickname}（正文末尾会补 @昵称）";
+        row.XhsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>移除一个已选 @用户。</summary>
+    [RelayCommand]
+    private void RemoveXhsMention(XhsMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.XhsMentions.Contains(pick));
+        if (row is null) return;
+
+        row.RemoveXhsMention(pick);
+        row.XhsMentionStatusText = $"已移除 @{pick.Nickname}";
+        row.XhsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空已选 @用户（发布体不下发 common.ats）。</summary>
+    [RelayCommand]
+    private void ClearXhsMentions(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasXhsMentions) return;
+        row.ClearXhsMentions();
+        row.XhsMentionStatusText = "已清空 @用户 —— 本条不再提及任何人";
+        row.XhsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 搜索 @用户。**永不抛** —— 失败写状态行，不打断编辑
+    /// （@用户是可选项，接口挂了不该拦发布）。
+    /// 预算 120s：小红书签名宿主冷启动实测可达 60s+（同速览合集 / 话题候选）。
+    /// </summary>
+    private async Task FetchXhsMentionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsXhsMentionBusy || !row.IsXhs) return;
+
+        row.IsXhsMentionBusy = true;
+        row.XhsMentionStatusText = "正在搜索用户…（首次要等平台签名准备，可能要几十秒）";
+        row.XhsMentionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.XhsMentionStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不 @ 用户也不影响发布）";
+                row.XhsMentionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            var signerReady = await XhsSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var users = await new XhsMentionService(options)
+                .SearchAsync(creds.Cookie, row.XhsMentionQuery.Trim(), cts.Token);
+
+            row.SetXhsMentionCandidates(users);
+            row.XhsMentionStatusText = users.Count > 0
+                ? $"共 {users.Count} 个用户 —— 点「选」加入 @ 列表"
+                : signerReady
+                    ? "没有搜到用户 —— 换个昵称再试"
+                    : "平台没返回用户，且签名宿主未就绪 —— 稍后重试";
+            row.XhsMentionStatusIsError = users.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.XhsMentionStatusText = "搜索超时 —— 可重试（不 @ 用户也不影响发布）";
+            row.XhsMentionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.XhsMentionStatusText = "搜索失败：" + ex.Message + " —— 稍后重试（不 @ 用户也不影响发布）";
+            row.XhsMentionStatusIsError = true;
+            Log.Warning(ex, "[Publish] 小红书 @用户搜索失败");
+        }
+        finally
+        {
+            row.IsXhsMentionBusy = false;
+        }
+    }
+
+    // ═══ 抖音 @好友选择器（2026-11-11 补抓：discover/search）═══
+    // 发布体三件套：common.mentions（uid 数组）+ 正文「@昵称」+ text_extra type=0 条目。
+    // 搜索走本地 msToken/a_bogus（同标签选择器），不需要 WebView 签名宿主。
+    // **永不抛**：@好友是可选项，接口挂了只写状态行，不拦发布。
+
+    /// <summary>展开 / 收起 @好友选择器（不自动搜索 —— 一展开就打一次签名接口太贵）。</summary>
+    [RelayCommand]
+    private void ToggleDouyinMentionPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsDouyinMentionPanelOpen = !row.IsDouyinMentionPanelOpen;
+    }
+
+    [RelayCommand]
+    private async Task SearchDouyinMentionsAsync(TargetRowViewModel? row) =>
+        await FetchDouyinMentionsAsync(row);
+
+    /// <summary>加入一个 @好友（面板保持展开 —— 多选是常态）。</summary>
+    [RelayCommand]
+    private void PickDouyinMention(DouyinMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.DouyinMentionCandidates.Contains(pick));
+        if (row is null) return;
+
+        if (!row.AddDouyinMention(pick.User))
+        {
+            row.DouyinMentionStatusText = $"「{pick.Nickname}」已在 @ 列表里";
+            row.DouyinMentionStatusIsError = false;
+            return;
+        }
+
+        row.DouyinMentionStatusText = $"已添加 @{pick.Nickname}（正文末尾会补 @昵称）";
+        row.DouyinMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    [RelayCommand]
+    private void RemoveDouyinMention(DouyinMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.DouyinMentions.Contains(pick));
+        if (row is null) return;
+
+        row.RemoveDouyinMention(pick);
+        row.DouyinMentionStatusText = $"已移除 @{pick.Nickname}";
+        row.DouyinMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空已选 @好友（发布体不再下发 common.mentions）。</summary>
+    [RelayCommand]
+    private void ClearDouyinMentions(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasDouyinMentions) return;
+        row.ClearDouyinMentions();
+        row.DouyinMentionStatusText = "已清空 @好友 —— 本条不再提及任何人";
+        row.DouyinMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>按昵称 / 抖音号搜索 @好友候选（空词原样发，平台可能回推荐）。永不抛。</summary>
+    private async Task FetchDouyinMentionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsDouyinMentionBusy || !row.IsDouyin) return;
+
+        row.IsDouyinMentionBusy = true;
+        row.DouyinMentionStatusText = "正在搜索用户…";
+        row.DouyinMentionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.DouyinMentionStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不 @ 好友也不影响发布）";
+                row.DouyinMentionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var users = await new DouyinMentionService(options)
+                .SearchAsync(creds.Cookie, row.DouyinMentionQuery.Trim(), ct: cts.Token);
+
+            row.SetDouyinMentionCandidates(users);
+            row.DouyinMentionStatusText = users.Count > 0
+                ? $"共 {users.Count} 个用户 —— 点「选」加入 @ 列表"
+                : "没有搜到用户 —— 换个昵称或抖音号再试";
+        }
+        catch (OperationCanceledException)
+        {
+            row.DouyinMentionStatusText = "搜索超时 —— 可重试（不 @ 好友也不影响发布）";
+            row.DouyinMentionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.DouyinMentionStatusText = "搜索失败：" + ex.Message + " —— 稍后重试（不 @ 好友也不影响发布）";
+            row.DouyinMentionStatusIsError = true;
+            Log.Warning(ex, "[Publish] 抖音 @好友搜索失败");
+        }
+        finally
+        {
+            row.IsDouyinMentionBusy = false;
+        }
+    }
+
+    // ═══ 视频号 @好友（2026-11-11 B2：helper_search_finder_account）═══
+    // 提交体只认昵称：objectDesc.mentionedUser=[{nickname}] + 正文末尾「@昵称 」。
+    // 搜索需要视频号 Cookie + deviceId（extra_data 里），缺 deviceId 时状态行给刷新凭证的指引。
+
+    /// <summary>展开 / 收起 @好友面板。</summary>
+    [RelayCommand]
+    private void ToggleWechatMentionPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsWechatMentionPanelOpen = !row.IsWechatMentionPanelOpen;
+    }
+
+    /// <summary>按昵称搜索 @好友候选（空词原样发，由平台决定返回什么）。永不抛。</summary>
+    [RelayCommand]
+    private async Task SearchWechatMentionsAsync(TargetRowViewModel? row) =>
+        await FetchWechatMentionsAsync(row);
+
+    /// <summary>加入一个 @好友（面板保持展开 —— 多选是常态）。</summary>
+    [RelayCommand]
+    private void PickWechatMention(WechatMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.WechatMentionCandidates.Contains(pick));
+        if (row is null) return;
+
+        if (!row.AddWechatMention(pick.User))
+        {
+            row.WechatMentionStatusText = $"「{pick.Nickname}」已在 @ 列表里";
+            row.WechatMentionStatusIsError = false;
+            return;
+        }
+
+        row.WechatMentionStatusText = $"已添加 @{pick.Nickname}（正文末尾会补「@昵称 」）";
+        row.WechatMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>移除一个已选 @好友。</summary>
+    [RelayCommand]
+    private void RemoveWechatMention(WechatMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.WechatMentions.Contains(pick));
+        if (row is null) return;
+
+        row.RemoveWechatMention(pick);
+        row.WechatMentionStatusText = $"已移除 @{pick.Nickname}";
+        row.WechatMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空已选 @好友（发布体不再下发 mentionedUser）。</summary>
+    [RelayCommand]
+    private void ClearWechatMentions(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasWechatMentions) return;
+        row.ClearWechatMentions();
+        row.WechatMentionStatusText = "已清空 @好友 —— 本条不再提及任何人";
+        row.WechatMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>搜索 @好友候选。接口失败 / 缺 deviceId 只写状态行，不拦发布。</summary>
+    private async Task FetchWechatMentionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsWechatMentionBusy || !row.IsWechatVideo) return;
+
+        row.IsWechatMentionBusy = true;
+        row.WechatMentionStatusText = "正在搜索视频号…";
+        row.WechatMentionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.WechatMentionStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不 @ 好友也不影响发布）";
+                row.WechatMentionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = CredentialFields.EnvironmentSnapshot(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+            var deviceId = CredentialFields.Extra(creds.ExtraDataJson)
+                .GetValueOrDefault("deviceId")?.ToString() ?? "";
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(40));
+            var users = await new WechatVideoMentionService(options)
+                .SearchAsync(creds.Cookie, deviceId, row.WechatMentionQuery.Trim(), ct: cts.Token);
+
+            row.SetWechatMentionCandidates(users);
+            row.WechatMentionStatusText = users.Count > 0
+                ? $"共 {users.Count} 个视频号 —— 点「选」加入 @ 列表"
+                : "没有搜到视频号 —— 换个昵称再试";
+        }
+        catch (OperationCanceledException)
+        {
+            row.WechatMentionStatusText = "搜索超时 —— 可重试（不 @ 好友也不影响发布）";
+            row.WechatMentionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.WechatMentionStatusText =
+                "搜索失败：" + ex.Message + " —— 稍后重试（不 @ 好友也不影响发布）";
+            row.WechatMentionStatusIsError = true;
+            Log.Warning(ex, "[Publish] 视频号 @好友搜索失败");
+        }
+        finally
+        {
+            row.IsWechatMentionBusy = false;
+        }
+    }
+
+    // ═══ 快手 @好友（B3 抓包 2026-11-11：at/search + at/choose）═══
+    // 落点不是独立字段：caption 里的纯文本 token `@昵称(O<userId>)`（执行端 KuaishouMentionText 追加）。
+    // 搜索与热点同一条签名链（sig3 宿主），预算同样给 150s（冷启动要开页面等签名模块）。
+
+    /// <summary>展开 / 收起 @好友面板。</summary>
+    [RelayCommand]
+    private void ToggleKsMentionPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsKsMentionPanelOpen = !row.IsKsMentionPanelOpen;
+    }
+
+    /// <summary>按昵称搜索 @好友候选。空词原样发，由平台决定返回什么。</summary>
+    [RelayCommand]
+    private async Task SearchKsMentionsAsync(TargetRowViewModel? row) =>
+        await FetchKsMentionsAsync(row);
+
+    /// <summary>加入一个 @好友（面板保持展开 —— 多选是常态）。</summary>
+    [RelayCommand]
+    private void PickKsMention(KsMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsMentionCandidates.Contains(pick));
+        if (row is null) return;
+
+        if (!row.AddKsMention(pick.User))
+        {
+            row.KsMentionStatusText = $"「{pick.UserName}」已在 @ 列表里";
+            row.KsMentionStatusIsError = false;
+            return;
+        }
+
+        row.KsMentionStatusText =
+            $"已添加 @{pick.UserName}（发布时正文里会变成可点击的 @ 标签）";
+        row.KsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>移除一个已选 @好友。</summary>
+    [RelayCommand]
+    private void RemoveKsMention(KsMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsMentions.Contains(pick));
+        if (row is null) return;
+
+        row.RemoveKsMention(pick);
+        row.KsMentionStatusText = $"已移除 @{pick.UserName}";
+        row.KsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空已选 @好友（caption 不再带 @ HTML 片段）。</summary>
+    [RelayCommand]
+    private void ClearKsMentions(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasKsMentions) return;
+        row.ClearKsMentions();
+        row.KsMentionStatusText = "已清空 @好友 —— 本条不再提及任何人";
+        row.KsMentionStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 搜索 @好友候选。**永不抛** —— 失败 / 缺凭证只写状态行，不拦发布
+    /// （@好友是可选曝光项）。
+    /// </summary>
+    private async Task FetchKsMentionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsKsMentionBusy || !row.IsKuaishou) return;
+
+        row.IsKsMentionBusy = true;
+        row.KsMentionStatusText = "正在搜索快手用户…（首次要等平台签名准备，可能要几十秒）";
+        row.KsMentionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.KsMentionStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不 @ 好友也不影响发布）";
+                row.KsMentionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150));
+            var signerReady = await KuaishouSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var page = await new KuaishouMentionService(options)
+                .SearchAsync(creds.Cookie, row.KsMentionQuery.Trim(), ct: cts.Token);
+
+            row.SetKsMentionCandidates(page.Items);
+            row.KsMentionStatusText = page.Items.Count > 0
+                ? $"共 {page.Items.Count} 个用户 —— 点「选」加入 @ 列表"
+                  + (page.HasMore ? "（还有更多，换个更准的关键词）" : "")
+                : "没有搜到用户 —— 换个昵称再试";
+            row.KsMentionStatusIsError = page.Items.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.KsMentionStatusText = "搜索超时 —— 可重试（不 @ 好友也不影响发布）";
+            row.KsMentionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.KsMentionStatusText =
+                "搜索失败：" + ex.Message + " —— 稍后重试（不 @ 好友也不影响发布）";
+            row.KsMentionStatusIsError = true;
+            Log.Warning(ex, "[Publish] 快手 @好友搜索失败");
+        }
+        finally
+        {
+            row.IsKsMentionBusy = false;
+        }
+    }
+
+    // ═══ B站分区选择器（2026-11-10：human/type2/list）═══
+    // 投稿页的「分区」下拉 = human_type2（30 个领域）。旧版 tid 保持默认 / params 覆盖 ——
+    // archive/pre 的 typelist 对当前账号只回 20 个父分区（无子分区），tid ↔ human_type2
+    // 映射未知（抓包只有 1015 → 21 一个样本），不在 UI 里猜。
+
+    /// <summary>展开 / 收起分区面板；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleBiliPartitionPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsBiliPartitionPanelOpen = !row.IsBiliPartitionPanelOpen;
+        if (row.IsBiliPartitionPanelOpen && !row.HasBiliPartitionCandidates && !row.IsBiliPartitionBusy)
+            await FetchBiliPartitionsAsync(row);
+    }
+
+    /// <summary>重新拉 B站分区列表。</summary>
+    [RelayCommand]
+    private async Task RefreshBiliPartitionsAsync(TargetRowViewModel? row) =>
+        await FetchBiliPartitionsAsync(row);
+
+    /// <summary>选中一个分区 → 写 <c>human_type2</c> 并收起面板。</summary>
+    [RelayCommand]
+    private void PickBiliPartition(BiliTypePickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.BiliPartitionCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyPickedBiliPartition(pick.Type);
+        row.BiliPartitionStatusText = $"已选分区「{pick.Name}」";
+        row.BiliPartitionStatusIsError = false;
+        row.IsBiliPartitionPanelOpen = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>拉 B站分区列表（human_type2）。**永不抛** —— 失败写状态行，不打断编辑。</summary>
+    private async Task FetchBiliPartitionsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsBiliPartitionBusy || !row.IsBilibili) return;
+
+        row.IsBiliPartitionBusy = true;
+        row.BiliPartitionStatusText = "正在获取分区列表…";
+        row.BiliPartitionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.BiliPartitionStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不改分区也不影响发布）";
+                row.BiliPartitionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var types = await new BilibiliPartitionService(options)
+                .GetHumanTypesAsync(creds.Cookie, cts.Token);
+
+            row.SetBiliPartitionCandidates(types);
+            row.BiliPartitionStatusText = types.Count > 0
+                ? $"共 {types.Count} 个分区"
+                : "平台没有返回分区列表";
+            row.BiliPartitionStatusIsError = types.Count == 0;
+        }
+        catch (OperationCanceledException)
+        {
+            row.BiliPartitionStatusText = "请求超时 —— 可重试（不改分区也不影响发布）";
+            row.BiliPartitionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.BiliPartitionStatusText = "拉取失败：" + ex.Message + " —— 稍后重试（不改分区也不影响发布）";
+            row.BiliPartitionStatusIsError = true;
+            Log.Warning(ex, "[Publish] B站分区列表拉取失败");
+        }
+        finally
+        {
+            row.IsBiliPartitionBusy = false;
+        }
+    }
+
+    // ═══ 快手「专属领域 / 二级领域」选择器（2026-11-10：upload/domain/list）═══
+    // 平台领域是两级列表（专属领域 → 二级领域），页面加载就拉这份数据；
+    // 选中仍只写 KuaishouExtras.Domain / SecondDomain（wire 不变）。
+
+    /// <summary>展开 / 收起领域面板；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleKsDomainPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsKsDomainPanelOpen = !row.IsKsDomainPanelOpen;
+        if (row.IsKsDomainPanelOpen && !row.HasKsDomainCandidates && !row.IsKsDomainBusy)
+            await FetchKsDomainsAsync(row);
+    }
+
+    /// <summary>重新拉快手领域列表。</summary>
+    [RelayCommand]
+    private async Task RefreshKsDomainsAsync(TargetRowViewModel? row) =>
+        await FetchKsDomainsAsync(row);
+
+    /// <summary>选中一个专属领域 → 写 <c>domain</c> 并摊开二级领域（面板不收起，方便接着选二级）。</summary>
+    [RelayCommand]
+    private void PickKsDomain(KsDomainPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsDomainCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyKsFirstDomain(pick.Domain);
+        row.KsDomainStatusText = pick.HasSecond
+            ? $"已选专属领域「{pick.Name}」—— 可直接发布，或再选一个二级领域"
+            : $"已选专属领域「{pick.Name}」（该领域没有二级领域）";
+        row.KsDomainStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>选中一个二级领域 → 写 <c>secondDomain</c> 并收起面板。</summary>
+    [RelayCommand]
+    private void PickKsSecondDomain(KsSecondDomainPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsSecondDomainCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyKsSecondDomain(pick.Name);
+        row.KsDomainStatusText = $"已选「{row.KsDomainDisplay} / {pick.Name}」";
+        row.KsDomainStatusIsError = false;
+        row.IsKsDomainPanelOpen = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除两级领域（回到不下发）。</summary>
+    [RelayCommand]
+    private void ClearKsDomains(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasKsDomainOrSecond) return;
+        row.ClearKsDomains();
+        row.KsDomainStatusText = "已清除领域 —— 发布时不下发 domain / secondDomain";
+        row.KsDomainStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉快手领域列表。**永不抛** —— 失败写状态行，不打断编辑
+    /// （领域是可选项，账号没权限/接口挂了都不该拦发布）。
+    /// 预算 150s：快手签名宿主冷启动要开页面 + 等签名模块（同 KuaishouSignerService 预热上限）。
+    /// </summary>
+    private async Task FetchKsDomainsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsKsDomainBusy || !row.IsKuaishou) return;
+
+        row.IsKsDomainBusy = true;
+        row.KsDomainStatusText = "正在获取领域列表…（首次要等平台签名准备，可能要几十秒）";
+        row.KsDomainStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.KsDomainStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选领域也不影响发布）";
+                row.KsDomainStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150));
+            var signerReady = await KuaishouSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var domains = await new KuaishouDomainService(options)
+                .GetDomainsAsync(creds.Cookie, cts.Token);
+
+            row.SetKsDomainCandidates(domains);
+            row.KsDomainStatusText = domains.Count > 0
+                ? $"共 {domains.Count} 个专属领域"
+                : signerReady
+                    ? "平台没有返回领域列表 —— 可留空（发布页同款下拉也是空的）"
+                    : "平台没返回领域列表，且签名宿主未就绪 —— 稍后重试";
+            row.KsDomainStatusIsError = domains.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.KsDomainStatusText = "请求超时 —— 可重试（不选领域也不影响发布）";
+            row.KsDomainStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.KsDomainStatusText = "拉取失败：" + ex.Message + " —— 稍后重试（不选领域也不影响发布）";
+            row.KsDomainStatusIsError = true;
+            Log.Warning(ex, "[Publish] 快手领域列表拉取失败");
+        }
+        finally
+        {
+            row.IsKsDomainBusy = false;
+        }
+    }
+
+    // ═══ 快手「关联热点」选择器（B3 抓包 2026-11-11：hotspot/list）═══
+    // 热点不是自由文本 —— 平台只认自己的 hotspotId（+ hotspotConnectType:1），
+    // 所以做成「搜索 / 热门 → 点选」；不选 = 不参与热点（两个键都不下发）。
+
+    /// <summary>展开 / 收起热点面板；首次展开自动拉推荐热榜（点开即有内容）。</summary>
+    [RelayCommand]
+    private async Task ToggleKsHotspotPanelAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsKsHotspotPanelOpen = !row.IsKsHotspotPanelOpen;
+        if (row.IsKsHotspotPanelOpen && !row.HasKsHotspotCandidates && !row.IsKsHotspotBusy)
+            await FetchKsHotspotsAsync(row, trending: true, loadMore: false);
+    }
+
+    /// <summary>按关键词搜索热点（空关键词不请求，提示改用「热门」）。</summary>
+    [RelayCommand]
+    private async Task SearchKsHotspotsAsync(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        if (string.IsNullOrWhiteSpace(row.KsHotspotQuery))
+        {
+            row.KsHotspotStatusText = "先输入关键词，或点「热门」直接看推荐";
+            row.KsHotspotStatusIsError = false;
+            return;
+        }
+        await FetchKsHotspotsAsync(row, trending: false, loadMore: false);
+    }
+
+    /// <summary>拉推荐热榜（不传关键词）。</summary>
+    [RelayCommand]
+    private async Task FetchTrendingKsHotspotsAsync(TargetRowViewModel? row) =>
+        await FetchKsHotspotsAsync(row, trending: true, loadMore: false);
+
+    /// <summary>
+    /// 加载更多 —— 用上一次列表请求的关键词与游标。
+    /// 不读正在编辑的输入框（用户可能已经改了词，但列表里还是上一次的结果）。
+    /// </summary>
+    [RelayCommand]
+    private async Task LoadMoreKsHotspotsAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsKsHotspotBusy || !row.KsHotspotHasMore) return;
+        await FetchKsHotspotsAsync(row, trending: row.KsHotspotLastQuery.Length == 0, loadMore: true);
+    }
+
+    /// <summary>选中一条热点 → 写 <c>hotspotId</c>（+ 文案快照）并收起面板。</summary>
+    [RelayCommand]
+    private void PickKsHotspot(KsHotspotPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsHotspotCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyKsHotspot(pick.Item);
+        row.IsKsHotspotPanelOpen = false;
+        row.KsHotspotStatusText = $"已选热点「{pick.Content}」";
+        row.KsHotspotStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已选热点（回到不参与热点）。</summary>
+    [RelayCommand]
+    private void ClearKsHotspot(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasKsHotspot) return;
+        row.ClearKsHotspot();
+        row.KsHotspotStatusText = "已清除热点 —— 发布时不带 hotspotId";
+        row.KsHotspotStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    // ═══ 快手「作者服务 · 关联小程序」（2026-11-15 真页面抓包：relation/list → associateTasks）═══
+    // 平台要的是 relation/list 解析出的整个 associateTaskId 对象，所以做成
+    // 「粘小程序链接 → 解析 → 点选」；不选 = submit 不带 associateTasks 键。
+
+    /// <summary>展开 / 收起小程序面板。</summary>
+    [RelayCommand]
+    private void ToggleKsAssociatePanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsKsAssociatePanelOpen = !row.IsKsAssociatePanelOpen;
+    }
+
+    /// <summary>解析小程序链接（空链接不请求，直接提示）。</summary>
+    [RelayCommand]
+    private async Task SearchKsAssociateAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsKsAssociateBusy || !row.IsKuaishou) return;
+
+        var link = row.KsAssociateLink.Trim();
+        if (link.Length == 0)
+        {
+            row.KsAssociateStatusText = "先粘贴小程序页面链接（快手 APP → 小程序 → 右上角「复制页面链接」）";
+            row.KsAssociateStatusIsError = false;
+            return;
+        }
+
+        row.IsKsAssociateBusy = true;
+        row.KsAssociateStatusText = "正在解析小程序链接…（首次要等平台签名准备，可能要几十秒）";
+        row.KsAssociateStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.KsAssociateStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不关联也不影响发布）";
+                row.KsAssociateStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150));
+            var signerReady = await KuaishouSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var page = await new KuaishouRelationService(options)
+                .SearchAsync(creds.Cookie, link, ct: cts.Token);
+
+            row.SetKsAssociateCandidates(page.Items);
+            row.KsAssociateStatusText = page.Items.Count > 0
+                ? $"找到 {page.Items.Count} 个可关联小程序 —— 点「选」确认"
+                : "没有解析到小程序 —— 确认链接是从快手 APP 的小程序页面复制的";
+            row.KsAssociateStatusIsError = page.Items.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.KsAssociateStatusText = "请求超时 —— 可重试（不关联也不影响发布）";
+            row.KsAssociateStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.KsAssociateStatusText = "解析失败：" + ex.Message + " —— 稍后重试（不关联也不影响发布）";
+            row.KsAssociateStatusIsError = true;
+            Log.Warning(ex, "[Publish] 快手小程序链接解析失败");
+        }
+        finally
+        {
+            row.IsKsAssociateBusy = false;
+        }
+    }
+
+    /// <summary>选中一条解析结果 → 写 <c>associateTasks</c> 元素并收起面板。</summary>
+    [RelayCommand]
+    private void PickKsAssociate(KsRelationPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsAssociateCandidates.Contains(pick));
+        if (row is null) return;
+
+        row.ApplyKsAssociate(pick.Item, row.KsAssociateLink.Trim());
+        row.IsKsAssociatePanelOpen = false;
+        row.KsAssociateStatusText = $"已关联小程序「{pick.Title}」";
+        row.KsAssociateStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清除已关联小程序（发布时不带 <c>associateTasks</c>）。</summary>
+    [RelayCommand]
+    private void ClearKsAssociate(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasKsAssociate) return;
+        row.ClearKsAssociate();
+        row.KsAssociateStatusText = "已清除 — 发布时不带 associateTasks";
+        row.KsAssociateStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    // ═══ 快手「共同创作」（2026-11-15 发布页 bundle 定案：coPublishUser + 角色枚举）═══
+    // 选人搜索复用 at/search（bundle 的 FETCH_SEARCH_USER 与 @好友同端点）。
+
+    /// <summary>展开 / 收起共创面板。</summary>
+    [RelayCommand]
+    private void ToggleKsCoPublishPanel(TargetRowViewModel? row)
+    {
+        if (row is null) return;
+        row.IsKsCoPublishPanelOpen = !row.IsKsCoPublishPanelOpen;
+    }
+
+    /// <summary>搜索共创候选人（复用 at/search；关键词可空 —— 空词即平台默认列表）。</summary>
+    [RelayCommand]
+    private async Task SearchKsCoPublishAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsKsCoPublishBusy || !row.IsKuaishou) return;
+
+        row.IsKsCoPublishBusy = true;
+        row.KsCoPublishStatusText = "正在搜索快手用户…（首次要等平台签名准备，可能要几十秒）";
+        row.KsCoPublishStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.KsCoPublishStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不共创也不影响发布）";
+                row.KsCoPublishStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150));
+            var signerReady = await KuaishouSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            var page = await new KuaishouMentionService(options)
+                .SearchAsync(creds.Cookie, row.KsCoPublishQuery.Trim(), ct: cts.Token);
+
+            row.SetKsCoPublishCandidates(page.Items);
+            row.KsCoPublishStatusText = page.Items.Count > 0
+                ? $"共 {page.Items.Count} 个用户 —— 点「选」加入共创"
+                : "没有搜到用户 —— 换个昵称再试";
+            row.KsCoPublishStatusIsError = page.Items.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.KsCoPublishStatusText = "请求超时 —— 可重试（不共创也不影响发布）";
+            row.KsCoPublishStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.KsCoPublishStatusText = "搜索失败：" + ex.Message + " —— 稍后重试（不共创也不影响发布）";
+            row.KsCoPublishStatusIsError = true;
+            Log.Warning(ex, "[Publish] 快手共创用户搜索失败");
+        }
+        finally
+        {
+            row.IsKsCoPublishBusy = false;
+        }
+    }
+
+    /// <summary>加入一名共创（面板保持展开；同一用户已在列表里就提示）。</summary>
+    [RelayCommand]
+    private void PickKsCoPublish(KsMentionPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsCoPublishCandidates.Contains(pick));
+        if (row is null) return;
+
+        if (!row.AddKsCoPublish(pick.User))
+        {
+            row.KsCoPublishStatusText = $"「{pick.UserName}」已在共创列表里";
+            row.KsCoPublishStatusIsError = false;
+            return;
+        }
+
+        row.KsCoPublishStatusText =
+            $"已加入「{pick.UserName}」—— 可在右侧下拉里改角色（默认 / 作者 / 共创 / 出镜）";
+        row.KsCoPublishStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>移除一名已选共创。</summary>
+    [RelayCommand]
+    private void RemoveKsCoPublish(KsCoPublishPickViewModel? pick)
+    {
+        if (pick is null) return;
+        var row = TargetRows.FirstOrDefault(r => r.KsCoPublishUsers.Contains(pick));
+        if (row is null) return;
+
+        row.RemoveKsCoPublish(pick);
+        row.KsCoPublishStatusText = $"已移除「{pick.UserName}」";
+        row.KsCoPublishStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>清空共创（发布时 <c>coPublishUser</c> 为空数组）。</summary>
+    [RelayCommand]
+    private void ClearKsCoPublish(TargetRowViewModel? row)
+    {
+        if (row is null || !row.HasKsCoPublishUsers) return;
+        row.ClearKsCoPublish();
+        row.KsCoPublishStatusText = "已清空共创 —— 发布时 coPublishUser 为空数组";
+        row.KsCoPublishStatusIsError = false;
+        if (SelectedDraft is { } draft) RunPreflight(draft);
+    }
+
+    /// <summary>
+    /// 拉一批快手热点候选（搜索 / 热榜 / 翻页）。**永不抛** —— 失败写状态行，不打断编辑
+    /// （热点是可选曝光项，接口挂了不该拦发布）。
+    /// 预算 150s：快手签名宿主冷启动要开页面 + 等签名模块（同领域列表 / KuaishouSignerService 预热上限）。
+    /// </summary>
+    private async Task FetchKsHotspotsAsync(
+        TargetRowViewModel? row, bool trending, bool loadMore)
+    {
+        if (row is null || row.IsKsHotspotBusy || !row.IsKuaishou) return;
+
+        var keyword = loadMore ? row.KsHotspotLastQuery : row.KsHotspotQuery.Trim();
+        var cursor = loadMore ? row.KsHotspotNextCursor : KuaishouHotspotService.FirstCursor;
+
+        row.IsKsHotspotBusy = true;
+        row.KsHotspotStatusText = loadMore
+            ? "正在加载更多热点…"
+            : trending
+                ? "正在获取热门热点…（首次要等平台签名准备，可能要几十秒）"
+                : "正在搜索热点…";
+        row.KsHotspotStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.KsHotspotStatusText =
+                    "账号凭证不可用 —— 到「平台账号」重新登录后再试（不选热点也不影响发布）";
+                row.KsHotspotStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(150));
+            var signerReady = await KuaishouSignerService.PrepareAsync(options.SessionId, cts.Token);
+
+            // caption 与发布体同一份（页面也拿当前作品文案做相关性推荐）
+            var caption = SelectedDraft is { } draft
+                ? PublishPayloadBuilder.KuaishouCaption(draft, row.Params)
+                : "";
+
+            var page = await new KuaishouHotspotService(options)
+                .QueryAsync(creds.Cookie, keyword, caption, cursor, cts.Token);
+
+            row.SetKsHotspotCandidates(page.Items, page.NextCursor, append: loadMore);
+            row.KsHotspotLastQuery = keyword;
+            row.KsHotspotStatusText = page.Items.Count > 0
+                ? loadMore
+                    ? $"又加载 {page.Items.Count} 个热点（共 {row.KsHotspotCandidates.Count} 个）"
+                    : trending
+                        ? $"热门热点 {row.KsHotspotCandidates.Count} 个"
+                        : $"找到 {page.Items.Count} 个热点"
+                : loadMore
+                    ? "没有更多热点了"
+                    : trending
+                        ? "平台这次没有返回热门热点 —— 可换个关键词搜"
+                        : "没有搜到热点 —— 换个关键词再试";
+            row.KsHotspotStatusIsError = page.Items.Count == 0 && !signerReady;
+        }
+        catch (OperationCanceledException)
+        {
+            row.KsHotspotStatusText = "请求超时 —— 可重试（不选热点也不影响发布）";
+            row.KsHotspotStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.KsHotspotStatusText = "拉取失败：" + ex.Message + " —— 稍后重试（不选热点也不影响发布）";
+            row.KsHotspotStatusIsError = true;
+            Log.Warning(ex, "[Publish] 快手热点列表拉取失败");
+        }
+        finally
+        {
+            row.IsKsHotspotBusy = false;
+        }
+    }
+
+    // ═══ 头条发布权限（GetPublishAuth，2026-11-10）═══
+
+    /// <summary>
+    /// 检查头条账号的发布权限（赞赏 / 原创 / 禁发）—— 发布页初始化时页面自己拉的
+    /// <c>xigua/api/upload/GetPublishAuth</c>（抓包 <c>docs/toutiao/20261105</c>）。
+    /// **永不抛**：失败写状态行，不打断编辑。
+    ///
+    /// 存在的意义：「赞赏」开关在 <c>HasPraisePermission=false</c> 的账号上会被平台静默忽略，
+    /// 用户看不到任何反馈；查一次把结论摆出来（与原创 <c>ClaimOrigin</c> 同一条通道，
+    /// 2026-11-10 真账号回读两者都是 false）。
+    /// </summary>
+    [RelayCommand]
+    private async Task CheckToutiaoAuthAsync(TargetRowViewModel? row)
+    {
+        if (row is null || row.IsToutiaoAuthBusy || !row.IsToutiao) return;
+
+        row.IsToutiaoAuthBusy = true;
+        row.ToutiaoAuthStatusText = "正在查询账号发布权限…";
+        row.ToutiaoAuthStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(row.Target.SessionId);
+            if (creds?.Cookie is null)
+            {
+                row.ToutiaoAuthStatusText = "账号凭证不可用 —— 到「平台账号」重新登录后再试（不影响发布）";
+                row.ToutiaoAuthStatusIsError = true;
+                return;
+            }
+
+            var extra = CredentialFields.Extra(creds.ExtraDataJson);
+            var csrfToken = extra.GetValueOrDefault("csrfToken")?.ToString();
+            var options = new PlatformOptions
+            {
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+                SessionId = row.Target.SessionId,
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var raw = await new ToutiaoVideoService(options)
+                .GetPublishAuthRawAsync(creds.Cookie, csrfToken, cts.Token);
+
+            var auth = ToutiaoPublishAuthParser.Parse(raw);
+            if (auth is null)
+            {
+                row.ToutiaoAuthStatusText = "没能从平台响应里读出发布权限（形状可能变了）—— 可重试";
+                row.ToutiaoAuthStatusIsError = true;
+                return;
+            }
+
+            row.ToutiaoPraiseAllowed = auth.PraiseAllowed;
+            var parts = new List<string>();
+            if (auth.PublishDisabled == true) parts.Add("⚠ 平台已限制该账号发布");
+            parts.Add(auth.PraiseAllowed switch
+            {
+                true => "赞赏：可用",
+                false => "赞赏：无权限（开启会被平台静默忽略）",
+                null => "赞赏：权限未知",
+            });
+            parts.Add(auth.ClaimOriginAllowed switch
+            {
+                true => "原创：可用",
+                false => auth.NoClaimOriginReason is { Length: > 0 } reason
+                    ? $"原创：不可用（{reason}）"
+                    : "原创：无权限",
+                null => "原创：权限未知",
+            });
+            // 视频生成图文（A2）：入口由 TransferToArticleButtonShow 控制；
+            // 只有用户真的选了 1/2 且权限不可用时才标红（没选就不打扰）。
+            parts.Add(auth.TransferToArticleAllowed switch
+            {
+                true => "视频生成图文：可用",
+                false => "视频生成图文：不可用（平台不显示该入口）",
+                null => "视频生成图文：权限未知",
+            });
+            row.ToutiaoAuthStatusText = string.Join(" · ", parts);
+            row.ToutiaoAuthStatusIsError = auth.PublishDisabled == true
+                || auth.PraiseAllowed == false
+                || (auth.TransferToArticleAllowed == false
+                    && row.Params.Toutiao?.VideoTransArticleFlag is 1 or 2);
+        }
+        catch (OperationCanceledException)
+        {
+            row.ToutiaoAuthStatusText = "查询超时 —— 可重试（不影响发布）";
+            row.ToutiaoAuthStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            row.ToutiaoAuthStatusText = "查询失败：" + ex.Message + " —— 稍后重试（不影响发布）";
+            row.ToutiaoAuthStatusIsError = true;
+            Log.Warning(ex, "[Publish] 头条发布权限查询失败");
+        }
+        finally
+        {
+            row.IsToutiaoAuthBusy = false;
+        }
     }
 
     /// <summary>关键词搜索平台话题（抖音 / 快手 / 小红书）</summary>
@@ -1032,6 +3631,8 @@ public sealed partial class PublishViewModel
         draft.Declaration.Kind = kind;
         SyncDeclarationSelection();
         RefreshDeclarationSecondary();
+        // 头条卡的「跟随全局」预览与「自行拍摄」二级要跟着全局语义变（A1）
+        foreach (var row in TargetRows) row.SetGlobalDeclaration(kind);
         NotifyEditorComputed();   // 「转载/自行拍摄」的二级字段由 Kind 算出来，得跟着播报
         RunPreflight(draft);
         RefreshSummaryCounts();
@@ -1235,46 +3836,314 @@ public sealed partial class PublishViewModel
         }
     }
 
-    // ═══ 视频号「自行拍摄」的地区码（协议要整数码，不是名字）═══
+    // ═══ 视频号「自行拍摄」的地区（平台接口树：国家 → 省 → 市）═══
+    //
+    // 协议要的是整数码（shootInfo.countryCode / provinceCode / cityCode），以前是三个手填数字框
+    // —— 没人记得住 1017 / 10160 / 100032。平台接口 finder_get_object_tag_list 的 tagType=5
+    // 直接返回整棵地区树（页面「拍摄地点」选择器同一个数据源），所以改成级联选择。
+    // 数据源 = 当前条目第一个启用的视频号账号（与话题 / 位置解析同一条惯例）。
 
-    public string ShootCountryCode
+    /// <summary>地区面板是否展开（编辑器级：一次只编辑一条草稿）</summary>
+    [ObservableProperty] private bool _isWechatShootRegionPanelOpen;
+
+    [ObservableProperty] private bool _isWechatShootRegionBusy;
+
+    /// <summary>地区接口的状态行（加载结果 / 失败原因 / 层级提示）</summary>
+    [ObservableProperty] private string _wechatShootRegionStatusText = "";
+    [ObservableProperty] private bool _wechatShootRegionStatusIsError;
+
+    [ObservableProperty] private IReadOnlyList<WechatShootRegionOption> _wechatShootCountries = [];
+    [ObservableProperty] private IReadOnlyList<WechatShootRegionOption> _wechatShootProvinces = [];
+    [ObservableProperty] private IReadOnlyList<WechatShootRegionOption> _wechatShootCities = [];
+
+    /// <summary>
+    /// 三个下拉的选中序号（-1 = 未选）。级联只绑 <c>SelectedIndex</c> ——
+    /// Avalonia 换掉 ItemsSource 会把 SelectedItem 清空，绑它选择会来回丢。
+    /// </summary>
+    [ObservableProperty] private int _wechatShootCountryIndex = -1;
+    [ObservableProperty] private int _wechatShootProvinceIndex = -1;
+    [ObservableProperty] private int _wechatShootCityIndex = -1;
+
+    /// <summary>回填已存编码时抑制「写回草稿」（否则会把旧市码挂到新省下面）</summary>
+    private bool _wechatShootRegionRestoring;
+
+    public bool HasWechatShootRegionStatus => WechatShootRegionStatusText.Length > 0;
+
+    partial void OnWechatShootRegionStatusTextChanged(string value) =>
+        OnPropertyChanged(nameof(HasWechatShootRegionStatus));
+
+    public bool HasWechatShootProvinces => WechatShootProvinces.Count > 0;
+    partial void OnWechatShootProvincesChanged(IReadOnlyList<WechatShootRegionOption> value) =>
+        OnPropertyChanged(nameof(HasWechatShootProvinces));
+
+    public bool HasWechatShootCities => WechatShootCities.Count > 0;
+    partial void OnWechatShootCitiesChanged(IReadOnlyList<WechatShootRegionOption> value) =>
+        OnPropertyChanged(nameof(HasWechatShootCities));
+
+    /// <summary>已经选了地区（有国家码）——「清除拍摄地点」只在这时出现</summary>
+    public bool HasWechatShootRegionPicked =>
+        SelectedDraft?.Declaration.ShootRegion is { CountryCode: not null };
+
+    /// <summary>
+    /// 已选地区的中文展示；地区树还没拉过时退化成整数码（名称未知，不瞎编）。
+    /// </summary>
+    public string WechatShootRegionPickedText
     {
-        get => SelectedDraft?.Declaration.ShootRegion?.CountryCode?.ToString() ?? "";
-        set => SetShootRegion(country: value);
-    }
-
-    public string ShootProvinceCode
-    {
-        get => SelectedDraft?.Declaration.ShootRegion?.ProvinceCode?.ToString() ?? "";
-        set => SetShootRegion(province: value);
-    }
-
-    public string ShootCityCode
-    {
-        get => SelectedDraft?.Declaration.ShootRegion?.CityCode?.ToString() ?? "";
-        set => SetShootRegion(city: value);
-    }
-
-    private void SetShootRegion(string? country = null, string? province = null, string? city = null)
-    {
-        var d = SelectedDraft?.Declaration;
-        if (d is null) return;
-
-        var cur = d.ShootRegion ?? new RegionRef();
-        d.ShootRegion = cur with
+        get
         {
-            CountryCode = ParseOrNull(country) ?? cur.CountryCode,
-            ProvinceCode = ParseOrNull(province) ?? cur.ProvinceCode,
-            CityCode = ParseOrNull(city) ?? cur.CityCode,
-        };
-        OnPropertyChanged(nameof(ShootCountryCode));
-        OnPropertyChanged(nameof(ShootProvinceCode));
-        OnPropertyChanged(nameof(ShootCityCode));
+            var r = SelectedDraft?.Declaration.ShootRegion;
+            if (r is null || (r.CountryCode is null && r.ProvinceCode is null && r.CityCode is null))
+                return "尚未选择拍摄地点";
+            var parts = new List<string>();
+            if (r.CountryCode is int c) parts.Add(RegionLabel(WechatShootCountries, c, "国家"));
+            if (r.ProvinceCode is int p) parts.Add(RegionLabel(WechatShootProvinces, p, "省"));
+            if (r.CityCode is int ci) parts.Add(RegionLabel(WechatShootCities, ci, "市"));
+            return string.Join(" · ", parts);
+        }
     }
 
-    /// <summary>空串要落成 null（清零）而不是保留旧值 —— 用户删掉就是不想填</summary>
-    private static int? ParseOrNull(string? s) =>
-        int.TryParse(s?.Trim(), out var v) ? v : null;
+    private static string RegionLabel(IReadOnlyList<WechatShootRegionOption> list, int code, string level)
+    {
+        var hit = list.FirstOrDefault(o => o.Code == code);
+        return hit is null ? $"{level}码 {code}" : $"{hit.Display}（{code}）";
+    }
+
+    // ── 级联：换国家清省 / 市，换省清市；选到哪级就写到哪级 ──
+
+    partial void OnWechatShootCountryIndexChanged(int value)
+    {
+        var country = ItemAt(WechatShootCountries, value);
+        WechatShootProvinces = country?.Sub ?? [];
+        WechatShootProvinceIndex = -1;   // 触发省级处理器（清市）
+        if (!_wechatShootRegionRestoring)
+        {
+            ApplyWechatShootRegion(country, null);
+            UpdateWechatShootRegionHint();
+        }
+        NotifyWechatShootRegionChanged();
+    }
+
+    partial void OnWechatShootProvinceIndexChanged(int value)
+    {
+        var province = ItemAt(WechatShootProvinces, value);
+        WechatShootCities = province?.Sub ?? [];
+        WechatShootCityIndex = -1;
+        if (!_wechatShootRegionRestoring)
+        {
+            ApplyWechatShootRegion(null, province);
+            UpdateWechatShootRegionHint();
+        }
+        NotifyWechatShootRegionChanged();
+    }
+
+    partial void OnWechatShootCityIndexChanged(int value)
+    {
+        var city = ItemAt(WechatShootCities, value);
+        if (!_wechatShootRegionRestoring)
+        {
+            ApplyWechatShootRegion(null, null, city);
+            UpdateWechatShootRegionHint();
+        }
+        NotifyWechatShootRegionChanged();
+    }
+
+    private void NotifyWechatShootRegionChanged()
+    {
+        OnPropertyChanged(nameof(WechatShootRegionPickedText));
+        OnPropertyChanged(nameof(HasWechatShootRegionPicked));
+    }
+
+    private void ApplyWechatShootRegion(
+        WechatShootRegionOption? country, WechatShootRegionOption? province,
+        WechatShootRegionOption? city = null)
+    {
+        if (SelectedDraft is null) return;
+        var cur = SelectedDraft.Declaration.ShootRegion ?? new RegionRef();
+        SelectedDraft.Declaration.ShootRegion = country is not null
+            ? new RegionRef(country.Code, null, null)
+            : province is not null
+                ? cur with { ProvinceCode = province.Code, CityCode = null }
+                : city is not null
+                    ? cur with { CityCode = city.Code }
+                    : cur;
+    }
+
+    /// <summary>
+    /// 层级提示：某个国家 / 省在平台列表里没有下级时，明说「只下发到哪一级」
+    /// （直辖市没有城市子项 —— 这些行的市码按 0 下发，与旧手填口径一致）。
+    /// </summary>
+    private void UpdateWechatShootRegionHint()
+    {
+        if (_wechatShootRegionRestoring || WechatShootCountries.Count == 0) return;
+
+        var country = ItemAt(WechatShootCountries, WechatShootCountryIndex);
+        if (country is null)
+        {
+            WechatShootRegionStatusText = "";
+            WechatShootRegionStatusIsError = false;
+            return;
+        }
+        if (WechatShootProvinces.Count == 0)
+        {
+            WechatShootRegionStatusText = "该国家/地区在平台列表里没有下级省份 —— 只下发国家码（省 / 市按 0）";
+            WechatShootRegionStatusIsError = false;
+            return;
+        }
+        var province = ItemAt(WechatShootProvinces, WechatShootProvinceIndex);
+        if (province is not null && WechatShootCities.Count == 0)
+        {
+            WechatShootRegionStatusText = "该省份在平台列表里没有下级城市 —— 下发国家码 + 省码（市按 0）";
+            WechatShootRegionStatusIsError = false;
+            return;
+        }
+        WechatShootRegionStatusText = "";
+        WechatShootRegionStatusIsError = false;
+    }
+
+    /// <summary>展开 / 收起拍摄地区面板；首次展开自动拉列表。</summary>
+    [RelayCommand]
+    private async Task ToggleWechatShootRegionPanelAsync()
+    {
+        if (IsWechatShootRegionPanelOpen)
+        {
+            IsWechatShootRegionPanelOpen = false;
+            return;
+        }
+        IsWechatShootRegionPanelOpen = true;
+        if (WechatShootCountries.Count == 0) await LoadWechatShootRegionsAsync();
+    }
+
+    /// <summary>拉取平台地区树（finder_get_object_tag_list 的 tagType=5）。**永不抛**。</summary>
+    [RelayCommand]
+    private async Task LoadWechatShootRegionsAsync()
+    {
+        if (IsWechatShootRegionBusy) return;
+        var draft = SelectedDraft;
+        if (draft is null) return;
+
+        // 与话题 / 位置解析同一惯例：用该条目里第一个启用的视频号账号取凭证
+        var wx = draft.EnabledTargets.FirstOrDefault(t => t.PlatformKey == PlatformNames.WechatVideo);
+        if (wx is null)
+        {
+            WechatShootRegionStatusText = "本条目没有勾选视频号账号 —— 拉取不到地区列表";
+            WechatShootRegionStatusIsError = true;
+            return;
+        }
+
+        IsWechatShootRegionBusy = true;
+        WechatShootRegionStatusText = "正在拉取视频号「拍摄地点」列表…";
+        WechatShootRegionStatusIsError = false;
+        try
+        {
+            var creds = await PlatformSessionApi.GetCredentialsAsync(wx.SessionId);
+            if (creds?.Cookie is null)
+            {
+                WechatShootRegionStatusText = "视频号账号凭证不可用 —— 到「平台账号」重新登录后再试";
+                WechatShootRegionStatusIsError = true;
+                return;
+            }
+
+            var extra = CredentialFields.Extra(creds.ExtraDataJson);
+            var deviceId = extra.GetValueOrDefault("deviceId")?.ToString()
+                ?? extra.GetValueOrDefault("device_id")?.ToString() ?? "";
+            if (string.IsNullOrWhiteSpace(deviceId))
+            {
+                WechatShootRegionStatusText = "账号凭证里没有设备标识（deviceId）—— 到「平台账号」重新登录后再试";
+                WechatShootRegionStatusIsError = true;
+                return;
+            }
+
+            var options = new PlatformOptions
+            {
+                SessionId = wx.SessionId,
+                Environment = PublishResolver.ParseEnv(creds.ExtraDataJson),
+            };
+            var svc = new WechatVideoRegionService(options)
+            {
+                FinderId = CredentialFields.LocalStorageField(creds.LocalStorageJson, "finder_username"),
+            };
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var (countries, error) = await svc.GetRegionsAsync(creds.Cookie, deviceId, cts.Token);
+            if (error is not null)
+            {
+                WechatShootRegionStatusText = error;
+                WechatShootRegionStatusIsError = true;
+                return;
+            }
+
+            WechatShootCountries = [.. countries.Select(MapWechatShootRegion)];
+            RestoreWechatShootRegionSelection();
+            WechatShootRegionStatusText = $"已加载 {countries.Count} 个国家/地区（拍摄地点来自平台接口）";
+            WechatShootRegionStatusIsError = false;
+        }
+        catch (OperationCanceledException)
+        {
+            WechatShootRegionStatusText = "拉取超时 —— 可重试（不影响已填充的编码）";
+            WechatShootRegionStatusIsError = true;
+        }
+        catch (Exception ex)
+        {
+            WechatShootRegionStatusText = "拉取失败：" + ex.Message + " —— 稍后重试";
+            WechatShootRegionStatusIsError = true;
+            Log.Warning(ex, "[Publish] 视频号拍摄地区列表拉取失败");
+        }
+        finally
+        {
+            IsWechatShootRegionBusy = false;
+        }
+    }
+
+    /// <summary>把当前草稿里已存的编码回填到三个下拉（列表刷新 / 换条目时用）。</summary>
+    private void RestoreWechatShootRegionSelection()
+    {
+        var r = SelectedDraft?.Declaration.ShootRegion;
+        _wechatShootRegionRestoring = true;
+        try
+        {
+            // 强制先落 -1 再落目标值 —— 同值 setter 不触发回调，级联列表会停在旧内容
+            WechatShootCountryIndex = -1;
+            WechatShootCountryIndex = r?.CountryCode is int cc ? IndexOfRegion(WechatShootCountries, cc) : -1;
+            WechatShootProvinceIndex = r?.ProvinceCode is int pc ? IndexOfRegion(WechatShootProvinces, pc) : -1;
+            WechatShootCityIndex = r?.CityCode is int cit ? IndexOfRegion(WechatShootCities, cit) : -1;
+        }
+        finally { _wechatShootRegionRestoring = false; }
+        NotifyWechatShootRegionChanged();
+    }
+
+    /// <summary>清空拍摄地区（三个下拉一起回到未选）。</summary>
+    [RelayCommand]
+    private void ClearWechatShootRegion()
+    {
+        if (SelectedDraft is null) return;
+        SelectedDraft.Declaration.ShootRegion = null;
+
+        _wechatShootRegionRestoring = true;
+        try
+        {
+            WechatShootCountryIndex = -1;
+            WechatShootProvinceIndex = -1;
+            WechatShootCityIndex = -1;
+        }
+        finally { _wechatShootRegionRestoring = false; }
+
+        WechatShootRegionStatusText = "";
+        WechatShootRegionStatusIsError = false;
+        NotifyWechatShootRegionChanged();
+    }
+
+    private static WechatShootRegionOption? ItemAt(IReadOnlyList<WechatShootRegionOption> list, int index) =>
+        index >= 0 && index < list.Count ? list[index] : null;
+
+    private static int IndexOfRegion(IReadOnlyList<WechatShootRegionOption> list, int code)
+    {
+        for (var i = 0; i < list.Count; i++)
+            if (list[i].Code == code) return i;
+        return -1;
+    }
+
+    private static WechatShootRegionOption MapWechatShootRegion(WechatVideoRegion r) =>
+        new(r.Code, r.Name, [.. r.Sub.Select(MapWechatShootRegion)]);
 
     // ═══ 小红书「自行拍摄」地点（独立于「位置」的第二个地点概念）═══
 
@@ -2387,6 +5256,22 @@ public sealed partial class PrivacyUserRow : ObservableObject
     public required string Avatar { get; init; }
 
     [ObservableProperty] private bool _isSelected;
+}
+
+/// <summary>
+/// 视频号拍摄地区下拉项（国家 / 省 / 市）—— 名称给界面看，Code 是 shootInfo 里的整数码。
+/// 三级共用一种类型；<see cref="Sub"/> 是下一级列表（市为空列表）。
+/// </summary>
+public sealed class WechatShootRegionOption(int code, string name, IReadOnlyList<WechatShootRegionOption> sub)
+{
+    public int Code { get; } = code;
+    public string Name { get; } = name;
+    public IReadOnlyList<WechatShootRegionOption> Sub { get; } = sub;
+
+    /// <summary>列表展示名（平台偶尔给空名时退化成编码，别显示成一片空白）</summary>
+    public string Display => Name.Length > 0 ? Name : $"码 {Code}";
+
+    public override string ToString() => Display;
 }
 
 /// <summary>

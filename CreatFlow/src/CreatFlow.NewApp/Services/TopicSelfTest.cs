@@ -1,6 +1,7 @@
 using CreatFlow.Platforms.Core;
 using CreatFlow.Platforms.Kuaishou;
 using CreatFlow.Platforms.Topics;
+using CreatFlow.Platforms.WechatVideo;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -227,15 +228,79 @@ public static class TopicSelfTest
                 Check("没有 id → PlatformId=null", list[2].PlatformId is null);
             }
 
-            // ── 9. 视频号「无接口」 ──
+            // ── 9. 视频号「无话题接口 / 有活动搜索」 ──
             sb.AppendLine("\n[9] 视频号无接口标记");
             var wechat = new WechatVideoTopicApi(new PlatformOptions());
-            Check("Capability 明确无接口", !wechat.Capability.SupportsSearch
-                && !wechat.Capability.SupportsRecommend && !wechat.Capability.SupportsActivities);
+            Check("Capability 明确无话题接口", !wechat.Capability.SupportsSearch
+                && !wechat.Capability.SupportsRecommend);
             Check("NoInterfaceReason 文案非空", !string.IsNullOrWhiteSpace(wechat.Capability.NoInterfaceReason));
             var wxResult = wechat.SearchAsync(new PlatformCredentials("c=1"), new TopicQuery { Keyword = "x" })
                 .GetAwaiter().GetResult();
             Check("SearchAsync 返回原因而不是抛", wxResult.Items.Count == 0 && wxResult.Error is not null);
+
+            // 活动（2026-11-11 B2）：post/post_search_event → data.eventList[]
+            Check("视频号有官方活动能力（post_search_event）", wechat.Capability.SupportsActivities);
+            var noKeyword = wechat.ListAsync(new PlatformCredentials("c=1"),
+                new ActivityQuery { Title = " " }).GetAwaiter().GetResult();
+            Check("活动搜索：空关键词 → 明确原因、不编造列表（不触网）",
+                !noKeyword.Ok && noKeyword.Items.Count == 0
+                && noKeyword.Error!.Contains("关键词", StringComparison.Ordinal));
+
+            using (var evDoc = JsonDocument.Parse("""
+                {"eventList":[
+                  {"eventTopicId":"event/aaa","eventName":"萌宠日常","eventCreatorNickname":"我柴不要吃保底粮"},
+                  {"eventTopicId":"event/bbb","eventName":"","eventCreatorNickname":"x"},
+                  {"eventTopicId":"","eventName":"无 ID","eventCreatorNickname":"x"},
+                  {"eventTopicId":"event/ccc","eventName":"只有 ID","eventCreatorNickname":""}
+                ]}
+                """))
+            {
+                var evList = WechatVideoTopicApi.ParseEventList(evDoc.RootElement);
+                Check("eventList 映射：ID/名称/发起人；缺 ID 或缺名称的条目丢弃",
+                    evList.Count == 2
+                    && evList[0] is
+                    {
+                        Id: "event/aaa", Name: "萌宠日常",
+                        CreatorNickname: "我柴不要吃保底粮",
+                    }
+                    && evList[1] is { Id: "event/ccc", Name: "只有 ID", CreatorNickname: null },
+                    $"{evList.Count} 条：" + string.Join("|", evList.Select(e => e.Id + ":" + e.Name)));
+            }
+
+            using (var emptyDoc = JsonDocument.Parse("{}"))
+            {
+                Check("没有 eventList → 空列表（不抛）",
+                    WechatVideoTopicApi.ParseEventList(emptyDoc.RootElement).Count == 0);
+            }
+
+            // @好友候选（2026-11-11 B2 §5.2）：helper_search_finder_account → data.list[]
+            using (var mentionDoc = JsonDocument.Parse("""
+                {"list":[
+                  {"username":"v2_a@finder","nickName":"知鸭","headImgUrl":"https://x/a.png",
+                   "authImgUrl":"https://x/badge.png","authCompanyName":"某某公司"},
+                  {"username":"v2_a@finder","nickName":"知鸭重复"},
+                  {"username":"v2_b@finder","nickName":"","authCompanyName":"空昵称"},
+                  {"username":"v2_c@finder","nickName":"温史知新","authCompanyName":""}
+                ]}
+                """))
+            {
+                var people = WechatVideoMentionService.ParseUsers(mentionDoc.RootElement);
+                Check("helper_search_finder_account 映射：昵称必填 / username 去重 / 空公司名归 null",
+                    people.Count == 2
+                    && people[0] is
+                    {
+                        Nickname: "知鸭", Username: "v2_a@finder",
+                        AvatarUrl: "https://x/a.png", AuthCompanyName: "某某公司",
+                    }
+                    && people[1] is { Nickname: "温史知新", AuthCompanyName: null },
+                    $"{people.Count} 人：" + string.Join("|", people.Select(p => p.Nickname)));
+            }
+
+            using (var noListDoc = JsonDocument.Parse("""{"list":null}"""))
+            {
+                Check("没有 list → 空列表（不抛）",
+                    WechatVideoMentionService.ParseUsers(noListDoc.RootElement).Count == 0);
+            }
 
             // ── 10. 能力目录（UI 装配依据）──
             sb.AppendLine("\n[10] TopicServiceCatalog 能力矩阵");
@@ -244,11 +309,12 @@ public static class TopicSelfTest
                 TopicServiceCatalog.CreateTopicService(k, options).PlatformKey == k));
             Check("六平台活动服务都能构造", PlatformNames.All.All(k =>
                 TopicServiceCatalog.CreateActivityService(k, options).PlatformKey == k));
-            Check("活动支持面 = 抖音/快手/小红书/B站", PlatformNames.All
+            Check("活动支持面 = 抖音/快手/小红书/B站/视频号（头条没有）", PlatformNames.All
                 .Where(TopicServiceCatalog.SupportsActivities)
                 .OrderBy(x => x)
                 .SequenceEqual(new[] { PlatformNames.Bilibili, PlatformNames.Douyin,
-                    PlatformNames.Kuaishou, PlatformNames.Xiaohongshu }.OrderBy(x => x)));
+                    PlatformNames.Kuaishou, PlatformNames.Xiaohongshu, PlatformNames.WechatVideo }
+                    .OrderBy(x => x)));
             Check("只有 B站 有标签推荐", TopicServiceCatalog.CreateTagService(PlatformNames.Bilibili, options) is not null
                 && TopicServiceCatalog.CreateTagService(PlatformNames.Douyin, options) is null);
             Check("头条推荐依赖上传上下文；B站编辑阶段即可拉（upload_id=0 实测可用）",

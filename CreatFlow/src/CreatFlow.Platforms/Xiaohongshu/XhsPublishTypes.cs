@@ -274,6 +274,24 @@ public sealed class XhsPublishRequest
     /// <summary>PK 封面业务关联（**原始 JSON 数组串**）—— <c>video_info.pk_cover_biz_relations</c></summary>
     public string? PkCoverBizRelationsJson { get; init; }
 
+    /// <summary>
+    /// 群聊绑定 —— <c>business_binds.groupBind</c>（2026-11-15）。
+    /// null = 不关联；页面 bundle 的 wire 是 <c>{groupId,groupName,desc,avatar}</c>。
+    /// </summary>
+    public XhsGroupBind? GroupBind { get; init; }
+
+    /// <summary>
+    /// 视频标记 —— <c>video_info.timelines</c>（2026-11-15）。
+    /// 空表 = 不带（与旧发布体逐字一致）。
+    /// </summary>
+    public IReadOnlyList<XhsMarkerInput>? Markers { get; init; }
+
+    /// <summary>
+    /// 添加路线 —— <c>hash_tag</c> 的 <c>map_traver</c> + <c>common.biz_relations</c> 的
+    /// <c>POI_MAP_TRAVEL</c>（2026-11-15）。null = 不关联。
+    /// </summary>
+    public XhsRouteBind? RouteBind { get; init; }
+
     /// <summary>@ 用户（**原始 JSON 数组串**）—— <c>common.ats</c></summary>
     public string? AtsJson { get; init; }
 
@@ -283,6 +301,32 @@ public sealed class XhsPublishRequest
 
     /// <summary>业务关系（**原始 JSON 数组串**）—— <c>common.biz_relations</c></summary>
     public string? BizRelationsJson { get; init; }
+
+    // ═══ 互动组件（A4，2026-11-11）═══
+
+    /// <summary>
+    /// 投票 widget ID —— 发布前由 <see cref="XhsInteractionService.CreateVoteAsync"/> 现建，
+    /// 发布体挂进 <c>common.hash_tag</c>（末尾追加 <c>{"id","name","type":"INTERACT_VOTE"}</c>）。
+    /// null = 不带投票。
+    /// </summary>
+    public string? PollWidgetId { get; init; }
+
+    /// <summary>投票问题 —— hash_tag 条目的 <c>name</c>（与 <see cref="PollWidgetId"/> 同时给出才生效）。</summary>
+    public string? PollQuestion { get; init; }
+
+    // ═══ 引用笔记 + 关联活动（A5/A6，2026-11-11）═══
+
+    /// <summary>
+    /// 引用笔记 ID —— <c>optionRelationList</c> 追加 <c>REF_POST</c>。
+    /// 24 位十六进制；null/空/格式不对 = 不追加（<see cref="XhsRelationBinds.IsValidNoteId"/>）。
+    /// </summary>
+    public string? ReferencedNoteId { get; init; }
+
+    /// <summary>
+    /// 官方活动 —— <c>optionRelationList</c> 追加 <c>ACTIVITY_COMPONENT</c>（多个活动同一 relationList）。
+    /// 空表 / 非数字 ID 跳过；缺名称或起止时间只带已有字段。
+    /// </summary>
+    public IReadOnlyList<XhsActivityBind>? Activities { get; init; }
 
     // ═══ 视频元数据 ═══
 
@@ -302,6 +346,60 @@ public sealed record XhsTopicItem(string Id, string Name, string Type = "topic")
 
 /// <summary>小红书章节 —— 模型统一用毫秒；wire 上是 <c>{text, time:"&lt;毫秒字符串&gt;"}</c>。</summary>
 public sealed record XhsChapter(string Text, long StartMs);
+
+/// <summary>
+/// 群聊绑定（2026-11-15）—— <c>business_binds.groupBind</c> 的四个字段。
+/// 页面 bundle 逐字：选中写入 <c>{groupId, groupName, desc, avatar}</c>。
+/// </summary>
+public sealed record XhsGroupBind(
+    string GroupId,
+    string GroupName,
+    string? Desc = null,
+    string? Avatar = null);
+
+/// <summary>
+/// PK 封面的一张附加图（2026-11-15）—— 图片**已上传**后的 fileId + 像素尺寸。
+/// 发布体 <c>video_info.pk_cover_biz_relations</c> 的元素由
+/// <see cref="XhsPublishService.BuildPkCoverRelationsJson"/> 组装。
+/// </summary>
+public sealed record XhsPkCoverEntry(
+    string FileId,
+    int Width,
+    int Height,
+    bool IsSystem = false);
+
+/// <summary>
+/// 视频标记的输入（2026-11-15）—— <c>type</c> 是页面 bundle 的小写枚举：
+/// <c>user</c>（标记朋友）/ <c>location</c>（标记地点）。
+/// 时间是**秒**（发布体换算成毫秒）。
+/// </summary>
+public sealed record XhsMarkerInput(
+    string Id,
+    string Name,
+    string Type,
+    long StartSeconds,
+    long EndSeconds);
+
+/// <summary>
+/// 添加路线（2026-11-15）—— 已建路线的发布快照（<c>save/travel</c> 的返回值）。
+/// 发布体两处：<c>hash_tag</c> 追加 <c>{id,name,type:"map_traver"}</c>；
+/// <c>common.biz_relations</c> 追加 <c>biz_type:"POI_MAP_TRAVEL"</c>（页面 <c>travelSaved</c> 逐字）。
+/// </summary>
+public sealed record XhsRouteBind(
+    string TravelId,
+    string RouteName,
+    string TravelType = "singleRoute",
+    int PlanAmount = 1);
+
+/// <summary>
+/// 关联活动绑定（A6，2026-11-11）—— <c>optionRelationList</c> 里 <c>ACTIVITY_COMPONENT</c> 的一条。
+/// 起止时间是 Unix 毫秒（活动列表接口 <c>start_time/end_time</c> 同款）；缺就不写。
+/// </summary>
+public sealed record XhsActivityBind(
+    string Id,
+    string Name,
+    long? StartTimeMs = null,
+    long? EndTimeMs = null);
 
 /// <summary>小红书发布参数错误（本地校验失败；消息直接给用户看）。</summary>
 public sealed class XhsPublishException : Exception

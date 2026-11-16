@@ -1,3 +1,5 @@
+using CreatFlow.Platforms.Xiaohongshu;
+
 namespace CreatFlow.NewApp.Services;
 
 /// <summary>
@@ -35,6 +37,7 @@ internal static class PublishDraftFactory
                 // 这里再守一道，防止把内存里构造的旧形状预设播种进草稿时丢结构化话题/活动
                 clone.MigrateLegacyTopics();
                 clone.MigrateLegacyActivities();
+                clone.MigrateLegacyKuaishouChapters();
                 draft.Overrides[target.Key] = clone;
 
                 // 话题**单一来源**（2026-11-06）：账号预设里的历史话题并入草稿的全局话题列表。
@@ -76,6 +79,18 @@ internal static class PublishDraftFactory
         foreach (var topic in p.Topics)
             if (!draft.Topics.Contains(topic)) draft.Topics.Add(topic);
 
+        // 平台标签（2026-11-10）：B站投稿必填 ≥1（预检 Error）、头条 Label 同源，
+        // 其余平台不读。params 是内容级 → 写进每个目标的 Params.Tags（叠加在预设之上）。
+        if (p.Tags.Count > 0)
+        {
+            foreach (var target in draft.Targets)
+            {
+                var tp = draft.ParamsFor(target);
+                foreach (var tag in p.Tags)
+                    if (!tp.Tags.Contains(tag)) tp.Tags.Add(tag);
+            }
+        }
+
         ApplyStructuredTopics(draft, p);
 
         // 原创 2026-11-06 上提为全局字段（原先是落在小红书的账号参数上）。
@@ -96,20 +111,186 @@ internal static class PublishDraftFactory
             }
         }
 
-        // 头条长尾（阶段 5.6）：赞赏 / 模板 / 滤镜 —— 同样只写头条目标
-        if (p.ToutiaoPraise is not null || p.ToutiaoTemplate is not null || p.ToutiaoFilter is not null)
+        // B站字幕 / 互动引导卡片（B5，2026-11-15）：内容级 → 只写 B站目标。
+        // 字幕路径与「抖音横版封面」同口径：相对路径按发布单元的文件夹解析
+        // （params.txt 与 .srt 同目录时只写文件名就够）；解析不出来按原值走，
+        // 预检会以「文件不存在」报错，不会静默当成没写。
+        if (p.BilibiliSubtitleFile is not null || p.BilibiliSubtitleLan is not null
+            || p.BilibiliGuideCard is not null || p.BilibiliGuideCardStartSeconds is not null
+            || p.BilibiliRelatedVideo is not null || p.BilibiliRelatedVideoMsg is not null
+            || p.BilibiliRelatedVideoStartSeconds is not null
+            || p.BilibiliVoteQuestion is not null || p.BilibiliVoteOptions is not null
+            || p.BilibiliVoteStartSeconds is not null || p.BilibiliVoteDurationSeconds is not null)
+        {
+            string? subtitlePath = null;
+            if (!string.IsNullOrWhiteSpace(p.BilibiliSubtitleFile))
+            {
+                var raw = p.BilibiliSubtitleFile.Trim();
+                var subtitleBaseDir = draft.SourceFolder ?? Path.GetDirectoryName(draft.VideoPath);
+                subtitlePath = Path.IsPathRooted(raw) || string.IsNullOrEmpty(subtitleBaseDir)
+                    ? raw
+                    : Path.GetFullPath(Path.Combine(subtitleBaseDir, raw));
+            }
+
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Bilibili) continue;
+                var bp = draft.ParamsFor(target);
+                var extras = bp.Bilibili ??= new BilibiliExtras();
+                if (subtitlePath is not null) extras.SubtitleFile = subtitlePath;
+                if (!string.IsNullOrWhiteSpace(p.BilibiliSubtitleLan))
+                    extras.SubtitleFileLan = p.BilibiliSubtitleLan.Trim();
+                if (p.BilibiliGuideCard is { } card)
+                {
+                    extras.GuideCardEnabled = card;
+                    // 关掉时别留着上一份样式 —— 下次再打开不会莫名变成「仅关注」
+                    if (!card) extras.GuideCardFollowType = null;
+                }
+                if (p.BilibiliGuideCardFollowType is { } followType)
+                    extras.GuideCardFollowType = followType;
+                if (p.BilibiliGuideCardStartSeconds is { } startSeconds)
+                    extras.GuideCardStartSeconds = startSeconds;
+
+                // 卡片 v2（2026-11-15 B5.2）：关联视频 / 投票弹幕 ——
+                // params 写了键就视为开启（B站关联视频 / B站投票 的值不可能为空 ——
+                // 空值在解析层就按「没写」处理了）。
+                if (p.BilibiliRelatedVideo is { } relatedBvid)
+                {
+                    extras.RelatedVideoEnabled = true;
+                    extras.RelatedVideoBvid = relatedBvid.Trim();
+                }
+                if (p.BilibiliRelatedVideoMsg is { } relatedMsg)
+                    extras.RelatedVideoMsg = relatedMsg.Trim();
+                if (p.BilibiliRelatedVideoStartSeconds is { } relatedStart)
+                    extras.RelatedVideoStartSeconds = relatedStart;
+
+                if (p.BilibiliVoteQuestion is { } voteQuestion)
+                {
+                    extras.VoteEnabled = true;
+                    extras.VoteQuestion = voteQuestion.Trim();
+                }
+                if (p.BilibiliVoteOptions is { Count: > 0 } voteOptions)
+                {
+                    extras.VoteOptionA = voteOptions.ElementAtOrDefault(0);
+                    extras.VoteOptionB = voteOptions.ElementAtOrDefault(1);
+                    extras.VoteOptionC = voteOptions.ElementAtOrDefault(2);
+                    extras.VoteOptionD = voteOptions.ElementAtOrDefault(3);
+                }
+                if (p.BilibiliVoteStartSeconds is { } voteStart)
+                    extras.VoteStartSeconds = voteStart;
+                if (p.BilibiliVoteDurationSeconds is { } voteDuration)
+                    extras.VoteDurationSeconds = voteDuration;
+            }
+        }
+
+        // 头条长尾（阶段 5.6 / A2）：赞赏 / 模板 / 滤镜 / 视频生成图文 —— 同样只写头条目标
+        if (p.ToutiaoPraise is not null || p.ToutiaoTemplate is not null
+            || p.ToutiaoFilter is not null || p.ToutiaoVideoTransArticle is not null)
         {
             foreach (var target in draft.Targets)
             {
                 if (target.PlatformKey != PlatformNames.Toutiao) continue;
                 var tp = draft.ParamsFor(target);
                 if (p.ToutiaoPraise is { } praise) tp.Praise = praise;
-                if (p.ToutiaoTemplate is not null || p.ToutiaoFilter is not null)
+                if (p.ToutiaoTemplate is not null || p.ToutiaoFilter is not null
+                    || p.ToutiaoVideoTransArticle is not null)
                 {
                     var extras = tp.Toutiao ??= new ToutiaoExtras();
                     if (p.ToutiaoTemplate is { } template) extras.TemplateName = template;
                     if (p.ToutiaoFilter is { } filter) extras.FilterName = filter;
+                    // 0 = 不生成（存 0；组装时归一到 null，不会下发）
+                    if (p.ToutiaoVideoTransArticle is { } trans)
+                        extras.VideoTransArticleFlag = trans;
                 }
+            }
+        }
+
+        // 抖音横版封面（D1，2026-11-14）：内容级 → 写进每个抖音目标。
+        // 相对路径按**发布单元的文件夹**解析（params.txt 与图同目录时只写文件名就够）；
+        // 绝对路径原样用。解析不出来（没 SourceFolder 也不是绝对路径）就按原值走，
+        // 预检会以「文件不存在」报 Warning，不会静默当成没写。
+        if (!string.IsNullOrWhiteSpace(p.DouyinLandscapeCover))
+        {
+            var raw = p.DouyinLandscapeCover.Trim();
+            var baseDir = draft.SourceFolder ?? Path.GetDirectoryName(draft.VideoPath);
+            var path = Path.IsPathRooted(raw) || string.IsNullOrEmpty(baseDir)
+                ? raw
+                : Path.GetFullPath(Path.Combine(baseDir, raw));
+
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Douyin) continue;
+                var dp = draft.ParamsFor(target);
+                (dp.Douyin ??= new DouyinExtras()).CoverLandscapePath = path;
+            }
+        }
+
+        // 快手封面文字样式（P3，2026-11-15）：内容级 → 只写快手目标。
+        // 取值未验证（编辑提交里恒为空串）；留空/不写 = 不下发（官方发布页就是不发）。
+        if (!string.IsNullOrWhiteSpace(p.KuaishouCoverTitleStyle))
+        {
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Kuaishou) continue;
+                var kp = draft.ParamsFor(target);
+                (kp.Kuaishou ??= new KuaishouExtras()).CoverTitleStyle =
+                    p.KuaishouCoverTitleStyle.Trim();
+            }
+        }
+
+        // 章节（D1）：抖音 / 快手 / 小红书共用 PlatformParams.Chapters —— 只写消费这个字段的
+        // 三家，其余平台连 ParamsFor 都不碰（否则会给它们造出与预设相同的空覆盖，
+        // UI 上莫名显示「已覆盖预设」，同 B站分区 / 头条长尾的分发口径）。
+        if (p.Chapters.Count > 0)
+        {
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Douyin
+                    && target.PlatformKey != PlatformNames.Kuaishou
+                    && target.PlatformKey != PlatformNames.Xiaohongshu) continue;
+                draft.ParamsFor(target).Chapters = [.. p.Chapters];
+            }
+        }
+
+        // 视频号 @好友（W5，2026-11-14）：内容级 → 只写视频号目标；平台只认昵称。
+        if (p.WechatMentionUsers.Count > 0)
+        {
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.WechatVideo) continue;
+                var wp = draft.ParamsFor(target);
+                (wp.WechatVideo ??= new WechatVideoExtras()).MentionUsers =
+                    [.. p.WechatMentionUsers.Select(n => new WechatVideoMentionRef(n))];
+            }
+        }
+
+        // 小红书 @用户（P5，2026-11-15）：内容级 → 只写小红书目标。发布体 common.ats
+        // 由 BuildAtsJson 按页面条目形状 {nickname,userId,userid} 组装；正文末尾的
+        // 「@昵称」由 XhsCaption 按同一份 Ats 补写（与编辑器选择器同一条链）。
+        if (p.XhsMentions.Count > 0 && XhsMentionService.BuildAtsJson(p.XhsMentions) is { } xhsAts)
+        {
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Xiaohongshu) continue;
+                var xp = draft.ParamsFor(target);
+                (xp.Xhs ??= new XhsExtras()).Ats = xhsAts;
+            }
+        }
+
+        // 快手专属领域（P3/P5，2026-11-15）：内容级 → 只写快手目标；
+        // submit.domain / submit.secondDomain 两个键，留空不下发（serviced 侧归一为空串）。
+        if (!string.IsNullOrWhiteSpace(p.KuaishouDomain)
+            || !string.IsNullOrWhiteSpace(p.KuaishouSecondDomain))
+        {
+            foreach (var target in draft.Targets)
+            {
+                if (target.PlatformKey != PlatformNames.Kuaishou) continue;
+                var kp = draft.ParamsFor(target);
+                var extras = kp.Kuaishou ??= new KuaishouExtras();
+                if (!string.IsNullOrWhiteSpace(p.KuaishouDomain))
+                    extras.Domain = p.KuaishouDomain.Trim();
+                if (!string.IsNullOrWhiteSpace(p.KuaishouSecondDomain))
+                    extras.SecondDomain = p.KuaishouSecondDomain.Trim();
             }
         }
     }

@@ -1,6 +1,7 @@
 ﻿using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Markup.Xaml;
 using Avalonia.Media;
@@ -13,7 +14,9 @@ using CreatFlow.NewApp.Views;
 using CreatFlow.LocalStore;
 using CreatFlow.Media.Llm;
 using CreatFlow.Platforms.Download;
+using CreatFlow.Platforms.Douyin;
 using CreatFlow.Platforms.Kuaishou;
+using CreatFlow.Platforms.WechatVideo;
 using CreatFlow.Platforms.Xiaohongshu;
 using Microsoft.Extensions.DependencyInjection;
 using System.Threading.Tasks;
@@ -42,9 +45,56 @@ public partial class App : Avalonia.Application
 
     /// <summary>--probe-kuaishou-work：快手回查探针（App 启动后开隐藏 WebView 跑）</summary>
     public static bool ProbeKuaishou;
+    public static bool ProbeKuaishouDomains;
     public static string? ProbeKuaishouKeyword;
     public static long? ProbeKuaishouPublishId;
     public static string? ProbeKuaishouPhoto;
+    /// <summary>--probe-kuaishou-work --mention 关键词：@好友候选搜索（只读）</summary>
+    public static string? ProbeKuaishouMentionKeyword;
+    /// <summary>--probe-publish --kuaishou-mention 昵称|userId（探针没有 @ 选择器 → 显式注入）</summary>
+    public static string? ProbeKuaishouMention;
+
+    /// <summary>小红书笔记详情回读探针（--probe-xhs-note &lt;noteId&gt;；签名宿主需要 Avalonia 起来）</summary>
+    public static string? ProbeXhsNote;
+
+    /// <summary>小红书视频标记标签搜索探针（--probe-xhs-label &lt;关键词&gt;）</summary>
+    public static string? ProbeXhsLabel;
+
+    /// <summary>标记标签搜索类型（--label-type user|poi；默认 user）</summary>
+    public static string? ProbeXhsLabelType;
+
+    /// <summary>小红书添加路线探针（--probe-xhs-route &lt;关键词1,关键词2[,关键词3]&gt;）</summary>
+    public static string? ProbeXhsRoute;
+
+    /// <summary>路线名（--route-name；缺省「探针路线MMddHHmm」）</summary>
+    public static string? ProbeXhsRouteName;
+
+    /// <summary>真账号发布探针（--probe-publish &lt;发布单元目录&gt;；页面宿主需要 Avalonia 起来）</summary>
+    public static string? ProbePublishUnit;
+
+    /// <summary>真账号删除探针（--probe-delete &lt;platform:videoId,…&gt;；签名宿主需要 Avalonia 起来）</summary>
+    public static string? ProbeDeleteSpec;
+
+    /// <summary>发布探针的目标平台白名单（--platforms douyin,bilibili；空 = 六平台全发）</summary>
+    public static string? ProbePublishPlatforms;
+
+    /// <summary>发布探针把头条改成存草稿（--toutiao-draft；验证「视频生成图文 = 仅保存草稿」）</summary>
+    public static bool ProbePublishToutiaoDraft;
+
+    /// <summary>发布探针：小红书群聊（--xhs-group 群ID|群名|描述|头像；探针没有选择器）</summary>
+    public static string? ProbeXhsGroup;
+
+    /// <summary>发布探针：小红书 PK 封面附加图（--xhs-pk-cover 路径1;路径2）</summary>
+    public static string? ProbeXhsPkCover;
+
+    /// <summary>发布探针：小红书视频标记（--xhs-marker 类型|ID|名称|起|止，可重复）</summary>
+    public static List<string> ProbeXhsMarkers = [];
+
+    /// <summary>发布探针：小红书添加路线（--xhs-route travelId|路线名|类型|段数）</summary>
+    public static string? ProbeXhsRouteBind;
+
+    /// <summary>发布探针给视频号注入官方活动（--wechat-event 名称|创建者昵称|活动ID）</summary>
+    public static string? ProbeWechatEvent;
 
     /// <summary>全局 DI 容器（App.OnFrameworkInitializationCompleted 构建）</summary>
     public static IServiceProvider Services { get; private set; } = null!;
@@ -368,6 +418,31 @@ public partial class App : Avalonia.Application
                 // 快手回查探针：签名模块只在页面里 → 开隐藏 WebView 跑
                 _ = RunKuaishouProbeAsync(desktop);
             }
+            else if (ProbeXhsNote is { } xhsNoteId)
+            {
+                // 小红书笔记回读探针：x-s 签名宿主只在页面里 → 开隐藏 WebView 跑
+                _ = RunXhsNoteProbeAsync(desktop, xhsNoteId);
+            }
+            else if (ProbeXhsLabel is { } xhsLabel)
+            {
+                // 小红书标记标签搜索探针：同一签名宿主（响应结构待补）
+                _ = RunXhsLabelProbeAsync(desktop, xhsLabel);
+            }
+            else if (ProbeXhsRoute is { } xhsRouteKeywords)
+            {
+                // 小红书添加路线探针：POI 搜索 → 算路 → save/travel（空 polygon 优先）
+                _ = RunXhsRouteProbeAsync(desktop, xhsRouteKeywords);
+            }
+            else if (ProbePublishUnit is { } publishUnit)
+            {
+                // 真账号发布探针：抖音/快手/小红书页面宿主 → 各开隐藏 WebView
+                _ = RunPublishProbeAsync(desktop, publishUnit);
+            }
+            else if (ProbeDeleteSpec is { } deleteSpec)
+            {
+                // 真账号删除探针：快手/小红书签名宿主 → 开隐藏 WebView
+                _ = RunDeleteProbeAsync(desktop, deleteSpec);
+            }
             else if (SmokeMode)
             {
                 RunSmokeAsync(desktop);
@@ -421,13 +496,121 @@ public partial class App : Avalonia.Application
         }
     }
 
+    private async Task RunPublishProbeAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, string unitDir)
+    {
+        var code = 9;
+        try
+        {
+            code = await PublishProbe.RunAsync(
+                unitDir, ProbePublishPlatforms, ProbeSessionId, ProbePublishToutiaoDraft,
+                ProbeWechatEvent, ProbeKuaishouMention,
+                ProbeXhsGroup, ProbeXhsPkCover, ProbeXhsMarkers, ProbeXhsRouteBind);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[PublishProbe] 未捕获异常");
+        }
+        finally
+        {
+            Log.Information("[PublishProbe] 退出码 {Code}", code);
+            Log.CloseAndFlush();
+            desktop.Shutdown(code);
+        }
+    }
+
+    private async Task RunDeleteProbeAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, string spec)
+    {
+        var code = 9;
+        try
+        {
+            code = await DeleteProbe.RunAsync(spec, ProbeSessionId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[DeleteProbe] 未捕获异常");
+        }
+        finally
+        {
+            Log.Information("[DeleteProbe] 退出码 {Code}", code);
+            Log.CloseAndFlush();
+            desktop.Shutdown(code);
+        }
+    }
+
+    private async Task RunXhsNoteProbeAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, string noteId)
+    {
+        var code = 9;
+        try
+        {
+            code = await XhsNoteProbe.RunAsync(noteId, ProbeSessionId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[XhsNoteProbe] 未捕获异常");
+        }
+        finally
+        {
+            Log.Information("[XhsNoteProbe] 退出码 {Code}", code);
+            Log.CloseAndFlush();
+            desktop.Shutdown(code);
+        }
+    }
+
+    private async Task RunXhsLabelProbeAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, string keyword)
+    {
+        var code = 9;
+        try
+        {
+            code = await XhsNoteProbe.RunLabelAsync(
+                keyword,
+                string.IsNullOrWhiteSpace(ProbeXhsLabelType) ? "user" : ProbeXhsLabelType!,
+                ProbeSessionId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[XhsLabelProbe] 未捕获异常");
+        }
+        finally
+        {
+            Log.Information("[XhsLabelProbe] 退出码 {Code}", code);
+            Log.CloseAndFlush();
+            desktop.Shutdown(code);
+        }
+    }
+
+    private async Task RunXhsRouteProbeAsync(
+        IClassicDesktopStyleApplicationLifetime desktop, string keywordsCsv)
+    {
+        var code = 9;
+        try
+        {
+            code = await XhsNoteProbe.RunRouteAsync(
+                keywordsCsv, ProbeXhsRouteName, ProbeSessionId);
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[XhsRouteProbe] 未捕获异常");
+        }
+        finally
+        {
+            Log.Information("[XhsRouteProbe] 退出码 {Code}", code);
+            Log.CloseAndFlush();
+            desktop.Shutdown(code);
+        }
+    }
+
     private async Task RunKuaishouProbeAsync(IClassicDesktopStyleApplicationLifetime desktop)
     {
         var code = 9;
         try
         {
             code = await KuaishouWorkProbe.RunAsync(
-                ProbeKuaishouKeyword, ProbeKuaishouPublishId, ProbeKuaishouPhoto, ProbeSessionId);
+                ProbeKuaishouKeyword, ProbeKuaishouPublishId, ProbeKuaishouPhoto, ProbeSessionId,
+                ProbeKuaishouDomains, ProbeKuaishouMentionKeyword);
         }
         catch (Exception ex)
         {
@@ -1438,6 +1621,12 @@ public partial class App : Avalonia.Application
                             // 头条（阶段 5.6）：赞赏 / 长尾
                             topicDraft.Targets.Add(new PublishTarget(
                                 PlatformNames.Toutiao, Guid.NewGuid(), "冒烟头条号"));
+                            // 小红书（2026-11-10）：@用户选择器 / 速览合集所在卡
+                            topicDraft.Targets.Add(new PublishTarget(
+                                PlatformNames.Xiaohongshu, Guid.NewGuid(), "冒烟小红书号"));
+                            // 快手（P3 2026-11-11）：章节文本框 → 共享 Chapters
+                            topicDraft.Targets.Add(new PublishTarget(
+                                PlatformNames.Kuaishou, Guid.NewGuid(), "冒烟快手号"));
                             pv.EditDraftCommand.Execute(topicDraft);
                             await Task.Delay(250);
 
@@ -1447,6 +1636,406 @@ public partial class App : Avalonia.Application
                                 r.Target.PlatformKey == PlatformNames.WechatVideo);
                             if (dyRow is null || wxRow is null)
                                 throw new InvalidOperationException("[smoke] 话题块：造景目标没进平台卡");
+
+                            // 抖音「添加标签」（2026-11-11 抓包）：类型 chip / 能力位禁用 / 选中写回 / 清除。
+                            // **零网络**：只走行上 VM，不调用需要平台接口的命令（搜索/确认留在 P5 真账号）。
+                            if (dyRow.AnchorTypes.Count != 4
+                                || dyRow.AnchorTypes.All(t => t.Type != DouyinAnchorTypes.Applet)
+                                || dyRow.AnchorDisplay != "未选择"
+                                || dyRow.SelectedAnchorType != DouyinAnchorTypes.Movie)
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：类型 chip 初始态不对");
+                            dyRow.SelectAnchorType(DouyinAnchorTypes.Spu);
+                            if (dyRow.SelectedAnchorType != DouyinAnchorTypes.Spu)
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：类型切换没生效");
+                            dyRow.SetAnchorCapabilities(new DouyinAnchorCapabilities(
+                                [DouyinAnchorTypes.Movie, DouyinAnchorTypes.Spu],
+                                new Dictionary<int, string>
+                                {
+                                    [DouyinAnchorTypes.Game] = "本账号不可用",
+                                }));
+                            var gameChip = dyRow.AnchorTypes.First(t => t.Type == DouyinAnchorTypes.Game);
+                            if (gameChip.IsEnabled || !gameChip.HasReason)
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：能力位禁用没生效");
+                            dyRow.ApplyPickedAnchor(new DouyinAnchorCandidate(
+                                DouyinAnchorTypes.Spu, "7136", "手机的规矩"));
+                            if (!dyRow.HasAnchor
+                                || dyRow.Params.Douyin?.Anchor is not { Id: "7136" }
+                                || !dyRow.AnchorDisplay.Contains(DouyinAnchorTypes.Label(DouyinAnchorTypes.Spu))
+                                || !dyRow.SummaryText.Contains("标签「手机的规矩」", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：选中没写回 Params/摘要");
+                            dyRow.ClearAnchor();
+                            if (dyRow.HasAnchor || dyRow.Params.Douyin?.Anchor is not null)
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：清除没生效");
+
+                            // 小程序标签（2026-11-11 补抓）：选中写回 Content（发布时 extra 透传）
+                            dyRow.ApplyPickedAnchor(new DouyinAnchorCandidate(
+                                DouyinAnchorTypes.Applet, "tt3a9d4c20a5a4387002", "躺平发育",
+                                Subtitle: "猛鬼宿舍", Content: """{"Title":"猛鬼宿舍"}"""));
+                            if (dyRow.Params.Douyin?.Anchor is not { Type: 4, Id: "tt3a9d4c20a5a4387002", Content: not null }
+                                || !dyRow.AnchorDisplay.Contains("小程序", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音添加标签：小程序选中没写回");
+                            dyRow.ClearAnchor();
+                            Console.WriteLine("[smoke] 发布页：抖音添加标签（类型/能力位/选中/小程序/清除）OK");
+
+                            // 抖音封面双槽 · 横版 4:3（B1 抓包 2026-11-11）：TEMP 造景、零网络。
+                            // 卡片默认折叠 → 先展开，内层模板才会实例化（按钮才找得到）。
+                            dyRow.IsExpanded = true;
+                            await Task.Delay(250);
+                            if (dyRow.HasDouyinLandscapeCover
+                                || dyRow.DouyinLandscapeCoverDisplay != "未选择（不单独下发）")
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音横版封面：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.PickDouyinLandscapeCoverCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音横版封面「选择」按钮没接上命令");
+
+                            var landscapeSmoke = Path.Combine(Path.GetTempPath(),
+                                $"smoke-dy-landscape-{Guid.NewGuid():N}.jpg");
+                            File.WriteAllText(landscapeSmoke, "smoke");
+                            dyRow.ApplyDouyinLandscapeCover(landscapeSmoke);
+                            await Task.Delay(150);
+                            if (!dyRow.HasDouyinLandscapeCover
+                                || dyRow.Params.Douyin?.CoverLandscapePath != landscapeSmoke
+                                || dyRow.DouyinLandscapeCoverDisplay != Path.GetFileName(landscapeSmoke))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音横版封面：选中没写回 Params / 展示没更新");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ClearDouyinLandscapeCoverCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音横版封面「清除」按钮没接上命令");
+
+                            pv.ClearDouyinLandscapeCoverCommand.Execute(dyRow);
+                            await Task.Delay(150);
+                            if (dyRow.HasDouyinLandscapeCover
+                                || dyRow.Params.Douyin?.CoverLandscapePath is not null)
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音横版封面：清除没生效");
+                            try { File.Delete(landscapeSmoke); } catch { /* 临时夹具，删不掉无碍 */ }
+                            Console.WriteLine(
+                                "[smoke] 发布页：抖音封面双槽·横版 4:3（选择 / 写回 / 清除接线）OK");
+
+                            // ── 抖音 @好友（2026-11-11 补抓 discover/search）：TEMP 造景、零网络 ──
+                            // 验六件事：卡上「选择」/ 面板「搜索」按钮接线、面板开关、
+                            // 候选「选」写回 MentionUsers、行展示、发布体三件套
+                            // （mentions JSON + 正文补 @昵称 + text_extra at_source）、
+                            // 移除 / 清空、旧 raw mentions JSON 种子化。
+                            // 搜索命令真发签名请求 —— 不执行；候选直接注入。
+                            if (dyRow.HasDouyinMentions || dyRow.DouyinMentionDisplay != "未选择")
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ToggleDouyinMentionPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友「选择」按钮没接上命令");
+                            pv.ToggleDouyinMentionPanelCommand.Execute(dyRow);
+                            await Task.Delay(150);
+                            if (!dyRow.IsDouyinMentionPanelOpen)
+                                throw new InvalidOperationException("[smoke] 抖音 @好友面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.SearchDouyinMentionsCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友「搜索」按钮没接上命令");
+
+                            dyRow.SetDouyinMentionCandidates(
+                            [
+                                new DouyinMentionUser("u-dy-smoke-1", "冒烟好友", "dyid-1",
+                                    "556", null, "简介"),
+                                new DouyinMentionUser("u-dy-smoke-2", "冒烟阿明"),
+                            ]);
+                            await Task.Delay(100);
+                            var dyMentionPick = dyRow.DouyinMentionCandidates[0];
+                            pv.PickDouyinMentionCommand.Execute(dyMentionPick);
+                            await Task.Delay(150);
+                            if (!dyMentionPick.IsPicked || dyRow.DouyinMentions.Count != 1
+                                || dyRow.Params.Douyin?.MentionUsers is not { Count: 1 } dyMentionUsers
+                                || dyMentionUsers[0].Uid != "u-dy-smoke-1"
+                                || dyMentionUsers[0].Nickname != "冒烟好友")
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友选中没写回 MentionUsers");
+                            if (!dyRow.DouyinMentionDisplay.Contains("@冒烟好友", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友行展示没更新：" + dyRow.DouyinMentionDisplay);
+
+                            var dyPayloadSmoke = PublishPayload.Deserialize<DouyinPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, dyRow.Target, dyRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (dyPayloadSmoke is null
+                                || dyPayloadSmoke.Caption?.EndsWith("@冒烟好友", StringComparison.Ordinal) != true
+                                || dyPayloadSmoke.Mentions?.Contains("u-dy-smoke-1", StringComparison.Ordinal) != true
+                                || dyPayloadSmoke.TextExtra?.Contains("\"at_source\":\"user_manual\"", StringComparison.Ordinal) != true
+                                || !dyPayloadSmoke.TextExtra.Contains("\"type\":0", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音 @好友没进发布体三件套："
+                                    + (dyPayloadSmoke is null ? "(null)" : dyPayloadSmoke.Caption + " | "
+                                        + dyPayloadSmoke.Mentions + " | " + dyPayloadSmoke.TextExtra));
+
+                            pv.RemoveDouyinMentionCommand.Execute(dyRow.DouyinMentions[0]);
+                            await Task.Delay(150);
+                            if (dyRow.DouyinMentions.Count != 0
+                                || dyRow.Params.Douyin?.MentionUsers is not null)
+                                throw new InvalidOperationException("[smoke] 移除抖音 @好友后没清空");
+
+                            // 旧档种子化：模型里的原始 mentions JSON（开发者选项已删，旧档仍有）→ 已选列表
+                            dyRow.Params.Douyin ??= new DouyinExtras();
+                            dyRow.Params.Douyin.Mentions = """["777"]""";
+                            dyRow.RefreshDouyinMentions();
+                            await Task.Delay(100);
+                            if (dyRow.DouyinMentions.Count != 1
+                                || dyRow.DouyinMentions[0].Nickname != "777")
+                                throw new InvalidOperationException(
+                                    "[smoke] 抖音旧 raw mentions 没种子化");
+                            pv.ClearDouyinMentionsCommand.Execute(dyRow);
+                            await Task.Delay(100);
+                            if (dyRow.DouyinMentions.Count != 0
+                                || dyRow.Params.Douyin?.MentionUsers is not null
+                                || dyRow.Params.Douyin?.Mentions is not null)
+                                throw new InvalidOperationException("[smoke] 清空抖音 @好友没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：抖音 @好友（接线 / 三件套 / 旧档种子化 / 清除）OK");
+
+                            // 快手章节（P3，2026-11-11）：文本框 → 共享 Params.Chapters（零网络）
+                            var ksRow = pv.TargetRows.FirstOrDefault(r =>
+                                r.Target.PlatformKey == PlatformNames.Kuaishou);
+                            if (ksRow is null || !ksRow.IsKuaishou)
+                                throw new InvalidOperationException("[smoke] 没有快手平台卡");
+                            ksRow.ChaptersText = "0:00 开场\n1:30 实拍";
+                            if (!ksRow.Params.Chapters.SequenceEqual(
+                                    [new PlatformChapter(0, "开场"), new PlatformChapter(90_000, "实拍")]))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手章节没写回共享 Chapters："
+                                    + string.Join("/", ksRow.Params.Chapters.Select(c => c.Title)));
+                            ksRow.ChaptersText = "";
+                            Console.WriteLine("[smoke] 发布页：快手掌节（文本框 → 共享 Chapters）OK");
+
+                            // 快手关联热点（B3 抓包 2026-11-11）：TEMP 造景、零网络。
+                            // 候选直接注入（搜索命令真发签名请求，不执行）；
+                            // 验「选择」按钮接线 / 面板开关 / 选中写回 hotspotId + 文案快照 /
+                            // 载荷 hotspotId / 清除 / 两个提交键同进同退。
+                            if (ksRow.HasKsHotspot || ksRow.KsHotspotDisplay != "未选择")
+                                throw new InvalidOperationException("[smoke] 快手关联热点：初始态不对");
+                            ksRow.IsExpanded = true;
+                            await Task.Delay(250);
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ToggleKsHotspotPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联热点「选择」按钮没接上命令");
+                            // 直接摆开面板（**不执行命令** —— 首次展开会真拉 hotspot/list）
+                            ksRow.IsKsHotspotPanelOpen = true;
+                            await Task.Delay(150);
+                            if (!ksRow.IsKsHotspotPanelOpen)
+                                throw new InvalidOperationException("[smoke] 快手关联热点面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.SearchKsHotspotsCommand))
+                                || !target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.FetchTrendingKsHotspotsCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联热点：搜索 / 热门按钮没接上命令");
+
+                            ksRow.SetKsHotspotCandidates(
+                            [
+                                new KuaishouHotspotResult(6566560, "二手房交易增11.4%", "1175万", 1, false),
+                                new KuaishouHotspotResult(6569413, "房", "", 0, true),
+                            ], nextCursor: 2, append: false);
+                            await Task.Delay(100);
+                            var ksHotPick = ksRow.KsHotspotCandidates[0];
+                            if (!ksHotPick.HasHeat || !ksHotPick.HeatText.Contains("1175万", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联热点：热度展示不对：" + ksHotPick.HeatText);
+                            pv.PickKsHotspotCommand.Execute(ksHotPick);
+                            await Task.Delay(150);
+                            if (!ksRow.HasKsHotspot
+                                || ksRow.Params.Kuaishou?.HotspotId != 6566560
+                                || ksRow.Params.Kuaishou?.HotspotContent != "二手房交易增11.4%"
+                                || ksRow.KsHotspotDisplay != "二手房交易增11.4%")
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联热点：选中没写回 Params / 展示没更新");
+                            var ksHotPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, ksRow.Target, ksRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (ksHotPayload?.HotspotId != 6566560)
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联热点没进载荷 hotspotId");
+                            pv.ClearKsHotspotCommand.Execute(ksRow);
+                            await Task.Delay(150);
+                            if (ksRow.HasKsHotspot
+                                || ksRow.Params.Kuaishou?.HotspotId is not null
+                                || ksRow.Params.Kuaishou?.HotspotContent is not null)
+                                throw new InvalidOperationException("[smoke] 快手关联热点：清除没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：快手关联热点（接线 / 写回 / 载荷 / 清除）OK");
+
+                            // 快手「作者服务 · 关联小程序」（2026-11-15 真页面抓包）：TEMP 造景、零网络。
+                            // 候选直接注入（解析命令真发签名请求，不执行）；验「选择」按钮接线 /
+                            // 面板 / 选中写回 AssociateTask / 载荷 / 清除。
+                            if (ksRow.HasKsAssociate || ksRow.KsAssociateDisplay != "未选择")
+                                throw new InvalidOperationException("[smoke] 快手关联小程序：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ToggleKsAssociatePanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联小程序「选择」按钮没接上命令");
+                            ksRow.IsKsAssociatePanelOpen = true;
+                            await Task.Delay(150);
+                            if (!ksRow.IsKsAssociatePanelOpen)
+                                throw new InvalidOperationException("[smoke] 快手关联小程序面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.SearchKsAssociateCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联小程序：解析按钮没接上命令");
+
+                            const string ksAssocLink =
+                                "https://fcvs.kuai666bj7tu65rkdz82.com/f/X3uTsgHfDnXDtNu";
+                            ksRow.SetKsAssociateCandidates(
+                            [
+                                new KuaishouRelationItem(
+                                    "优酷", null, "优酷独家剧集综艺一网打尽", null,
+                                    new KuaishouAssociateTask(
+                                        0, "plc669066023879745919", 9, "25", "PLC")),
+                            ]);
+                            await Task.Delay(100);
+                            var ksAssocPick = ksRow.KsAssociateCandidates[0];
+                            if (ksAssocPick.Title != "优酷" || !ksAssocPick.HasDesc)
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联小程序：候选展示不对");
+                            ksRow.KsAssociateLink = ksAssocLink;
+                            pv.PickKsAssociateCommand.Execute(ksAssocPick);
+                            await Task.Delay(150);
+                            if (!ksRow.HasKsAssociate
+                                || ksRow.Params.Kuaishou?.AssociateTask is not
+                                    { TaskId: 0, BindId: "plc669066023879745919", Title: "优酷" }
+                                || ksRow.KsAssociateDisplay != "优酷")
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联小程序：选中没写回 Params / 展示没更新");
+                            var ksAssocPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, ksRow.Target, ksRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (ksAssocPayload?.AssociateTask is not
+                                { BindId: "plc669066023879745919", EntranceType: 9, Link: ksAssocLink })
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手关联小程序没进载荷");
+                            pv.ClearKsAssociateCommand.Execute(ksRow);
+                            await Task.Delay(150);
+                            if (ksRow.HasKsAssociate
+                                || ksRow.Params.Kuaishou?.AssociateTask is not null)
+                                throw new InvalidOperationException("[smoke] 快手关联小程序：清除没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：快手关联小程序（接线 / 写回 / 载荷 / 清除）OK");
+
+                            // 快手共同创作（2026-11-15 发布页 bundle）：TEMP 造景、零网络。
+                            // 候选直接注入（搜索真发 at/search，不执行）；验选择按钮接线 / 面板 /
+                            // 选中写回 / 角色下拉回写 / 载荷 / 移除 / 清空。
+                            if (ksRow.HasKsCoPublishUsers || ksRow.KsCoPublishDisplay != "未选择")
+                                throw new InvalidOperationException("[smoke] 快手共创：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ToggleKsCoPublishPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手共创「选择」按钮没接上命令");
+                            ksRow.IsKsCoPublishPanelOpen = true;
+                            await Task.Delay(150);
+                            if (!ksRow.IsKsCoPublishPanelOpen)
+                                throw new InvalidOperationException("[smoke] 快手共创面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.SearchKsCoPublishCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手共创：搜索按钮没接上命令");
+
+                            ksRow.SetKsCoPublishCandidates(
+                                [new KuaishouMentionUser(123, "张三", 500, null)]);
+                            await Task.Delay(100);
+                            var ksCoPick = ksRow.KsCoPublishCandidates[0];
+                            pv.PickKsCoPublishCommand.Execute(ksCoPick);
+                            await Task.Delay(150);
+                            if (!ksRow.HasKsCoPublishUsers
+                                || ksRow.Params.Kuaishou?.CoPublishUsers is not
+                                    [{ UserId: 123, UserName: "张三", Role: -1 }]
+                                || ksRow.KsCoPublishDisplay != "已选 张三（默认）")
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手共创：选中没写回 Params / 展示没更新");
+
+                            // 角色下拉（下标 2 = 共创 = wire 1）→ 写回 Params
+                            ksRow.KsCoPublishUsers[0].RoleIndex = 2;
+                            await Task.Delay(100);
+                            if (ksRow.Params.Kuaishou?.CoPublishUsers is not [{ Role: 1 }]
+                                || ksRow.KsCoPublishDisplay != "已选 张三（共创）")
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手共创：角色下拉没写回 Params");
+
+                            var ksCoPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, ksRow.Target, ksRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (ksCoPayload?.CoPublishUsers is not
+                                [{ UserId: 123, UserName: "张三", Role: 1 }])
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手共创没进载荷");
+                            pv.RemoveKsCoPublishCommand.Execute(ksRow.KsCoPublishUsers[0]);
+                            await Task.Delay(150);
+                            if (ksRow.HasKsCoPublishUsers
+                                || ksRow.Params.Kuaishou?.CoPublishUsers is not { Count: 0 })
+                                throw new InvalidOperationException("[smoke] 快手共创：移除没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：快手共同创作（接线 / 写回 / 角色 / 载荷 / 移除）OK");
+
+                            // 快手 @好友（B3 抓包 2026-11-11）：TEMP 造景、零网络。
+                            // 候选直接注入（搜索会真发签名请求，不执行）；验「选择」按钮接线 /
+                            // 面板 / 选中写回 MentionUsers / 载荷 / caption HTML / 清除。
+                            if (ksRow.HasKsMentions || ksRow.KsMentionDisplay != "未选择")
+                                throw new InvalidOperationException("[smoke] 快手 @好友：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ToggleKsMentionPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友「选择」按钮没接上命令");
+                            ksRow.IsKsMentionPanelOpen = true;
+                            await Task.Delay(150);
+                            if (!ksRow.IsKsMentionPanelOpen)
+                                throw new InvalidOperationException("[smoke] 快手 @好友面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.SearchKsMentionsCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友：搜索按钮没接上命令");
+
+                            ksRow.SetKsMentionCandidates(
+                            [
+                                new KuaishouMentionUser(2210679639, "房", 4272, null),
+                                new KuaishouMentionUser(9, "无粉丝", 0, null),
+                            ]);
+                            await Task.Delay(100);
+                            var ksMentionPick = ksRow.KsMentionCandidates[0];
+                            if (!ksMentionPick.HasSubtitle
+                                || !ksMentionPick.Subtitle.Contains("4,272", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友：粉丝数展示不对：" + ksMentionPick.Subtitle);
+                            pv.PickKsMentionCommand.Execute(ksMentionPick);
+                            await Task.Delay(150);
+                            if (!ksRow.HasKsMentions
+                                || ksRow.Params.Kuaishou?.MentionUsers is not
+                                    [{ UserId: 2210679639, UserName: "房" }]
+                                || ksRow.KsMentionDisplay != "已选 @房")
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友：选中没写回 Params / 展示没更新");
+                            var ksMentionPayload = PublishPayload.Deserialize<KuaishouPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, ksRow.Target, ksRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (ksMentionPayload?.MentionUsers is not [{ UserId: 2210679639 }])
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友没进载荷");
+                            if (!KuaishouMentionText.Append(
+                                    ksMentionPayload.Caption ?? "", ksMentionPayload.MentionUsers)
+                                .Contains("(O2210679639)", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 快手 @好友 caption 没换成 submit token");
+                            pv.ClearKsMentionsCommand.Execute(ksRow);
+                            await Task.Delay(150);
+                            if (ksRow.HasKsMentions || ksRow.Params.Kuaishou?.MentionUsers.Count != 0
+                                || ksRow.KsMentionDisplay != "未选择")
+                                throw new InvalidOperationException("[smoke] 快手 @好友：清除没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：快手 @好友（接线 / 写回 / 载荷 / token / 清除）OK");
 
                             var biliRow = pv.TargetRows.FirstOrDefault(r =>
                                 r.Target.PlatformKey == PlatformNames.Bilibili);
@@ -1474,6 +2063,135 @@ public partial class App : Avalonia.Application
                             Console.WriteLine(
                                 "[smoke] 发布页：B站卡（分区只读 / 标签解析 / 开关落 Params）OK");
 
+                            // B站字幕与互动卡片（B5 抓包 2026-11-15）：TEMP 造景、零网络。
+                            // 卡片默认折叠 → 先展开，内层模板才会实例化（按钮才找得到）。
+                            biliRow.IsExpanded = true;
+                            await Task.Delay(250);
+                            if (biliRow.HasBilibiliSubtitleFile
+                                || biliRow.BilibiliSubtitleFileDisplay != "未选择（不传字幕）")
+                                throw new InvalidOperationException("[smoke] B站字幕：初始态不对");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.PickBilibiliSubtitleCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] B站字幕「选择」按钮没接上命令");
+
+                            var srtSmoke = Path.Combine(Path.GetTempPath(),
+                                $"smoke-bili-{Guid.NewGuid():N}.srt");
+                            File.WriteAllText(srtSmoke,
+                                "1\n00:00:00,000 --> 00:00:02,000\n冒烟字幕\n");
+                            biliRow.ApplyBilibiliSubtitleFile(srtSmoke);
+                            await Task.Delay(150);
+                            if (!biliRow.HasBilibiliSubtitleFile
+                                || biliRow.Params.Bilibili?.SubtitleFile != srtSmoke
+                                || biliRow.BilibiliSubtitleFileDisplay != Path.GetFileName(srtSmoke))
+                                throw new InvalidOperationException(
+                                    "[smoke] B站字幕：选中没写回 Params / 展示没更新");
+                            if (!target.GetVisualDescendants().OfType<Button>().Any(b =>
+                                    ReferenceEquals(b.Command, pv.ClearBilibiliSubtitleCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] B站字幕「清除」按钮没接上命令");
+
+                            // 互动引导：默认关 → 开 → 默认「三连+关注」→ 换「仅三连」→ 时间
+                            if (biliRow.BilibiliGuideCardEnabled)
+                                throw new InvalidOperationException("[smoke] B站互动卡片默认应为关");
+                            biliRow.BilibiliGuideCardEnabled = true;
+                            if (biliRow.Params.Bilibili?.GuideCardEnabled != true
+                                || biliRow.Params.Bilibili?.GuideCardFollowType != 2
+                                || !biliRow.ShowBilibiliGuideCardOptions)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站互动卡片：开启 / 默认样式没写回 Params");
+                            biliRow.SelectBilibiliGuideCardCommand.Execute(
+                                biliRow.BilibiliGuideCardOptions.First(o => o.Value == 1));
+                            await Task.Delay(100);
+                            if (biliRow.Params.Bilibili?.GuideCardFollowType != 1
+                                || !biliRow.BilibiliGuideCardOptions.First(o => o.Value == 1).IsSelected
+                                || biliRow.BilibiliGuideCardOptions.First(o => o.Value == 2).IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站互动卡片：样式单选没生效");
+                            biliRow.BilibiliGuideCardStartText = "00:30";
+                            if (biliRow.Params.Bilibili?.GuideCardStartSeconds != 30)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站互动卡片：起始时间没写回 Params");
+
+                            // 卡片 v2（2026-11-15 B5.2）：关联视频 / 投票弹幕 ——
+                            // 开关 / 写回 / 载荷，TEMP 造景、零网络。
+                            if (biliRow.BilibiliRelatedVideoEnabled || biliRow.BilibiliVoteEnabled)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站关联视频 / 投票卡片默认应为关");
+                            biliRow.BilibiliRelatedVideoEnabled = true;
+                            biliRow.BilibiliRelatedVideoBvidText = "BV1RFWs6XExT";
+                            biliRow.BilibiliRelatedVideoMsgText = "关联视频测试";
+                            biliRow.BilibiliRelatedVideoStartText = "00:05";
+                            if (biliRow.Params.Bilibili?.RelatedVideoEnabled != true
+                                || biliRow.Params.Bilibili?.RelatedVideoBvid != "BV1RFWs6XExT"
+                                || biliRow.Params.Bilibili?.RelatedVideoMsg != "关联视频测试"
+                                || biliRow.Params.Bilibili?.RelatedVideoStartSeconds != 5
+                                || !biliRow.ShowBilibiliRelatedVideoOptions)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站关联视频卡片：开启 / 写回 Params 不对");
+
+                            biliRow.BilibiliVoteEnabled = true;
+                            biliRow.BilibiliVoteQuestionText = "你最喜欢哪种视频";
+                            biliRow.BilibiliVoteOptionAText = "长视频";
+                            biliRow.BilibiliVoteOptionBText = "短视频";
+                            biliRow.BilibiliVoteOptionCText = "都可以";
+                            biliRow.BilibiliVoteStartText = "00:10";
+                            biliRow.BilibiliVoteDurationText = "8";
+                            if (biliRow.Params.Bilibili?.VoteEnabled != true
+                                || biliRow.Params.Bilibili?.VoteQuestion != "你最喜欢哪种视频"
+                                || biliRow.Params.Bilibili?.VoteOptionA != "长视频"
+                                || biliRow.Params.Bilibili?.VoteOptionB != "短视频"
+                                || biliRow.Params.Bilibili?.VoteOptionC != "都可以"
+                                || biliRow.Params.Bilibili?.VoteStartSeconds != 10
+                                || biliRow.Params.Bilibili?.VoteDurationSeconds != 8
+                                || !biliRow.ShowBilibiliVoteOptions)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站投票弹幕：开启 / 写回 Params 不对");
+
+                            var biliExtraPayload = PublishPayload.Deserialize<BilibiliPayload>(
+                                PublishPayloadBuilder.Build(topicDraft, biliRow.Target, biliRow.Params)
+                                    .ExtraDataJson ?? "{}");
+                            if (biliExtraPayload?.SubtitleFile != srtSmoke
+                                || biliExtraPayload.SubtitleFileLan is not null
+                                || biliExtraPayload.GuideCardFollowType != 1
+                                || biliExtraPayload.GuideCardStartSeconds != 30
+                                || biliExtraPayload.RelatedVideoBvid != "BV1RFWs6XExT"
+                                || biliExtraPayload.RelatedVideoMsg != "关联视频测试"
+                                || biliExtraPayload.RelatedVideoStartSeconds != 5
+                                || biliExtraPayload.VoteQuestion != "你最喜欢哪种视频"
+                                || biliExtraPayload.VoteOptions is not { Count: 3 }
+                                || biliExtraPayload.VoteOptions[2] != "都可以"
+                                || biliExtraPayload.VoteStartSeconds != 10
+                                || biliExtraPayload.VoteDurationSeconds != 8)
+                                throw new InvalidOperationException(
+                                    "[smoke] B站字幕 / 互动卡片 / 关联视频 / 投票没进载荷");
+
+                            pv.ClearBilibiliSubtitleCommand.Execute(biliRow);
+                            await Task.Delay(100);
+                            if (biliRow.HasBilibiliSubtitleFile
+                                || biliRow.Params.Bilibili?.SubtitleFile is not null)
+                                throw new InvalidOperationException("[smoke] B站字幕：清除没生效");
+                            try { File.Delete(srtSmoke); } catch { /* 临时夹具 */ }
+
+                            // 复位，别把造景留给后续断言
+                            biliRow.BilibiliGuideCardEnabled = false;
+                            biliRow.BilibiliGuideCardStartText = "00:00";
+                            biliRow.BilibiliRelatedVideoEnabled = false;
+                            biliRow.BilibiliRelatedVideoBvidText = "";
+                            biliRow.BilibiliRelatedVideoMsgText = "";
+                            biliRow.BilibiliRelatedVideoStartText = "00:00";
+                            biliRow.BilibiliVoteEnabled = false;
+                            biliRow.BilibiliVoteQuestionText = "";
+                            biliRow.BilibiliVoteOptionAText = "";
+                            biliRow.BilibiliVoteOptionBText = "";
+                            biliRow.BilibiliVoteOptionCText = "";
+                            biliRow.BilibiliVoteOptionDText = "";
+                            biliRow.BilibiliVoteStartText = "00:00";
+                            biliRow.BilibiliVoteDurationText = "7";
+                            Console.WriteLine(
+                                "[smoke] 发布页：B站字幕 / 互动卡片 / 关联视频 / 投票弹幕 "
+                                + "（选择 / 写回 / 载荷 / 单选 / 清除）OK");
+
                             // 头条长尾（5.6）：赞赏 / 模板写回 Params（零网络）
                             var ttRow = pv.TargetRows.FirstOrDefault(r =>
                                 r.Target.PlatformKey == PlatformNames.Toutiao);
@@ -1487,6 +2205,556 @@ public partial class App : Avalonia.Application
                                     "[smoke] 头条长尾没写回 Params（赞赏/模板）");
                             Console.WriteLine(
                                 "[smoke] 发布页：头条卡（赞赏 / 模板写回 Params）OK");
+
+                            // 头条作品声明（A1）：跟随全局预览 / 平台覆盖单选 / 自行拍摄二级（零网络）
+                            // 卡片默认折叠 → 内层 ItemsControl 的项容器要展开（measure）后才生成，
+                            // 所以先展开再查可视树（直接子控件不受影响，那类接线检查不用展开）。
+                            ttRow.IsExpanded = true;
+                            await Task.Delay(250);
+                            if (!target.GetVisualDescendants().OfType<ToggleButton>()
+                                    .Any(b => ReferenceEquals(b.Command, ttRow.SelectToutiaoDeclarationCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条作品声明单选按钮没接上命令");
+                            ttRow.SetGlobalDeclaration(DeclarationKind.AiGenerated);
+                            if (!ttRow.ToutiaoDeclarationFollowHint.Contains("ComplianceType 3", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条「跟随全局」预览不随全局声明变化："
+                                    + ttRow.ToutiaoDeclarationFollowHint);
+                            var followOpt = ttRow.ToutiaoDeclarationOptions.First(o => o.Value is null);
+                            if (!followOpt.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条作品声明默认没选中「跟随全局」");
+                            var investOpt = ttRow.ToutiaoDeclarationOptions.First(o => o.Value == 7);
+                            ttRow.SelectToutiaoDeclarationCommand.Execute(investOpt);
+                            if (ttRow.Params.Toutiao?.DeclarationOverride != 7
+                                || !investOpt.IsSelected || followOpt.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条作品声明覆盖（7 投资观点）没写回 Params / 单选态不对");
+                            var selfOpt = ttRow.ToutiaoDeclarationOptions.First(o => o.Value == 1);
+                            ttRow.SelectToutiaoDeclarationCommand.Execute(selfOpt);
+                            if (!ttRow.ShowToutiaoComplianceCreativeInfo)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条「自行拍摄」没展开城市/时间");
+                            ttRow.ToutiaoComplianceCityText = "苏州";
+                            ttRow.ToutiaoComplianceDate =
+                                new DateTimeOffset(2026, 11, 10, 0, 0, 0, TimeSpan.Zero);
+                            ttRow.ToutiaoComplianceClock = new TimeSpan(12, 30, 0);
+                            if (ttRow.Params.Toutiao?.ComplianceCity != "苏州"
+                                || ttRow.Params.Toutiao?.ComplianceTime != new DateTime(2026, 11, 10, 12, 30, 0))
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条自行拍摄城市/时间没写回 Params");
+                            ttRow.SelectToutiaoDeclarationCommand.Execute(followOpt);
+                            if (ttRow.Params.Toutiao?.DeclarationOverride is not null)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条作品声明「跟随全局」没清掉平台覆盖");
+                            Console.WriteLine(
+                                "[smoke] 发布页：头条卡（作品声明单选 / 跟随全局 / 自行拍摄二级）OK");
+
+                            // 头条视频生成图文（A2）：0/1 单选 / 2 置灰 / 写回 Params / 关闭即清空（零网络）
+                            if (!target.GetVisualDescendants().OfType<ToggleButton>()
+                                    .Any(b => ReferenceEquals(b.Command, ttRow.SelectToutiaoTransArticleCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条视频生成图文单选按钮没接上命令");
+                            var transOff = ttRow.ToutiaoTransArticleOptions.First(o => o.Value == 0);
+                            if (!transOff.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条视频生成图文默认没选中「不生成」");
+                            var transPublish = ttRow.ToutiaoTransArticleOptions.First(o => o.Value == 1);
+                            ttRow.SelectToutiaoTransArticleCommand.Execute(transPublish);
+                            if (ttRow.Params.Toutiao?.VideoTransArticleFlag != 1
+                                || !transPublish.IsSelected || transOff.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条视频生成图文 1（与视频同时发布）没写回 Params / 单选态不对");
+                            // 「仅保存草稿」暂不可用（2026-11-11 定论）：UI 置灰 + 命令层拒绝写回。
+                            var transDraft = ttRow.ToutiaoTransArticleOptions.First(o => o.Value == 2);
+                            if (transDraft.IsEnabled)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条「仅保存草稿」应置灰（存草稿发布方式未做）");
+                            var draftButton = target.GetVisualDescendants().OfType<ToggleButton>()
+                                .FirstOrDefault(b => ReferenceEquals(b.Command,
+                                                           ttRow.SelectToutiaoTransArticleCommand)
+                                                     && ReferenceEquals(b.CommandParameter, transDraft));
+                            if (draftButton is null || draftButton.IsEnabled)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条「仅保存草稿」按钮没接到置灰态");
+                            ttRow.SelectToutiaoTransArticleCommand.Execute(transDraft);
+                            if (ttRow.Params.Toutiao?.VideoTransArticleFlag != 1
+                                || !transPublish.IsSelected || transDraft.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条「仅保存草稿」置灰后仍被写进发布体");
+                            ttRow.SelectToutiaoTransArticleCommand.Execute(transOff);
+                            if (ttRow.Params.Toutiao?.VideoTransArticleFlag is not null
+                                || !transOff.IsSelected)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条视频生成图文「不生成」没清掉字段");
+                            Console.WriteLine(
+                                "[smoke] 发布页：头条卡（视频生成图文两态 + 仅保存草稿置灰 / 写回 / 清空）OK");
+
+                            // 头条互动贴纸（A3）：开关 / 开始秒 / 持续秒写回 Params（零网络）。
+                            // 负数开始秒按 0 夹取；关闭只清开关、保留时间（再开不用重填）。
+                            ttRow.ToutiaoFollowSticker = true;
+                            ttRow.ToutiaoStickerStartText = "3";
+                            ttRow.ToutiaoStickerDurationText = "8";
+                            if (!(ttRow.Params.Toutiao?.FollowSticker ?? false)
+                                || ttRow.Params.Toutiao?.StickerStartSec != 3
+                                || ttRow.Params.Toutiao?.StickerDurationSec != 8)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条互动贴纸开关/开始秒/持续秒没写回 Params");
+                            ttRow.ToutiaoStickerStartText = "-5";
+                            if (ttRow.Params.Toutiao?.StickerStartSec != 0)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条互动贴纸开始秒负数没夹取到 0");
+                            ttRow.ToutiaoFollowSticker = false;
+                            if ((ttRow.Params.Toutiao?.FollowSticker ?? true)
+                                || ttRow.Params.Toutiao?.StickerDurationSec != 8)
+                                throw new InvalidOperationException(
+                                    "[smoke] 头条互动贴纸关闭后开关没清 / 时间被误删");
+                            Console.WriteLine(
+                                "[smoke] 发布页：头条卡（互动贴纸开关 / 时间写回 / 负数夹取）OK");
+
+                            ttRow.IsExpanded = false;
+                            await Task.Delay(100);
+
+                            // ── 小红书「@用户」选择器（2026-11-10）：TEMP 造景、**零网络** ──
+                            // 验六件事：卡上「选择」/ 面板「搜索」按钮接线、面板开关、
+                            // 候选「选」写回 common.ats（三键形状）、行展示更新、
+                            // 正文补「@昵称」（与预检/组装同一份 XhsCaption）、移除 / 清空、旧档种子化。
+                            // 搜索命令真发签名请求 —— 不执行（零网络）；候选直接注入。
+                            var xhsRow = pv.TargetRows.FirstOrDefault(r =>
+                                r.Target.PlatformKey == PlatformNames.Xiaohongshu);
+                            if (xhsRow is null || !xhsRow.IsXhs)
+                                throw new InvalidOperationException("[smoke] 没有小红书平台卡");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(b.Command, pv.ToggleXhsMentionPanelCommand)))
+                                throw new InvalidOperationException("[smoke] 小红书 @用户「选择」按钮没接上命令");
+                            pv.ToggleXhsMentionPanelCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (!xhsRow.IsXhsMentionPanelOpen)
+                                throw new InvalidOperationException("[smoke] @用户面板没展开");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(b.Command, pv.SearchXhsMentionsCommand)))
+                                throw new InvalidOperationException("[smoke] @用户「搜索」按钮没接上命令");
+
+                            xhsRow.SetXhsMentionCandidates(
+                            [
+                                new XhsMentionUser("u-smoke-1", "冒烟小花", "red-1", "简介"),
+                                new XhsMentionUser("u-smoke-2", "冒烟阿明"),
+                            ]);
+                            await Task.Delay(100);
+                            var mentionPick = xhsRow.XhsMentionCandidates[0];
+                            pv.PickXhsMentionCommand.Execute(mentionPick);
+                            await Task.Delay(150);
+                            var atsSmoke = xhsRow.Params.Xhs?.Ats ?? "";
+                            // 昵称按解析后的对象比对（JSON 里的中文是 \uXXXX 转义，不能按原文找）
+                            // 形状 = 发布路径 MentionList 的 {userId, nickname}（2026-11-15 纠偏）
+                            var atsSmokeEl = atsSmoke.Length > 0
+                                ? JsonDocument.Parse(atsSmoke).RootElement
+                                : default;
+                            if (!mentionPick.IsPicked || xhsRow.XhsMentions.Count != 1
+                                || xhsRow.XhsMentions[0].Nickname != "冒烟小花"
+                                || atsSmokeEl.ValueKind != JsonValueKind.Array
+                                || atsSmokeEl[0].GetProperty("userId").GetString() != "u-smoke-1"
+                                || atsSmokeEl[0].GetProperty("nickname").GetString() != "冒烟小花"
+                                || atsSmokeEl[0].TryGetProperty("userid", out _))
+                                throw new InvalidOperationException(
+                                    "[smoke] @用户选中没写回 common.ats：" + atsSmoke);
+                            if (!xhsRow.XhsMentionDisplay.Contains("@冒烟小花", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] @用户行展示没更新：" + xhsRow.XhsMentionDisplay);
+
+                            var xhsCapSmoke = PublishPayloadBuilder.XhsCaption(topicDraft, xhsRow.Params);
+                            if (!xhsCapSmoke.EndsWith("@冒烟小花", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] @用户没补进正文末尾：" + xhsCapSmoke);
+
+                            pv.RemoveXhsMentionCommand.Execute(xhsRow.XhsMentions[0]);
+                            await Task.Delay(150);
+                            if (xhsRow.XhsMentions.Count != 0
+                                || !string.IsNullOrEmpty(xhsRow.Params.Xhs?.Ats))
+                                throw new InvalidOperationException("[smoke] 移除 @用户后 ats 没清空");
+
+                            // 旧档种子化：外部写 common.ats 后，已选列表按存档重建
+                            xhsRow.XhsAtsJson =
+                                "[{\"nickname\":\"老档阿明\",\"userId\":\"u-old\",\"userid\":\"u-old\"}]";
+                            await Task.Delay(100);
+                            if (xhsRow.XhsMentions.Count != 1
+                                || xhsRow.XhsMentions[0].Nickname != "老档阿明")
+                                throw new InvalidOperationException("[smoke] 旧档 common.ats 没种子化");
+                            pv.ClearXhsMentionsCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsMentions.Count != 0
+                                || !string.IsNullOrEmpty(xhsRow.Params.Xhs?.Ats))
+                                throw new InvalidOperationException("[smoke] 清空 @用户 没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书 @用户选择器（接线 / ats 三键 / 正文补 @昵称 / 旧档种子化）OK");
+
+                            // ── 小红书「互动组件 · 投票」（A4，2026-11-11）：TEMP 造景、**零网络** ──
+                            // 验六件事：问题输入写回、选项行增删（空行丢弃）、2~5 上限、
+                            // 预检与发布端共用同一份 Analyze（配一半 → Invalid，不拦发布）、
+                            // 「添加选项 / 清除投票」按钮接线、清除后 Params 归 null。
+                            var addPollBtn = target.GetVisualDescendants().OfType<Button>()
+                                .FirstOrDefault(b => ReferenceEquals(
+                                    b.Command, xhsRow.AddXhsPollOptionCommand));
+                            if (addPollBtn is null)
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「添加选项」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, xhsRow.ClearXhsPollCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「清除投票」按钮没接上命令");
+                            if (xhsRow.XhsPollOptions.Count != 2 || !xhsRow.CanAddXhsPollOption)
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票初始应铺 2 行空选项："
+                                    + xhsRow.XhsPollOptions.Count);
+
+                            xhsRow.XhsPollQuestionText = "你更喜欢哪种装修风格？";
+                            xhsRow.XhsPollOptions[0].Text = "现代简约";
+                            xhsRow.XhsPollOptions[1].Text = "奶油风";
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.PollQuestion != "你更喜欢哪种装修风格？"
+                                || xhsRow.Params.Xhs?.PollOptions is not { Count: 2 }
+                                || xhsRow.Params.Xhs.PollOptions[0] != "现代简约"
+                                || xhsRow.Params.Xhs.PollOptions[1] != "奶油风")
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票输入没写回 XhsExtras");
+                            if (!xhsRow.HasXhsPoll)
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票已填写但 HasXhsPoll 仍为 false");
+
+                            // 空行不落存档（清掉第二行文字 → PollOptions 只剩 1 条）
+                            xhsRow.XhsPollOptions[1].Text = "  ";
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.PollOptions is not { Count: 1 })
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票空行没被丢弃："
+                                    + (xhsRow.Params.Xhs?.PollOptions?.Count ?? -1));
+                            xhsRow.XhsPollOptions[1].Text = "奶油风";
+                            await Task.Delay(100);
+
+                            // 2~5 上限：补到 5 行后「添加选项」禁用、命令再执行也不涨
+                            while (xhsRow.XhsPollOptions.Count < XhsPollRules.MaxOptions)
+                                xhsRow.AddXhsPollOptionCommand.Execute(null);
+                            xhsRow.AddXhsPollOptionCommand.Execute(null);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsPollOptions.Count != XhsPollRules.MaxOptions
+                                || xhsRow.CanAddXhsPollOption || addPollBtn.IsEnabled)
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票 5 个选项上限没生效："
+                                    + xhsRow.XhsPollOptions.Count);
+
+                            // 删一行仍可加回来
+                            var pollToRemove = xhsRow.XhsPollOptions[^1];
+                            xhsRow.RemoveXhsPollOptionCommand.Execute(pollToRemove);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsPollOptions.Contains(pollToRemove)
+                                || !xhsRow.CanAddXhsPollOption)
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票「删除」没生效");
+
+                            // 清除：问题与选项都归 null、行清空
+                            xhsRow.ClearXhsPollCommand.Execute(null);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsPollOptions.Count != 0
+                                || !string.IsNullOrEmpty(xhsRow.Params.Xhs?.PollQuestion)
+                                || xhsRow.Params.Xhs?.PollOptions is not null)
+                                throw new InvalidOperationException(
+                                    "[smoke] 投票「清除」没清干净");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书投票（写回 / 空行丢弃 / 2~5 上限 / 增删清）OK");
+
+                            // ── 小红书「引用笔记」（A5，2026-11-11）：TEMP 造景、**零网络** ──
+                            // 验四件事：选择 / 刷新 / 清除按钮接线、候选造景进列表、
+                            // 选中写回 XhsExtras.ReferencedNote + 展示、清除归 null + 「已选」态同步。
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ToggleXhsNotePanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「引用笔记 · 选择」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.RefreshXhsNotesCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「引用笔记 · 刷新」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ClearXhsNoteCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「清除引用笔记」按钮没接上命令");
+                            if (xhsRow.HasXhsNote || xhsRow.XhsNoteDisplay != "未选择")
+                                throw new InvalidOperationException(
+                                    "[smoke] 引用笔记初始应为未选择：" + xhsRow.XhsNoteDisplay);
+
+                            xhsRow.SetXhsNoteCandidates(
+                            [
+                                new XhsNoteItem("6a325866000000001101add3", "冒烟旧笔记",
+                                    null, "video", "2026-06-17 16:18"),
+                                new XhsNoteItem("6a325866000000001101add4", "",
+                                    null, "video", "2026-06-18 10:00"),
+                            ]);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsNoteCandidates.Count != 2
+                                || !xhsRow.HasXhsNoteCandidates)
+                                throw new InvalidOperationException(
+                                    "[smoke] 引用笔记候选没进列表："
+                                    + xhsRow.XhsNoteCandidates.Count);
+
+                            var notePick = xhsRow.XhsNoteCandidates[0];
+                            pv.PickXhsNoteCommand.Execute(notePick);
+                            await Task.Delay(150);
+                            if (xhsRow.Params.Xhs?.ReferencedNote is not
+                                    { Id: "6a325866000000001101add3" }
+                                || !xhsRow.HasXhsNote
+                                || !xhsRow.XhsNoteDisplay.Contains("冒烟旧笔记",
+                                    StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 引用笔记选中没写回 / 展示没更新："
+                                    + xhsRow.XhsNoteDisplay);
+                            if (!notePick.IsPicked || xhsRow.XhsNoteCandidates[1].IsPicked)
+                                throw new InvalidOperationException(
+                                    "[smoke] 引用笔记候选「已选」态没同步");
+
+                            pv.ClearXhsNoteCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.ReferencedNote is not null
+                                || xhsRow.HasXhsNote
+                                || xhsRow.XhsNoteCandidates.Any(c => c.IsPicked))
+                                throw new InvalidOperationException(
+                                    "[smoke] 引用笔记「清除」没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书引用笔记（候选造景 / 选中写回 / 展示 / 清除）OK");
+
+                            // ── 小红书「选择群聊」（2026-11-15）：TEMP 造景、**零网络** ──
+                            // 验四件事：选择 / 刷新 / 清除按钮接线、候选造景进列表、
+                            // 选中写回 XhsExtras.GroupBind + 展示、不可绑定的群不能选、清除归 null。
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ToggleXhsGroupPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「选择群聊 · 选择」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.RefreshXhsGroupsCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「选择群聊 · 刷新」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ClearXhsGroupCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「清除已选群聊」按钮没接上命令");
+                            if (xhsRow.HasXhsGroup || xhsRow.XhsGroupDisplay != "未选择")
+                                throw new InvalidOperationException(
+                                    "[smoke] 群聊初始应为未选择：" + xhsRow.XhsGroupDisplay);
+
+                            xhsRow.SetXhsGroupCandidates(
+                            [
+                                new XhsGroupItem("g1", "自媒体群聊", "互赞互评", null, true),
+                                new XhsGroupItem("g2", "异常群", null, null, false),
+                            ]);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsGroupCandidates.Count != 2
+                                || !xhsRow.HasXhsGroupCandidates)
+                                throw new InvalidOperationException(
+                                    "[smoke] 群聊候选没进列表："
+                                    + xhsRow.XhsGroupCandidates.Count);
+
+                            var groupPick = xhsRow.XhsGroupCandidates[0];
+                            pv.PickXhsGroupCommand.Execute(groupPick);
+                            await Task.Delay(150);
+                            if (xhsRow.Params.Xhs?.GroupBind is not
+                                    { GroupId: "g1", GroupName: "自媒体群聊" }
+                                || !xhsRow.HasXhsGroup
+                                || xhsRow.XhsGroupDisplay != "自媒体群聊")
+                                throw new InvalidOperationException(
+                                    "[smoke] 群聊选中没写回 / 展示没更新："
+                                    + xhsRow.XhsGroupDisplay);
+
+                            // 平台标记不可绑定的群：命令直接拒绝（不写回）
+                            pv.PickXhsGroupCommand.Execute(xhsRow.XhsGroupCandidates[1]);
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.GroupBind is not { GroupId: "g1" })
+                                throw new InvalidOperationException(
+                                    "[smoke] 不可绑定的群被选中了（应保持原选择）");
+
+                            pv.ClearXhsGroupCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.GroupBind is not null
+                                || xhsRow.HasXhsGroup)
+                                throw new InvalidOperationException(
+                                    "[smoke] 群聊「清除」没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书选择群聊（候选造景 / 选中写回 / 不可绑定拒绝 / 清除）OK");
+
+                            // ── 小红书 PK 封面（2026-11-15）：TEMP 造景、**零网络** ──
+                            // 验三件事：添加 / 移除 / 清空按钮接线、开关与图列表写回存档、展示文本。
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.PickXhsPkCoverCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「PK 封面 · 添加图片」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ClearXhsPkCoversCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「PK 封面 · 清空附加图」按钮没接上命令");
+
+                            if (xhsRow.XhsPkCoverEnabled || xhsRow.HasXhsPkCovers)
+                                throw new InvalidOperationException(
+                                    "[smoke] PK 封面初始应为未启用：" + xhsRow.XhsPkCoverDisplay);
+
+                            xhsRow.AddXhsPkCover(@"C:\smoke\pk-a.jpg");
+                            xhsRow.AddXhsPkCover(@"C:\smoke\pk-b.png");
+                            xhsRow.AddXhsPkCover(@"C:\smoke\pk-a.jpg");   // 重复路径不重复加
+                            await Task.Delay(100);
+                            if (!xhsRow.XhsPkCoverEnabled
+                                || xhsRow.Params.Xhs?.PkCoverImages is not { Count: 2 }
+                                || !xhsRow.HasXhsPkCovers)
+                                throw new InvalidOperationException(
+                                    "[smoke] PK 封面添加没写回 / 去重失效："
+                                    + (xhsRow.Params.Xhs?.PkCoverImages?.Count ?? 0));
+
+                            // 「移除」按钮在 ItemsControl 行模板里：headless 冒烟不实例化
+                            // 模板（同 ComboBox 老坑），无法从可视树断言 —— 直接执行命令
+                            // 验证行为；XAML 绑定由编译期 x:DataType 保证。
+                            var pkItem = xhsRow.XhsPkCovers[0];
+                            pv.RemoveXhsPkCoverCommand.Execute(pkItem);
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.PkCoverImages is not { Count: 1 })
+                                throw new InvalidOperationException(
+                                    "[smoke] PK 封面移除没生效");
+
+                            pv.ClearXhsPkCoversCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.PkCoverImages is not { Count: 0 }
+                                || xhsRow.HasXhsPkCovers
+                                || !xhsRow.XhsPkCoverEnabled)
+                                throw new InvalidOperationException(
+                                    "[smoke] PK 封面清空没生效（开关应保留）");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书 PK 封面（添加去重 / 移除 / 清空保留开关）OK");
+
+                            // ── 小红书视频标记（2026-11-15）：TEMP 造景、**零网络** ──
+                            // 验：搜索 / 选择 / 清空按钮接线、标记写回、起止秒回写、移除。
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.SearchXhsMarkersCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「视频标记 · 搜索」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ToggleXhsMarkerPanelCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「视频标记 · 选择」按钮没接上命令");
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                    .Any(b => ReferenceEquals(
+                                        b.Command, pv.ClearXhsMarkersCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 小红书「视频标记 · 清空」按钮没接上命令");
+
+                            if (xhsRow.HasXhsMarkers || xhsRow.XhsMarkerDisplay != "未添加")
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频标记初始应为未添加：" + xhsRow.XhsMarkerDisplay);
+
+                            xhsRow.AddXhsMarker(new XhsVideoMarker
+                            {
+                                Id = "u-1", Name = "小红薯", Type = "user",
+                                StartSeconds = 1, EndSeconds = 6,
+                            });
+                            await Task.Delay(100);
+                            if (!xhsRow.HasXhsMarkers
+                                || xhsRow.Params.Xhs?.Markers is not [{ Id: "u-1" }]
+                                || !xhsRow.XhsMarkerDisplay.Contains("1 个朋友", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频标记添加没写回：" + xhsRow.XhsMarkerDisplay);
+
+                            // 起止秒回写：行编辑 → 模型
+                            var markerRow = xhsRow.XhsMarkers[0];
+                            markerRow.StartText = "2";
+                            markerRow.EndText = "9";
+                            await Task.Delay(100);
+                            if (xhsRow.Params.Xhs?.Markers[0].StartSeconds != 2
+                                || xhsRow.Params.Xhs.Markers[0].EndSeconds != 9)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频标记起止秒没回写模型");
+
+                            pv.RemoveXhsMarkerCommand.Execute(markerRow);
+                            await Task.Delay(100);
+                            if (xhsRow.HasXhsMarkers || xhsRow.Params.Xhs?.Markers is { Count: > 0 })
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频标记移除没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书视频标记（写回 / 起止秒 / 移除）OK");
+
+                            // ── 小红书添加路线（2026-11-15）：TEMP 造景、**零网络** ──
+                            // 验：添加/清除/搜索/保存按钮接线、候选与草稿写入、重复地点去重、
+                            // 快照写回 + 展示 + 编辑器收起。
+                            foreach (var routeCommand in new[]
+                                     {
+                                         (object?)pv.ToggleXhsRoutePanelCommand,
+                                         (object?)pv.SearchXhsRoutePoisCommand,
+                                         (object?)pv.SaveXhsRouteCommand,
+                                         (object?)pv.ClearXhsRouteCommand,
+                                     })
+                            {
+                                if (!target.GetVisualDescendants().OfType<Button>()
+                                        .Any(b => ReferenceEquals(b.Command, routeCommand)))
+                                    throw new InvalidOperationException(
+                                        "[smoke] 小红书添加路线按钮没接上命令："
+                                        + routeCommand?.GetType().Name);
+                            }
+
+                            if (xhsRow.HasXhsRoute || xhsRow.XhsRouteDisplay != "未添加"
+                                || !xhsRow.IsXhsRouteBuilderVisible)
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线初始应为未添加：" + xhsRow.XhsRouteDisplay);
+
+                            xhsRow.SetXhsRouteCandidates(
+                            [
+                                new XhsRoutePoi("p1", "外滩", "中山东一路"),
+                                new XhsRoutePoi("p2", "豫园", "福佑路"),
+                            ]);
+                            if (xhsRow.XhsRouteCandidates.Count != 2
+                                || !xhsRow.HasXhsRouteCandidates)
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线候选没进列表：" + xhsRow.XhsRouteCandidates.Count);
+
+                            xhsRow.AddXhsRoutePoint(
+                                new XhsRoutePoint("p1", "外滩", 121.49, 31.24));
+                            xhsRow.AddXhsRoutePoint(
+                                new XhsRoutePoint("p2", "豫园", 121.49, 31.23));
+                            xhsRow.AddXhsRoutePoint(
+                                new XhsRoutePoint("p1", "外滩", 121.49, 31.24)); // 重复 poiId
+                            if (!xhsRow.HasXhsRoutePoints
+                                || xhsRow.XhsRoutePoints.Count != 2
+                                || !xhsRow.XhsRouteSaveLabel.Contains("2 个地点", StringComparison.Ordinal))
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线草稿去重/计数不对："
+                                    + xhsRow.XhsRouteSaveLabel);
+
+                            pv.RemoveXhsRoutePoiCommand.Execute(xhsRow.XhsRoutePoints[1]);
+                            await Task.Delay(100);
+                            if (xhsRow.XhsRoutePoints.Count != 1)
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线地点移除没生效");
+
+                            xhsRow.ApplyXhsRoute(new XhsRouteRef("t1", "路线一"));
+                            await Task.Delay(100);
+                            if (!xhsRow.HasXhsRoute
+                                || xhsRow.Params.Xhs?.Route is not { TravelId: "t1" }
+                                || !xhsRow.XhsRouteDisplay.Contains("路线一", StringComparison.Ordinal)
+                                || xhsRow.IsXhsRouteBuilderVisible)
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线快照没写回 / 编辑器没收起："
+                                    + xhsRow.XhsRouteDisplay);
+
+                            pv.ClearXhsRouteCommand.Execute(xhsRow);
+                            await Task.Delay(100);
+                            if (xhsRow.HasXhsRoute || xhsRow.Params.Xhs?.Route is not null
+                                || !xhsRow.IsXhsRouteBuilderVisible)
+                                throw new InvalidOperationException(
+                                    "[smoke] 路线「清除」没生效");
+                            Console.WriteLine(
+                                "[smoke] 发布页：小红书添加路线（去重 / 移除 / 快照 / 清除）OK");
                             if (!dyRow.TopicSupportsSearch || dyRow.TopicSupportsRecommend || !dyRow.TopicHasApi)
                                 throw new InvalidOperationException(
                                     "[smoke] 抖音话题能力不对："
@@ -1495,6 +2763,50 @@ public partial class App : Avalonia.Application
                                 || !wxRow.TopicApiHint.Contains("没有话题列表接口", StringComparison.Ordinal))
                                 throw new InvalidOperationException(
                                     "[smoke] 视频号应显示「无话题接口」说明：" + wxRow.TopicApiHint);
+
+                            // 视频号链接类型（2026-11-11 B2 wire）：UI 序号 0/1 ↔ urlType 1/2。
+                            // 选中项另有自检 [27] 钉 wire；这里只验下拉 → Extras → 下拉的接线。
+                            if (wxRow.WechatExtReadingTypeIndex != 0)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号链接类型初始应为「公众号文章」");
+                            wxRow.WechatExtReadingTypeIndex = 1;
+                            if (wxRow.Params.WechatVideo?.ExtReadingType != 2)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号链接类型「红包封面」没写回 Extras："
+                                    + wxRow.Params.WechatVideo?.ExtReadingType);
+                            wxRow.WechatExtReadingTypeIndex = 0;
+                            if (wxRow.Params.WechatVideo?.ExtReadingType != 1)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号链接类型「公众号文章」没写回 Extras："
+                                    + wxRow.Params.WechatVideo?.ExtReadingType);
+
+                            // 视频号 @好友（2026-11-11 B2）：候选造景 → 选 → 已选 → 移除（零网络）。
+                            // 搜索接口不在这里调（冒烟零网络），只验 VM 接线与 Extras 往返。
+                            wxRow.SetWechatMentionCandidates(
+                            [
+                                new WechatVideoMentionUser("知鸭", "v2_a@finder", null, "某某公司"),
+                                new WechatVideoMentionUser("温史知新"),
+                            ]);
+                            if (!wxRow.HasWechatMentionCandidates || wxRow.HasWechatMentions)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号 @好友：候选造景或初始已选态不对");
+                            var wxPick = wxRow.WechatMentionCandidates[0];
+                            if (!wxRow.AddWechatMention(wxPick.User) || !wxPick.IsPicked)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号 @好友：选中没生效 / 候选「已选」态没同步");
+                            if (wxRow.Params.WechatVideo?.MentionUsers is not
+                                [{ Nickname: "知鸭", Username: "v2_a@finder" }])
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号 @好友：没写回 Extras.MentionUsers");
+                            if (wxRow.WechatMentionDisplay != "已选 @知鸭")
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号 @好友：展示文案不对 " + wxRow.WechatMentionDisplay);
+                            wxRow.RemoveWechatMention(wxRow.WechatMentions[0]);
+                            if (wxRow.HasWechatMentions
+                                || wxRow.Params.WechatVideo?.MentionUsers.Count != 0)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号 @好友：移除没生效");
+                            Console.WriteLine("[smoke] 发布页：视频号 @好友（候选造景/选中/展示/移除）OK");
                             // 2026-11-06 用户要求：右侧平台卡话题块已删除，只保留左侧全局话题卡。
                             // 这里只验「左卡在、右块没了」；全局卡的手动添加会触发联邦解析（真网络），
                             // 冒烟零网络不点它。
@@ -1562,15 +2874,17 @@ public partial class App : Avalonia.Application
 
                             // ── 全局「官方活动」区（2.6.9）：TEMP 造景、**零网络** ──
                             // 2026-11-06 用户要求把活动合并到公共区：每平台一行。
-                            // 验六件事：能力矩阵（抖音有行 / 视频号没有行）、面板接线、
+                            // 验六件事：能力矩阵（抖音/视频号有行 / 头条没有行）、面板接线、
                             // 单选 + 已结束不可选、选中自动带关联话题（TopicRefs + 旧字段桥接）、
                             // 选择作用到该平台所有账号、清除活动同时移除自动带入的话题。
                             // 造景候选带封面 URL 也没关系 —— 封面加载只在「获取活动列表」命令里发起，
                             // 这里直接 SetActivityOptions 不走网络。
                             var dyActivityRow = pv.ActivityRows.FirstOrDefault(
                                 r => r.PlatformKey == PlatformNames.Douyin);
-                            if (dyActivityRow is null
-                                || pv.ActivityRows.Any(r => r.PlatformKey == PlatformNames.WechatVideo))
+                            var wxActivityRow = pv.ActivityRows.FirstOrDefault(
+                                r => r.PlatformKey == PlatformNames.WechatVideo);
+                            if (dyActivityRow is null || wxActivityRow is null
+                                || pv.ActivityRows.Any(r => r.PlatformKey == PlatformNames.Toutiao))
                                 throw new InvalidOperationException(
                                     "[smoke] 全局活动区能力矩阵不对：rows="
                                     + string.Join(",", pv.ActivityRows.Select(r => r.PlatformKey)));

@@ -428,7 +428,11 @@ public sealed class BilibiliUploadService
     public static void ParseMultipartComplete(string bodyText)
         => RequireCodeZero(bodyText, "multipart/complete");
 
-    private static void RequireCodeZero(string bodyText, string what)
+    /// <summary>
+    /// <c>code≠0</c> 抛 <see cref="BilibiliApiException"/>（带平台 message；-101 追加登录引导）。
+    /// 字幕 / 卡片服务复用同一口径。
+    /// </summary>
+    internal static void RequireCodeZero(string bodyText, string what)
         => RequireCodeZero(ParseJsonObject(bodyText, what), bodyText, what);
 
     private static void RequireCodeZero(JsonElement root, string bodyText, string what)

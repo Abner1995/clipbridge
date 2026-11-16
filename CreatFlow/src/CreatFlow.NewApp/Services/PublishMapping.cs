@@ -1,5 +1,6 @@
 using CreatFlow.Platforms.Douyin;
 using CreatFlow.Platforms.Kuaishou;
+using CreatFlow.Platforms.Toutiao;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -38,12 +39,16 @@ public static class DeclarationMapping
             PlatformNames.WechatVideo => kind is DeclarationKind.AiGenerated or DeclarationKind.Fiction
                 or DeclarationKind.PersonalOpinion or DeclarationKind.Marketing
                 or DeclarationKind.Repost or DeclarationKind.SelfShot,
-            // B站创作声明下拉只有 0 无需标注 / 1 AI / 2 虚构 / 3 营销 四项；
-            // 「转载」不是声明而是版权（copyright=2），走 CopyrightMapping.Bilibili
+            // B站创作声明下拉六项（A7，`archive/pre` 的 `neutral_mark.mark_list`）：
+            // -1 无需标注 / 1 AI / 2 虚构 / 3 营销 / 4 个人观点 / -2 转载；没有「自行拍摄」。
+            // 「转载」声明与版权（copyright=2）是两回事 —— 版权映射不动，见 CopyrightMapping。
             PlatformNames.Bilibili => kind is DeclarationKind.AiGenerated or DeclarationKind.Fiction
-                or DeclarationKind.Marketing,
-            // 头条作品声明提交字段名未抓（1.3 头条表），v1 不下发 —— 能力矩阵标不支持，
-            // UI 灰显而不是「选了却没发出去」
+                or DeclarationKind.Marketing or DeclarationKind.PersonalOpinion
+                or DeclarationKind.Repost,
+            // 头条作品声明（A1，2026-11-10 抓包）：AI/虚构/个人观点/自行拍摄/转载都有对应
+            // ComplianceType；**没有营销**（Marketing 置灰并由预检说明）。
+            PlatformNames.Toutiao => kind is DeclarationKind.AiGenerated or DeclarationKind.Fiction
+                or DeclarationKind.PersonalOpinion or DeclarationKind.SelfShot or DeclarationKind.Repost,
             _ => false,
         };
     }
@@ -79,14 +84,10 @@ public static class DeclarationMapping
                 "快手没有「含营销推广信息」声明",
             DeclarationKind.PersonalOpinion when platformKey == PlatformNames.Xiaohongshu =>
                 "小红书没有「内容为个人观点」声明",
-            DeclarationKind.Repost when platformKey == PlatformNames.Bilibili =>
-                "B站的「转载」是版权选项，去掉原创声明即按转载发布",
             DeclarationKind.SelfShot when platformKey == PlatformNames.Bilibili =>
                 "B站没有「自行拍摄」声明",
-            DeclarationKind.PersonalOpinion when platformKey == PlatformNames.Bilibili =>
-                "B站没有「内容为个人观点」声明",
-            _ when platformKey == PlatformNames.Toutiao =>
-                "头条作品声明的提交字段尚未接入，本条将不带声明",
+            DeclarationKind.Marketing when platformKey == PlatformNames.Toutiao =>
+                "头条没有「含营销推广信息」声明",
             _ => "该平台不支持此声明",
         };
     }
@@ -140,15 +141,46 @@ public static class DeclarationMapping
     };
 
     /// <summary>
-    /// B站：<c>creation_statement.id</c>（0 内容无需标注 / 1 含AI生成内容 / 2 含虚构演绎内容 /
-    /// 3 内容含营销信息）。选项清单来自抓包页面下拉（<c>docs/bilibili/20261104/接口说明书.md</c> §2.8），
-    /// 接口响应里没有 —— 阶段 4 实账号探针再核对一次。
+    /// 头条：<c>ComplianceInfo.ComplianceType</c>（A1，2026-11-10 抓包）。
+    /// <paramref name="platformOverride"/> 非 null 时**优先**（0 = 平台卡选了「不声明」）；
+    /// null = 跟随全局语义。返回 null = 发布体不带 <c>ComplianceInfo</c>。
+    ///
+    /// 全局映射：AI → 3 / 虚构 → 6 / 个人观点 → 5 / 自行拍摄 → 1 / 转载 → 2（取自站外）；
+    /// 营销（头条无对应）与不声明 → null。
+    /// </summary>
+    public static int? ToutiaoComplianceType(DeclarationKind kind, int? platformOverride)
+    {
+        if (platformOverride is { } o)
+        {
+            if (o == ToutiaoComplianceOptions.NoneValue) return null;
+            return ToutiaoComplianceOptions.IsKnownType(o) ? o : null;
+        }
+
+        return kind switch
+        {
+            DeclarationKind.AiGenerated => 3,
+            DeclarationKind.Fiction => 6,
+            DeclarationKind.PersonalOpinion => 5,
+            DeclarationKind.SelfShot => 1,
+            DeclarationKind.Repost => 2, // 取自站外（MaterialSource:2）
+            _ => null,                   // None / Marketing（头条无营销声明）
+        };
+    }
+
+    /// <summary>
+    /// B站：<c>creation_statement.id</c>（-1 内容无需标注 / 1 含AI生成内容 / 2 含虚构演绎内容 /
+    /// 3 内容含营销信息 / 4 个人观点，仅供参考 / -2 内容为转载）。选项清单与 ID 来自
+    /// <c>archive/pre</c> 响应的 <c>neutral_mark.mark_list</c>（2026-11-10 抓包，A7）；
+    /// 没有「自行拍摄」。不声明 → 0 —— <c>BilibiliPublishService.BuildAddV3Body</c> 对 null/0
+    /// 不下发该键（id=0 会被平台按「声明不存在」整条拒稿，2026-11-09 实测 21517）。
     /// </summary>
     public static int BilibiliCreationStatement(DeclarationKind kind) => kind switch
     {
         DeclarationKind.AiGenerated => 1,
         DeclarationKind.Fiction => 2,
         DeclarationKind.Marketing => 3,
+        DeclarationKind.PersonalOpinion => 4,
+        DeclarationKind.Repost => -2,
         _ => 0,
     };
 
@@ -184,7 +216,8 @@ public static class OriginalMapping
 
 /// <summary>
 /// 版权映射（B站 <c>copyright</c>）—— 与「内容声明」是两回事：
-/// 声明下拉里没有「转载」，转载语义体现在版权上（2）；勾了原创 → 自制（1）。
+/// 创作声明下拉里另有「内容为转载」（-2，A7 起支持），但版权仍独立 ——
+/// 转载 → 2（与旧行为一致，v1 不动）；勾了原创 → 自制（1）。
 /// 抓包里页面默认 3 的含义待实账号探针确认（阶段 4），未勾原创时**沿用 3**，不改页面默认。
 /// </summary>
 public static class CopyrightMapping
@@ -315,6 +348,16 @@ public static class PlatformLimits
     /// <see cref="PublishPayloadBuilder.ComposeKuaishouCaption"/>）。
     /// </summary>
     public const int KuaishouCaptionChars = 500;
+
+    /// <summary>
+    /// 快手章节的页面侧规则（B3 抓包 2026-11-11 的 bundle 校验）：
+    /// 入口仅当视频 <c>duration &gt; 60</c> 秒且上传完成；最多 10 章、标题 ≤12 字、
+    /// 相邻章节（含片尾哨兵）间隔必须 &gt; 5 秒。submit 是否同样拒绝未实测 —— 预检只提示。
+    /// </summary>
+    public const double KuaishouChapterMinDurationS = 60.0;
+    public const int KuaishouMaxChapters = 10;
+    public const int KuaishouChapterTitleChars = 12;
+    public const int KuaishouChapterMinGapS = 5;
 
     /// <summary>视频号短标题上限</summary>
     public const int WechatShortTitleChars = 20;
