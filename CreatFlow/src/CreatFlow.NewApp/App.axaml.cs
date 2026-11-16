@@ -1120,9 +1120,18 @@ public partial class App : Avalonia.Application
 
                         var platforms = ApiClient.GetAsync<List<PlatformConfigItem>>("/api/config/platforms")
                             .GetAwaiter().GetResult();
-                        if (platforms is not { Count: 4 })
+                        var expectedPlatformKeys = new[]
+                        {
+                            "douyin", "kuaishou", "xiaohongshu", "wechatvideo", "bilibili", "toutiao",
+                        };
+                        var platformKeys = platforms?
+                            .Select(p => p.PlatformKey)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase) ?? [];
+                        var missingPlatforms = expectedPlatformKeys
+                            .Where(k => !platformKeys.Contains(k)).ToList();
+                        if (missingPlatforms.Count > 0)
                             throw new InvalidOperationException(
-                                $"[smoke] 本地平台配置不是 4 条：{platforms?.Count}");
+                                $"[smoke] 本地平台配置缺少：{string.Join(",", missingPlatforms)}");
 
                         var standaloneAccountNav = shell.Sections.SelectMany(s => s.Items).First(i => i.Key == "account");
                         shell.Navigate(standaloneAccountNav);
@@ -1132,7 +1141,7 @@ public partial class App : Avalonia.Application
                                 "[smoke] 单机版账号页仍显示会员区块或退出登录");
 
                         Console.WriteLine($"[smoke] 单机版：TEMP 本地库 {Path.GetFileName(localDb)} + "
-                                          + "导航过滤（无激活/设备/公告/钉钉）+ 平台配置 4 条 + 账号页无会员区块 OK");
+                                          + "导航过滤（无激活/设备/公告/钉钉）+ 平台配置 6 条 + 账号页无会员区块 OK");
                     }
 
                     var pages = shell.Sections.SelectMany(s => s.Items)

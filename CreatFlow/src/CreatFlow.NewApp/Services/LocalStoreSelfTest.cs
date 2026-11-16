@@ -62,7 +62,7 @@ public static class LocalStoreSelfTest
 
             using (var db = LocalStoreInitializer.CreateContext(dbPath))
             {
-                Check("平台种子 4 条", db.Platform.Count() == 4, db.Platform.Count().ToString());
+                Check("平台种子 6 条", db.Platform.Count() == 6, db.Platform.Count().ToString());
                 // 值对象比较留在内存里做（EF 表达式里对转换列比较容易翻不成 SQL）
                 Check("固定本机会员存在",
                     db.Member.ToList().Any(m => m.Id == MemberId.Of(memberId)));
@@ -73,10 +73,16 @@ public static class LocalStoreSelfTest
                     journal ?? "(null)");
             }
 
-            // 幂等：再跑一次不应重复种子
+            // 幂等：再跑一次不应重复种子；删掉一行模拟老库，重跑应只补回缺的那一行
+            using (var db = LocalStoreInitializer.CreateContext(dbPath))
+                db.Platform.Remove(db.Platform.First(p => p.PlatformKey == "bilibili"));
             LocalStoreInitializer.EnsureInitialized(dbPath);
             using (var db = LocalStoreInitializer.CreateContext(dbPath))
-                Check("重复初始化幂等（平台仍 4 条）", db.Platform.Count() == 4);
+            {
+                Check("重复初始化幂等（平台仍 6 条）", db.Platform.Count() == 6);
+                Check("老库按 key 补齐缺失平台（B站已补回）",
+                    db.Platform.Any(p => p.PlatformKey == "bilibili"));
+            }
 
             var provider = BuildProvider(dbPath);
 
@@ -377,7 +383,7 @@ public static class LocalStoreSelfTest
                 var file = LocalStoreInitializer.Backup(db, "selftest", backupDir);
                 Check("VACUUM INTO 生成快照", File.Exists(file), Path.GetFileName(file));
                 using var snap = LocalStoreInitializer.CreateContext(file);
-                Check("快照可打开且平台数据完整", snap.Platform.Count() == 4);
+                Check("快照可打开且平台数据完整", snap.Platform.Count() == 6);
             }
 
             // ═══ [6b] 导出 / 导入（zip）═══
@@ -548,7 +554,7 @@ public static class LocalStoreSelfTest
             Check("坏数据库备份被拒绝导入", !badDbOk, badDbMsg);
             using (var db = LocalStoreInitializer.CreateContext(dbPath))
             {
-                Check("拒绝导入后当前库仍可读", db.Platform.Count() == 4);
+                Check("拒绝导入后当前库仍可读", db.Platform.Count() == 6);
             }
 
             // ═══ [10] 平台探活接线（零网络路径） ═══
@@ -610,7 +616,7 @@ public static class LocalStoreSelfTest
             LocalStoreInitializer.EnsureInitialized(dbPath);
             using (var db = LocalStoreInitializer.CreateContext(dbPath))
             {
-                Check("清除后可重建新库（平台种子 4 条）", db.Platform.Count() == 4);
+                Check("清除后可重建新库（平台种子 6 条）", db.Platform.Count() == 6);
             }
 
             // 3) 勾选机器级再清一次（幂等：目录已不在也不报错）
