@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using CreatFlow.NewApp.Models;
 using CreatFlow.NewApp.Services;
+using CreatFlow.Platforms.WechatVideo;
 using CreatFlow.Shared;
 
 namespace CreatFlow.NewApp.ViewModels;
@@ -16,7 +17,7 @@ namespace CreatFlow.NewApp.ViewModels;
 ///     同一条视频的 4 条记录被切在相邻两页，卡片上显示成「只发了 2 个平台」。
 ///  ② **筛选与搜索在服务端**：客户端过滤会让「共 N 条」说谎（只统计了当前页）。
 ///     facet 计数跟关键词、不跟平台筛选（否则点一下抖音，其余芯片的计数全变）。
-///  ③ **删除是全页唯一的写操作**，顺序不可反：先删平台、后删记录 ——
+///  ③ **写操作只有两类**：删除与视频号可见性。删除顺序不可反：先删平台、后删记录 ——
 ///     先删记录 = 平台作品变孤儿，且界面上再也没有入口能重试。
 ///
 /// 视觉/交互基线见 docs/creatflow/newapp-video-manage-page-design.md。
@@ -342,6 +343,7 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
             Total = data.Total;
             BuildRows(data.Items);
             SyncChips(data.PlatformCounts);
+            StartVisibilityReadback(seq);
         }
         catch (ApiException ex) when (ex.StatusCode == 401)
         {
@@ -508,7 +510,7 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
     }
 
     // ═══════════════════════════════════════════════════════════════
-    //  删除（本页唯一的写操作）
+    //  删除
     // ═══════════════════════════════════════════════════════════════
 
     [RelayCommand]
@@ -519,6 +521,7 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
         {
             r.IsConfirmingDelete = ReferenceEquals(r, row);   // 单开一张卡
             r.IsConfirmingWholeVideo = false;                 // 两条确认条互斥
+            r.IsConfirmingVisibility = false;                 // 也不与可见性确认条并存
         }
     }
 
@@ -529,6 +532,182 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
         {
             row.IsConfirmingDelete = false;
             row.IsConfirmingWholeVideo = false;
+            row.IsConfirmingVisibility = false;
+        }
+    }
+
+    // ═══ 可见性（仅视频号：单按钮来回切）═══
+
+    /// <summary>
+    /// 单按钮切换：点一下先弹**行内确认条**（两个方向都要确认，防误点）；
+    /// 确认后按当前状态反向设置 —— 公开 / 未知 → 设为仅自己；仅自己 → 设为公开。
+    ///
+    /// 为什么在视频管理页做而不是发布管线：视频号的可见性**不是发布参数**
+    /// （<c>post_create</c> 体里没有该字段，发布后才有 <c>post_update_visible</c>）。
+    /// 放在这里由用户手动触发，失败看得见、也不存在「已公开但后台静默失败」的隐私窗口。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleWechatVisibility(VideoArchiveRow? row)
+    {
+        if (row?.Item is null || !row.ShowWechatVisibilityButton || row.IsSettingVisibility)
+            return;
+
+        // 两条删除确认条与可见性确认条互斥（同一时刻只开一张卡）
+        foreach (var r in Rows)
+        {
+            r.IsConfirmingDelete = false;
+            r.IsConfirmingWholeVideo = false;
+            r.IsConfirmingVisibility = ReferenceEquals(r, row);
+        }
+    }
+
+    /// <summary>收起可见性确认条（只收条，不改任何状态）</summary>
+    [RelayCommand]
+    private void CancelWechatVisibility(VideoArchiveRow? row)
+    {
+        if (row is not null) row.IsConfirmingVisibility = false;
+    }
+
+    /// <summary>确认条上的确认按钮：先收条，再按当前状态反向调平台</summary>
+    [RelayCommand]
+    private async Task ConfirmWechatVisibilityAsync(VideoArchiveRow? row)
+    {
+        if (row is null) return;
+        row.IsConfirmingVisibility = false;
+        var visibleType = row.IsWechatPrivate == true
+            ? WechatVideoContentService.VisibleTypePublic
+            : WechatVideoContentService.VisibleTypePrivate;
+        await SetWechatVisibilityAsync(row, visibleType);
+    }
+
+    /// <summary>
+    /// 调平台改可见性并归一化到行状态。
+    /// 成功才翻转 <see cref="VideoArchiveRow.IsWechatPrivate"/> —— 失败时平台侧没变，
+    /// 行上的已知状态必须保持原样（按钮文案不能跟着失败跳）。
+    /// </summary>
+    private async Task SetWechatVisibilityAsync(VideoArchiveRow row, int visibleType)
+    {
+        if (row.Item is not { } item || !row.ShowWechatVisibilityButton || row.IsSettingVisibility)
+            return;
+
+        var isPrivate = visibleType == WechatVideoContentService.VisibleTypePrivate;
+        row.IsSettingVisibility = true;
+        row.IsVisibilityError = false;
+        row.VisibilityStateText = "";
+        Error = "";
+        NotifyState();
+
+        try
+        {
+            var (result, error) = await VideoArchiveVisibilityService.SetOnPlatformAsync(
+                item.PlatformKey,
+                item.PlatformSessionId ?? Guid.Empty,
+                item.PlatformVideoId ?? "",
+                visibleType);
+
+            switch (result)
+            {
+                case PlatformVisibilityResult.Success:
+                    row.IsWechatPrivate = isPrivate;
+                    row.VisibilityStateText = isPrivate ? "已设为仅自己" : "已设为公开";
+                    StatusText = row.VisibilityStateText;
+                    break;
+
+                case PlatformVisibilityResult.SessionGone:
+                    // 记录上的会话已解绑 —— 重试不可能成功，按钮收起
+                    row.IsVisibilityUnavailable = true;
+                    row.IsVisibilityError = true;
+                    row.VisibilityStateText = "账号已解绑，无法设置";
+                    Error = isPrivate
+                        ? "这条记录的账号已解绑 —— 请到视频号助手手动设为仅自己"
+                        : "这条记录的账号已解绑 —— 请到视频号助手手动设为公开";
+                    break;
+
+                default:
+                    row.IsVisibilityError = true;
+                    row.VisibilityStateText = "设置失败：" + (error ?? "未知错误");
+                    Error = "设置失败：" + (error ?? "未知错误");
+                    break;
+            }
+
+            NotifyState();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "[VideoArchive] 设置视频号可见性异常 platformId={Id}", item.PlatformId);
+            row.IsVisibilityError = true;
+            row.VisibilityStateText = "设置失败（请求异常）";
+            Error = "设置失败：" + ex.Message;
+            NotifyState();
+        }
+        finally
+        {
+            row.IsSettingVisibility = false;
+        }
+    }
+
+    // ── 可见性读回（post_list.visibleType 是唯一权威来源）──
+
+    /// <summary>
+    /// 列表加载后**后台**读回当前页视频号作品的真实可见性（不阻塞列表）。
+    /// 只读「还不知道」的行；已知的行以平台读回或本页动作结果为准，避免旧响应覆盖新动作。
+    /// </summary>
+    private void StartVisibilityReadback(int seq)
+    {
+        if (App.SmokeMode || IsDeleting) return;   // 冒烟零网络；删除在飞时 4 秒轮询会反复进来
+
+        var targets = Rows
+            .Where(r => r.IsRecord
+                        && r.IsWechatPrivate is null
+                        && r.Item is { } it
+                        && string.Equals(it.PlatformKey, PlatformNames.WechatVideo,
+                            StringComparison.OrdinalIgnoreCase)
+                        && it.PlatformSessionId is { } sid && sid != Guid.Empty
+                        && !string.IsNullOrWhiteSpace(it.PlatformVideoId))
+            .Select(r => (Row: r,
+                SessionId: r.Item!.PlatformSessionId!.Value,
+                ObjectId: r.Item!.PlatformVideoId!))
+            .ToList();
+        if (targets.Count == 0) return;
+
+        _ = ReadVisibilityAndApplyAsync(targets, seq);
+    }
+
+    private async Task ReadVisibilityAndApplyAsync(
+        List<(VideoArchiveRow Row, Guid SessionId, string ObjectId)> targets, int seq)
+    {
+        try
+        {
+            // 同一会话只翻一次列表；不同账号彼此独立
+            foreach (var group in targets.GroupBy(t => t.SessionId))
+            {
+                var ids = group.Select(t => t.ObjectId).Distinct(StringComparer.Ordinal).ToList();
+                var (map, sessionGone) = await VideoArchiveVisibilityService.ReadVisibleTypesAsync(
+                    PlatformNames.WechatVideo, group.Key, ids);
+
+                // 期间用户已经翻页/换筛选：这批读回的对应关系作废
+                if (seq != _loadSeq) return;
+
+                foreach (var (row, _, objectId) in group)
+                {
+                    if (sessionGone)
+                    {
+                        row.IsVisibilityUnavailable = true;
+                    }
+                    else if (row.IsWechatPrivate is null
+                             && map.TryGetValue(objectId, out var visibleType))
+                    {
+                        row.IsWechatPrivate =
+                            visibleType == WechatVideoContentService.VisibleTypePrivate;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // 读回是背景增强：失败只影响按钮文案的准确度（未知按公开默认），不影响列表
+            Log.Debug(ex, "[VideoArchive] 视频号可见性读回失败（忽略）");
         }
     }
 
@@ -575,6 +754,7 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
         {
             r.IsConfirmingDelete = false;
             r.IsConfirmingWholeVideo = ReferenceEquals(r, row);
+            r.IsConfirmingVisibility = false;
         }
         row.IsCountingWholeVideo = true;
         row.WholeVideoText = "正在统计副本…";
@@ -755,6 +935,7 @@ public sealed partial class VideoManageViewModel : ViewModelBase, INavigationAwa
             row.IsSelected = false;
             row.IsConfirmingDelete = false;
             row.IsConfirmingWholeVideo = false;
+            row.IsConfirmingVisibility = false;
             RemoveRowLocally(row);
         }
         foreach (var id in ids) _pendingDeleteIds.Add(id);

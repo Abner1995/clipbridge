@@ -668,6 +668,96 @@ public sealed class WechatVideoContentService
         return ok;
     }
 
+    // ═══ Visibility — 可见性（发布后独立操作） ═══
+
+    /// <summary>可见性 wire 值：公开</summary>
+    public const int VisibleTypePublic = 1;
+    /// <summary>可见性 wire 值：仅自己</summary>
+    public const int VisibleTypePrivate = 3;
+
+    /// <summary>
+    /// 设置作品可见性。
+    ///
+    /// 端点: POST /post/post_update_visible
+    /// 抓包: <c>docs/wechatvideo/20261105/requests/post_update_visible_private.json</c>
+    ///
+    /// ⚠️ 视频号的可见性**不是发布参数**：<c>post_create</c> 体里没有这个字段（默认公开），
+    /// 私密必须发布成功后单独调这里（字段映射 §2.6）。平台只有两态：公开 / 仅自己。
+    /// </summary>
+    /// <param name="visibleType"><see cref="VisibleTypePublic"/> / <see cref="VisibleTypePrivate"/></param>
+    /// <returns>成功返回 null；失败返回平台错误文案（合集视频会回 -11220）</returns>
+    public async Task<string?> UpdateVisibleAsync(
+        string cookie,
+        string deviceId,
+        string objectId,
+        int visibleType,
+        CancellationToken ct = default)
+    {
+        using var client = new WechatVideoApiClient(_options, cookie, deviceId, uin: Uin, finderId: FinderId);
+
+        var body = new Dictionary<string, object?>
+        {
+            ["objectId"] = objectId,
+            ["visibleType"] = visibleType,
+        };
+
+        LogDebug("[WechatVideo] UpdateVisible → objectId={Id}, visibleType={Type}",
+            objectId, visibleType);
+
+        // pageUrl 取抓包的 referer：这个操作在「作品列表」页，不在发布页
+        var resp = await client.PostAsync("/post/post_update_visible", body,
+            "https://channels.weixin.qq.com/micro/content/post/finderNewLifePostList", ct);
+
+        if (resp.ErrCode != 0)
+        {
+            var msg = $"errCode={resp.ErrCode}, errMsg={resp.ErrMsg}";
+            LogWarn("[WechatVideo] UpdateVisible failed: {Error}", msg);
+            return msg;
+        }
+
+        // 成功体是 data.errorCode / data.msg；平台拒绝（如合集视频 -11220）
+        // 走 data.baseResp.errcode / errmsg —— 此时顶层 errCode 仍是 0
+        var nested = ReadVisibleError(resp.Data);
+        if (nested is not null)
+        {
+            LogWarn("[WechatVideo] UpdateVisible rejected: {Error}", nested);
+            return nested;
+        }
+
+        LogInfo("[WechatVideo] UpdateVisible ok → objectId={Id}, visibleType={Type}",
+            objectId, visibleType);
+        return null;
+    }
+
+    /// <summary>
+    /// 从 <c>post_update_visible</c> 的 <c>data</c> 里取错误文案（成功返回 null）。
+    /// 纯函数，自检可直接断言两种错误形态。
+    /// </summary>
+    public static string? ReadVisibleError(JsonElement data)
+    {
+        if (data.ValueKind != JsonValueKind.Object) return null;
+
+        if (data.TryGetProperty("errorCode", out var code)
+            && code.ValueKind == JsonValueKind.Number
+            && code.GetInt32() != 0)
+        {
+            var msg = data.TryGetProperty("msg", out var m) ? m.GetString() : null;
+            return $"errorCode={code.GetInt32()}, msg={msg ?? ""}";
+        }
+
+        if (data.TryGetProperty("baseResp", out var baseResp)
+            && baseResp.ValueKind == JsonValueKind.Object
+            && baseResp.TryGetProperty("errcode", out var errEl)
+            && errEl.ValueKind == JsonValueKind.Number
+            && errEl.GetInt32() != 0)
+        {
+            var msg = baseResp.TryGetProperty("errmsg", out var em) ? em.GetString() : null;
+            return $"errcode={errEl.GetInt32()}, errmsg={msg ?? ""}";
+        }
+
+        return null;
+    }
+
     // ═══ Update — 编辑视频信息 ═══
 
     /// <summary>

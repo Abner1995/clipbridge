@@ -1,6 +1,9 @@
+using CreatFlow.NewApp.ViewModels;
 using CreatFlow.Platforms.Kuaishou;
 using CreatFlow.Platforms.Kuaishou.Requests;
 using CreatFlow.Platforms.Toutiao;
+using CreatFlow.Platforms.WechatVideo;
+using CreatFlow.Platforms.WechatVideo.Requests;
 
 namespace CreatFlow.NewApp.Services;
 
@@ -399,6 +402,117 @@ public static class VideoArchiveSelfTest
         Check("1 条时不写「全部副本 1」（措辞怪）",
             VideoArchiveFormat.WholeVideoButtonText(1) == "全部副本",
             VideoArchiveFormat.WholeVideoButtonText(1));
+
+        // ── 9. 视频号可见性（post_list.visibleType 读回 → 视频管理行内单按钮切换）──
+        sb.AppendLine("\n[9] 视频号可见性（读回 + 行内单按钮）");
+        Check("wire 值：公开=1 / 仅自己=3",
+            WechatVideoContentService.VisibleTypePublic == 1
+            && WechatVideoContentService.VisibleTypePrivate == 3);
+        Check("读回翻页上限 = 3 页 × 20 条",
+            VideoArchiveVisibilityService.ReadMaxPages == 3
+            && VideoArchiveVisibilityService.ReadPageSize == 20);
+
+        var listItem = JsonSerializer.Deserialize<PostListItem>(
+            """{"objectId":"export/UzFfSmoke","visibleType":3}""");
+        Check("post_list 项解析 visibleType=3（按钮文案的权威来源）",
+            listItem is { VisibleType: 3, ObjectId: "export/UzFfSmoke" },
+            listItem is null ? "null" : $"visibleType={listItem.VisibleType}");
+
+        using (var ok = JsonDocument.Parse("""{"errorCode":0,"msg":"ok"}"""))
+            Check("成功体 data.errorCode=0 → 无错误",
+                WechatVideoContentService.ReadVisibleError(ok.RootElement) is null);
+        using (var errCode = JsonDocument.Parse(
+            """{"errorCode":-11220,"msg":"加入合集的视频不可设为私密"}"""))
+            Check("data.errorCode 非 0 → 带出 msg",
+                WechatVideoContentService.ReadVisibleError(errCode.RootElement)
+                    ?.Contains("加入合集") == true,
+                WechatVideoContentService.ReadVisibleError(errCode.RootElement) ?? "null");
+        using (var baseResp = JsonDocument.Parse(
+            """{"baseResp":{"errcode":-11220,"errmsg":"加入合集的视频不可设为私密"}}"""))
+            Check("data.baseResp.errcode 非 0 → 带出码与 errmsg",
+                WechatVideoContentService.ReadVisibleError(baseResp.RootElement)
+                    ?.Contains("-11220") == true
+                && WechatVideoContentService.ReadVisibleError(baseResp.RootElement)
+                    ?.Contains("加入合集") == true,
+                WechatVideoContentService.ReadVisibleError(baseResp.RootElement) ?? "null");
+        using (var baseOk = JsonDocument.Parse("""{"baseResp":{"errcode":0,"errmsg":"ok"}}"""))
+            Check("data.baseResp.errcode=0 → 无错误",
+                WechatVideoContentService.ReadVisibleError(baseOk.RootElement) is null);
+        Check("非对象 data（缺失 / 未命中）→ 无错误且不抛",
+            WechatVideoContentService.ReadVisibleError(default) is null);
+
+        static VideoArchiveItem SmokeItem(string platformKey, string? videoId) => new(
+            TaskId: Guid.NewGuid(), VideoFileName: "a.mp4", VideoFilePath: @"D:\a.mp4",
+            VideoFileSize: 1024, CommonTitle: "冒烟视频",
+            PlatformId: Guid.NewGuid(), PlatformKey: platformKey,
+            PlatformDisplayName: PlatformNames.GetDisplayName(platformKey),
+            PlatformSessionId: Guid.NewGuid(), Title: "冒烟视频", Description: null,
+            CoverFilePath: null, CoverUrl: null, CollectionId: null, ExtraDataJson: null,
+            Status: 4, StatusText: "已发布", ProgressPct: 100, ErrorMsg: null, RetryCount: 0,
+            PlatformVideoId: videoId, PlatformVideoUrl: null, PublishedAt: DateTime.Now,
+            CreatedAt: DateTime.Now, HiddenInQueue: false);
+
+        var wxRow = VideoArchiveRow.Record(
+            SmokeItem(PlatformNames.WechatVideo, "export/UzFfSmoke"), "主号", "视频号", "#FA9D3B");
+        Check("视频号 + 有 objectId → 出现可见性按钮", wxRow.ShowWechatVisibilityButton);
+        Check("状态未知 → 默认「设为仅自己」（安全方向）",
+            wxRow.IsWechatPrivate is null && wxRow.VisibilityButtonText == "设为仅自己");
+        Check("状态小字默认不显示", !wxRow.HasVisibilityState);
+
+        wxRow.IsWechatPrivate = true;
+        Check("仅自己 → 按钮翻转「设为公开」", wxRow.VisibilityButtonText == "设为公开");
+        wxRow.IsWechatPrivate = false;
+        Check("公开 → 按钮显示「设为仅自己」", wxRow.VisibilityButtonText == "设为仅自己");
+
+        wxRow.IsSettingVisibility = true;
+        Check("设置中 → 文案「设置中…」", wxRow.VisibilityButtonText == "设置中…");
+        wxRow.IsSettingVisibility = false;
+
+        // 确认条：两个方向都走二次确认，正文与确认按钮随方向翻转
+        Check("可见性确认条默认收起", !wxRow.ShowVisibilityConfirmStrip);
+        wxRow.IsConfirmingVisibility = true;
+        Check("可见性确认条可展开", wxRow.ShowVisibilityConfirmStrip);
+        wxRow.IsConfirmingVisibility = false;
+
+        Check("公开 → 确认文案「只有你自己能看到」+ 按钮「确认仅自己」",
+            wxRow.VisibilityConfirmText.Contains("只有你自己")
+            && wxRow.VisibilityConfirmButtonText == "确认仅自己",
+            wxRow.VisibilityConfirmText);
+        wxRow.IsWechatPrivate = true;
+        Check("仅自己 → 确认文案「所有用户都能看到」+ 按钮「确认公开」",
+            wxRow.VisibilityConfirmText.Contains("所有用户都能看到")
+            && wxRow.VisibilityConfirmButtonText == "确认公开",
+            wxRow.VisibilityConfirmText);
+        wxRow.IsWechatPrivate = null;
+        Check("未知 → 确认文案不谎称「现在是公开」+ 按钮「确认仅自己」",
+            !wxRow.VisibilityConfirmText.Contains("现在是「公开」")
+            && wxRow.VisibilityConfirmButtonText == "确认仅自己",
+            wxRow.VisibilityConfirmText);
+        wxRow.IsWechatPrivate = false;
+
+        var dyRow = VideoArchiveRow.Record(
+            SmokeItem(PlatformNames.Douyin, "7412abcd"), "主号", "抖音", "#FE2C55");
+        Check("抖音行 → 不出现按钮", !dyRow.ShowWechatVisibilityButton);
+
+        var noIdRow = VideoArchiveRow.Record(
+            SmokeItem(PlatformNames.WechatVideo, null), "主号", "视频号", "#FA9D3B");
+        Check("视频号但没有 objectId → 不出现按钮", !noIdRow.ShowWechatVisibilityButton);
+
+        wxRow.IsDeleting = true;
+        Check("删除中 → 按钮收起", !wxRow.ShowWechatVisibilityButton);
+        wxRow.IsDeleting = false;
+        Check("删除取消后按钮回来", wxRow.ShowWechatVisibilityButton);
+
+        wxRow.IsVisibilityUnavailable = true;
+        Check("账号已解绑 → 按钮收起", !wxRow.ShowWechatVisibilityButton);
+        wxRow.IsVisibilityUnavailable = false;
+
+        wxRow.VisibilityStateText = "已设为仅自己";
+        Check("状态小字出现 + 成功绿",
+            wxRow.HasVisibilityState && wxRow.VisibilityStateHex == "#0A5C28");
+        wxRow.IsVisibilityError = true;
+        Check("失败变红（与 App.axaml 的 ColorError 同值）",
+            wxRow.VisibilityStateHex == "#C62828");
 
         var path = Path.Combine(Path.GetTempPath(), "newapp_video_selftest.txt");
         sb.AppendLine(failures == 0 ? "\n═══ 全部通过 ═══" : $"\n═══ {failures} 项失败 ═══");

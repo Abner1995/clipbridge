@@ -143,6 +143,11 @@ public sealed class PostListItem
     public int MediaType { get; set; }
     [JsonPropertyName("status")]
     public int Status { get; set; }
+    /// <summary>可见性：1 公开 / 3 仅自己可见（0 = 平台未下发，按未知处理）。
+    /// ⚠️ 这是**当前可见性唯一权威来源** —— 官方页的后台菜单文案也是按它算的
+    /// （公开 →「设为仅自己可见」，仅自己 →「设为公开可见」）。</summary>
+    [JsonPropertyName("visibleType")]
+    public int VisibleType { get; set; }
     [JsonPropertyName("exportId")]
     public string? ExportId { get; set; }
     /// <summary>发布时传入的 videoClipTaskId（clipKey），用于匹配回查 objectId。

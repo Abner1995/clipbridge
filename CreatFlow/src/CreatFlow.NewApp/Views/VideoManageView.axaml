@@ -181,7 +181,7 @@
             <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
                 <TextBlock Text="视频管理" FontSize="20" FontWeight="Bold" />
                 <TextBlock TextWrapping="Wrap"
-                           Text="已发布作品档案 —— 按平台一条记录一行，删除会同时把平台上的那条视频移除"
+                           Text="已发布作品档案 —— 按平台一条记录一行；删除会同时移除平台作品，视频号行内可切换「仅自己 / 公开」"
                            FontSize="12" Foreground="{StaticResource TextMuted}" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8"
@@ -383,12 +383,26 @@
                                                        TextTrimming="CharacterEllipsis" />
                                             <TextBlock Text="{Binding SubText}" Classes="hint"
                                                        TextTrimming="CharacterEllipsis" />
+                                            <!-- 可见性操作结果（成功绿 / 失败红）—— 失败全文同样进页面错误条 -->
+                                            <TextBlock Text="{Binding VisibilityStateText}" FontSize="11"
+                                                       Foreground="{Binding VisibilityStateHex}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       ToolTip.Tip="{Binding VisibilityStateText}"
+                                                       IsVisible="{Binding HasVisibilityState}" />
                                         </StackPanel>
                                         <StackPanel Grid.Column="4" Orientation="Horizontal"
                                                     Spacing="10" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding TimeText}" FontSize="12"
                                                        Foreground="{StaticResource TextSecondary}"
                                                        VerticalAlignment="Center" />
+                                            <!-- 只有视频号有发布后可见性接口（post_update_visible）。
+                                                 单按钮来回切，文案按平台读回的 visibleType 翻转：
+                                                 公开/未知 →「设为仅自己」；仅自己 →「设为公开」（都走确认条） -->
+                                            <Button Classes="ghost" Content="{Binding VisibilityButtonText}"
+                                                    IsVisible="{Binding ShowWechatVisibilityButton}"
+                                                    IsEnabled="{Binding !IsSettingVisibility}"
+                                                    Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).ToggleWechatVisibilityCommand}"
+                                                    CommandParameter="{Binding}" />
                                             <!-- 「全部副本」要跨页：分页单位是记录，一个视频的副本会被切在相邻两页，
                                                  只删本页那几条的话用户会以为删干净了 -->
                                             <Button Classes="ghost" Content="{Binding WholeVideoButtonText}"
@@ -447,6 +461,30 @@
                                                         Content="确认删除全部"
                                                         IsEnabled="{Binding !IsCountingWholeVideo}"
                                                         Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).DeleteWholeVideoConfirmedCommand}"
+                                                        CommandParameter="{Binding}" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <!-- 可见性二次确认条：两个方向都要确认（防误点）；
+                                         文案与确认按钮随方向翻转，与两条删除确认条互斥（同一时刻只开一个） -->
+                                    <Border Background="{StaticResource BgSubtle}"
+                                            CornerRadius="0,0,13,13" Padding="16,12"
+                                            IsVisible="{Binding ShowVisibilityConfirmStrip}">
+                                        <StackPanel Spacing="10">
+                                            <TextBlock Text="{Binding VisibilityConfirmText}"
+                                                       FontSize="11"
+                                                       Foreground="{StaticResource TextSecondary}"
+                                                       TextWrapping="Wrap" />
+                                            <StackPanel Orientation="Horizontal"
+                                                        HorizontalAlignment="Right" Spacing="8">
+                                                <Button Classes="sec" Height="26" FontSize="11"
+                                                        Content="取消"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).CancelWechatVisibilityCommand}"
+                                                        CommandParameter="{Binding}" />
+                                                <Button Classes="cta" Height="26" FontSize="11"
+                                                        Content="{Binding VisibilityConfirmButtonText}"
+                                                        Command="{Binding $parent[UserControl].((vm:VideoManageViewModel)DataContext).ConfirmWechatVisibilityCommand}"
                                                         CommandParameter="{Binding}" />
                                             </StackPanel>
                                         </StackPanel>

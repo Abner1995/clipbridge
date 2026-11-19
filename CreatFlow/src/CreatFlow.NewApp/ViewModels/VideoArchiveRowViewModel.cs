@@ -1,5 +1,6 @@
 using CreatFlow.NewApp.Models;
 using CreatFlow.NewApp.Services;
+using CreatFlow.Shared;
 
 namespace CreatFlow.NewApp.ViewModels;
 
@@ -90,7 +91,95 @@ public sealed partial class VideoArchiveRow : ObservableObject
 
     partial void OnWholeVideoCountChanged(int value) => OnPropertyChanged(nameof(WholeVideoButtonText));
 
-    partial void OnIsDeletingChanged(bool value) => OnPropertyChanged(nameof(ShowCheckbox));
+    partial void OnIsDeletingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowCheckbox));
+        OnPropertyChanged(nameof(ShowWechatVisibilityButton));
+    }
+
+    // ═══ 可见性（仅视频号：单按钮「设为仅自己 ⇄ 设为公开」）═══
+
+    /// <summary>
+    /// 只有视频号提供**发布后**的可见性接口（<c>post_update_visible</c>），
+    /// 且归档里必须有 objectId —— 两个条件缺一，按钮不出现。
+    /// </summary>
+    public bool ShowWechatVisibilityButton =>
+        IsRecord
+        && !IsDeleting
+        && !IsVisibilityUnavailable
+        && Item is { } item
+        && string.Equals(item.PlatformKey, PlatformNames.WechatVideo, StringComparison.OrdinalIgnoreCase)
+        && !string.IsNullOrWhiteSpace(item.PlatformVideoId);
+
+    /// <summary>
+    /// 当前可见性：true = 仅自己 / false = 公开 / **null = 未知**。
+    ///
+    /// 权威来源是平台 <c>post_list.visibleType</c>（官方页的菜单文案也按它算），
+    /// 由视频管理页加载后后台读回填充；本页切换成功后立即写入。
+    /// 未知按公开对待（发布默认公开），点击走安全方向「设为仅自己」。
+    /// </summary>
+    [ObservableProperty] private bool? _isWechatPrivate;
+
+    /// <summary>会话已解绑 —— 按钮收起，只留一行说明（重试没有意义）</summary>
+    [ObservableProperty] private bool _isVisibilityUnavailable;
+
+    /// <summary>正在调平台接口</summary>
+    [ObservableProperty] private bool _isSettingVisibility;
+
+    /// <summary>可见性切换的行内二次确认条（两个方向都要确认，防误点）</summary>
+    [ObservableProperty] private bool _isConfirmingVisibility;
+
+    /// <summary>行内状态小字（成功绿 / 失败红），空 = 不显示</summary>
+    [ObservableProperty] private string _visibilityStateText = "";
+
+    /// <summary>状态小字是不是失败（决定颜色）</summary>
+    [ObservableProperty] private bool _isVisibilityError;
+
+    public bool ShowVisibilityConfirmStrip => IsConfirmingVisibility;
+
+    public bool HasVisibilityState => VisibilityStateText.Length > 0;
+
+    /// <summary>与 App.axaml 的 ColorSuccess / ColorError 同值（改一处要同步）</summary>
+    public string VisibilityStateHex => IsVisibilityError ? "#C62828" : "#0A5C28";
+
+    /// <summary>单按钮文案：公开 / 未知 →「设为仅自己」；仅自己 →「设为公开」。</summary>
+    public string VisibilityButtonText =>
+        IsSettingVisibility ? "设置中…"
+        : IsWechatPrivate == true ? "设为公开" : "设为仅自己";
+
+    /// <summary>确认条正文 —— 随方向变；未知时不谎称当前是「公开」</summary>
+    public string VisibilityConfirmText =>
+        IsWechatPrivate == true
+            ? "这条作品现在是「仅自己」。设为公开后，所有用户都能看到它。"
+            : IsWechatPrivate == false
+                ? "这条作品现在是「公开」。设为仅自己后，只有你自己能看到它。"
+                : "设为仅自己后，只有你自己能看到它。";
+
+    /// <summary>确认条上的确认按钮文案</summary>
+    public string VisibilityConfirmButtonText =>
+        IsWechatPrivate == true ? "确认公开" : "确认仅自己";
+
+    partial void OnIsWechatPrivateChanged(bool? value)
+    {
+        OnPropertyChanged(nameof(VisibilityButtonText));
+        OnPropertyChanged(nameof(VisibilityConfirmText));
+        OnPropertyChanged(nameof(VisibilityConfirmButtonText));
+    }
+
+    partial void OnIsVisibilityUnavailableChanged(bool value) =>
+        OnPropertyChanged(nameof(ShowWechatVisibilityButton));
+
+    partial void OnIsSettingVisibilityChanged(bool value) =>
+        OnPropertyChanged(nameof(VisibilityButtonText));
+
+    partial void OnIsConfirmingVisibilityChanged(bool value) =>
+        OnPropertyChanged(nameof(ShowVisibilityConfirmStrip));
+
+    partial void OnVisibilityStateTextChanged(string value) =>
+        OnPropertyChanged(nameof(HasVisibilityState));
+
+    partial void OnIsVisibilityErrorChanged(bool value) =>
+        OnPropertyChanged(nameof(VisibilityStateHex));
 
     /// <summary>天头行（key = 天标签；条数随刷新就地更新）</summary>
     public static VideoArchiveRow Header(string dayLabel, int count)
@@ -134,6 +223,8 @@ public sealed partial class VideoArchiveRow : ObservableObject
         ConfirmText = VideoArchiveFormat.DeleteStripText(VideoArchiveFormat.DeleteMode(
             item.PlatformKey, item.PlatformSessionId, item.PlatformVideoId,
             sessionKnown: sessionKnown));
+        // Item 是就地替换的（不是新行）—— 依赖它的可见性按钮显隐要手动播报
+        OnPropertyChanged(nameof(ShowWechatVisibilityButton));
     }
 }
 

@@ -1428,6 +1428,72 @@ public partial class App : Avalonia.Application
                                 vv.DeleteCancelCommand.Execute(row);
                                 await Task.Delay(150);
                             }
+
+                            // 视频号可见性单按钮（2026-11-19）：默认数据里未必有视频号行 ——
+                            // 用内存造一行验证「按钮出现条件 + 单按钮文案 + 命令接线」。
+                            // **只走安全分支**：点按钮只弹确认条（两个方向都是），零请求；
+                            // 绝不执行确认（那会真调平台）。
+                            var fakeWxRow = VideoArchiveRow.Record(new VideoArchiveItem(
+                                TaskId: Guid.NewGuid(), VideoFileName: "smoke.mp4",
+                                VideoFilePath: @"C:\smoke.mp4", VideoFileSize: 1024,
+                                CommonTitle: "冒烟视频", PlatformId: Guid.NewGuid(),
+                                PlatformKey: PlatformNames.WechatVideo,
+                                PlatformDisplayName: "视频号",
+                                PlatformSessionId: Guid.NewGuid(), Title: "冒烟视频",
+                                Description: null, CoverFilePath: null, CoverUrl: null,
+                                CollectionId: null, ExtraDataJson: null, Status: 4,
+                                StatusText: "已发布", ProgressPct: 100, ErrorMsg: null,
+                                RetryCount: 0, PlatformVideoId: "export/smoke",
+                                PlatformVideoUrl: null, PublishedAt: DateTime.Now,
+                                CreatedAt: DateTime.Now, HiddenInQueue: false),
+                                "冒烟账号", "视频号", "#FA9D3B");
+                            if (!fakeWxRow.ShowWechatVisibilityButton)
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号行没显示可见性按钮");
+                            if (fakeWxRow.VisibilityButtonText != "设为仅自己")
+                                throw new InvalidOperationException(
+                                    "[smoke] 未知状态没按安全默认显示「设为仅自己」");
+                            vv.Rows.Insert(0, fakeWxRow);
+                            await Task.Delay(250);
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                .Any(b => ReferenceEquals(b.Command, vv.ToggleWechatVisibilityCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 视频号可见性按钮没接上命令");
+
+                            // 已知「仅自己」→ 点按钮必须先摆确认条，不能直接调平台
+                            fakeWxRow.IsWechatPrivate = true;
+                            if (fakeWxRow.VisibilityButtonText != "设为公开")
+                                throw new InvalidOperationException(
+                                    "[smoke] 仅自己状态没把按钮文案翻转成「设为公开」");
+                            vv.ToggleWechatVisibilityCommand.Execute(fakeWxRow);
+                            if (!fakeWxRow.IsConfirmingVisibility
+                                || fakeWxRow.VisibilityConfirmButtonText != "确认公开")
+                                throw new InvalidOperationException(
+                                    "[smoke] 「设为公开」没先弹确认条");
+                            await Task.Delay(250);
+                            if (!target.GetVisualDescendants().OfType<Button>()
+                                .Any(b => ReferenceEquals(b.Command, vv.ConfirmWechatVisibilityCommand)))
+                                throw new InvalidOperationException(
+                                    "[smoke] 「确认公开」按钮没接上命令");
+                            vv.CancelWechatVisibilityCommand.Execute(fakeWxRow);
+                            if (fakeWxRow.IsConfirmingVisibility)
+                                throw new InvalidOperationException(
+                                    "[smoke] 「设为公开」确认条取消没复位");
+
+                            // 反向（公开 → 仅自己）同样必须先确认，且不直接调平台（零请求）
+                            fakeWxRow.IsWechatPrivate = false;
+                            vv.ToggleWechatVisibilityCommand.Execute(fakeWxRow);
+                            if (!fakeWxRow.IsConfirmingVisibility
+                                || fakeWxRow.VisibilityConfirmButtonText != "确认仅自己")
+                                throw new InvalidOperationException(
+                                    "[smoke] 「设为仅自己」没先弹确认条");
+                            vv.CancelWechatVisibilityCommand.Execute(fakeWxRow);
+                            if (fakeWxRow.IsConfirmingVisibility)
+                                throw new InvalidOperationException(
+                                    "[smoke] 「设为仅自己」确认条取消没复位");
+                            vv.Rows.Remove(fakeWxRow);
+                            Console.WriteLine(
+                                "[smoke] 视频管理：视频号可见性单按钮 + 双向确认条接线 OK（零请求）");
                         }
                     }
                     // 上传队列页特判：明细行（行级 ✕ 放弃在模板里）与撤回确认条都不在默认态（卡片默认折叠）。
